@@ -634,6 +634,51 @@ function setConversation(sid, id) {
 // 无论前端网络如何抖动、锁屏、切后台，后台 CLI 执行绝不被随意 kill，支持客户端随时断线重连无缝回放
 const activeRuns = new Map(); // convKey -> { abortController, listeners: Set, events: [], isRunning: boolean, conversationId: string, error: any, done: boolean }
 
+// ---------- 附件上传（借鉴 CloudCLI：存全局 assets 目录，路径注入 prompt） ----------
+import multer from 'multer';
+import { mkdirSync } from 'node:fs';
+const ASSETS_DIR = path.join(os.homedir(), '.antigravity', 'assets');
+try { mkdirSync(ASSETS_DIR, { recursive: true }); } catch (_) {}
+
+const attachmentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, ASSETS_DIR),
+    filename: (req, file, cb) => {
+      const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const ext = path.extname(file.originalname);
+      cb(null, unique + ext);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+});
+
+// 上传文件 → 存到 ~/.antigravity/assets/ → 返回路径信息
+app.post('/api/assets/files', attachmentUpload.array('files', 10), (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return send(res, 400, { error: '未收到文件' });
+  const attachments = files.map(f => ({
+    path: f.path,
+    name: f.originalname,
+    mimeType: f.mimetype,
+    size: f.size,
+  }));
+  debugLog('[assets] uploaded', attachments.length, 'files to', ASSETS_DIR);
+  send(res, 200, { attachments });
+});
+
+// 下载/预览已上传的文件
+app.get('/api/assets/files/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const filePath = path.join(ASSETS_DIR, filename);
+  if (!filePath.startsWith(ASSETS_DIR)) return send(res, 403, { error: '非法路径' });
+  try {
+    fs.accessSync(filePath);
+    res.sendFile(filePath);
+  } catch {
+    send(res, 404, { error: '文件不存在' });
+  }
+});
+
 app.post('/api/chat/abort', (req, res) => {
   const { conversationKey, conversationId } = req.body || {};
   const key = conversationKey || conversationId;
