@@ -10,7 +10,7 @@ import config from './lib/config.js';
 import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
-import { applyAutoAllow, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
+import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -638,6 +638,87 @@ function getSessionFilePath(id) {
   return path.join(SESSIONS_DIR, `${safeId}.json`);
 }
 
+// ── 对齐 Antigravity 核心引擎 transcript.jsonl，保证用户即使关闭浏览器/关机也能 100% 自动找回离线回复 ──
+const BRAIN_DIR = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain');
+
+function syncSessionWithTranscript(sessionData) {
+  if (!sessionData) return sessionData;
+  const convId = sessionData.convId || getConversation(sessionData.id);
+  if (!convId) return sessionData;
+
+  const candidatePaths = [
+    path.join(BRAIN_DIR, convId, '.system_generated', 'logs', 'transcript.jsonl'),
+    path.join('/vol5/@apphome/claude code/.gemini/antigravity-cli/brain', convId, '.system_generated', 'logs', 'transcript.jsonl')
+  ];
+
+  const transcriptPath = candidatePaths.find(p => fs.existsSync(p));
+  if (!transcriptPath) return sessionData;
+
+  try {
+    const lines = fs.readFileSync(transcriptPath, 'utf-8').trim().split('\n');
+    const steps = lines.map(l => {
+      try { return JSON.parse(l); } catch (_) { return null; }
+    }).filter(Boolean);
+
+    const turns = [];
+    let currentTurn = null;
+    for (const step of steps) {
+      if (step.type === 'USER_INPUT') {
+        let text = step.content || '';
+        const match = text.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
+        if (match) text = match[1].trim();
+        currentTurn = { user: text, assistant: '', timestamp: step.created_at };
+        turns.push(currentTurn);
+      } else if (step.type === 'PLANNER_RESPONSE' && currentTurn) {
+        if (step.content) {
+          currentTurn.assistant = step.content;
+        }
+      }
+    }
+
+    if (!turns.length) return sessionData;
+
+    let modified = false;
+    const sessionMsgs = Array.isArray(sessionData.messages) ? [...sessionData.messages] : [];
+
+    for (let i = 0; i < turns.length; i++) {
+      const t = turns[i];
+      if (!t.user || !t.assistant) continue;
+
+      const uIndex = sessionMsgs.findIndex(m => m.role === 'user' && (m.content === t.user || m.content.trim() === t.user.trim()));
+      if (uIndex !== -1) {
+        if (uIndex === sessionMsgs.length - 1 || sessionMsgs[uIndex + 1].role !== 'assistant') {
+          sessionMsgs.splice(uIndex + 1, 0, {
+            role: 'assistant',
+            content: t.assistant,
+            meta: { model: 'gemini-3.7-flash-high', syncedFromTranscript: true }
+          });
+          modified = true;
+        } else if (sessionMsgs[uIndex + 1].role === 'assistant' && (!sessionMsgs[uIndex + 1].content || sessionMsgs[uIndex + 1].content.trim() === '')) {
+          sessionMsgs[uIndex + 1].content = t.assistant;
+          modified = true;
+        }
+      }
+    }
+
+    if (modified) {
+      sessionData.messages = sessionMsgs;
+      sessionData.convId = convId;
+      sessionData.updatedAt = Date.now();
+      const filePath = getSessionFilePath(sessionData.id);
+      const tmpPath = `${filePath}.tmp.${Date.now()}`;
+      try {
+        fs.writeFileSync(tmpPath, JSON.stringify(sessionData, null, 2), 'utf-8');
+        fs.renameSync(tmpPath, filePath);
+        debugLog(`[syncSessionWithTranscript] Auto-reconciled session ${sessionData.id} with ${sessionMsgs.length} messages`);
+      } catch (_) {}
+    }
+  } catch (err) {
+    debugLog('[syncSessionWithTranscript] error:', err && err.message);
+  }
+  return sessionData;
+}
+
 // 获取所有会话列表
 app.get('/api/sessions', (_req, res) => {
   try {
@@ -648,8 +729,10 @@ app.get('/api/sessions', (_req, res) => {
       try {
         const fullPath = path.join(SESSIONS_DIR, file);
         const raw = fs.readFileSync(fullPath, 'utf-8');
-        const data = JSON.parse(raw);
+        let data = JSON.parse(raw);
         if (data && data.id) {
+          // 自动与底层 Antigravity transcript 对齐，找回所有离线响应
+          data = syncSessionWithTranscript(data);
           const lastMsg = Array.isArray(data.messages) && data.messages.length ? data.messages[data.messages.length - 1] : null;
           sessions.push({
             id: data.id,
@@ -678,21 +761,22 @@ app.get('/api/sessions/:id', (req, res) => {
   if (!fs.existsSync(filePath)) return send(res, 404, { error: '会话不存在' });
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const data = JSON.parse(raw);
+    let data = JSON.parse(raw);
+    data = syncSessionWithTranscript(data);
     send(res, 200, { ok: true, session: data });
   } catch (e) {
     send(res, 500, { error: e.message });
   }
 });
 
-// 保存/更新单个会话（原子写入）
+// 保存/更新单个会话（原子写入 + Transcript 保护）
 app.post('/api/sessions', (req, res) => {
   const { id, title, messages, convId, createdAt, updatedAt } = req.body || {};
   if (!id) return send(res, 400, { error: '缺少会话 id' });
   const filePath = getSessionFilePath(id);
   const tmpPath = `${filePath}.tmp.${Date.now()}`;
   try {
-    const sessionObj = {
+    let sessionObj = {
       id,
       title: title || '新对话',
       messages: Array.isArray(messages) ? messages : [],
@@ -700,9 +784,11 @@ app.post('/api/sessions', (req, res) => {
       createdAt: createdAt || Date.now(),
       updatedAt: updatedAt || Date.now()
     };
+    if (convId) setConversation(id, convId);
+    // 写入前先与 transcript 对齐，防止客户端旧数据冲掉已生成的离线 assistant 消息
+    sessionObj = syncSessionWithTranscript(sessionObj);
     fs.writeFileSync(tmpPath, JSON.stringify(sessionObj, null, 2), 'utf-8');
     fs.renameSync(tmpPath, filePath);
-    if (convId) setConversation(id, convId);
     send(res, 200, { ok: true, session: sessionObj });
   } catch (e) {
     try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
@@ -853,7 +939,7 @@ app.post('/api/chat', async (req, res) => {
   }
   debugLog('[api/chat] authOK: cliAuthenticated=true');
 
-  if (permRaw === 'approve' || permRaw === '') applyAutoAllow();
+  if (permRaw === 'approve' || permRaw === '') { applyAutoAllow(); } else if (permRaw === 'ask') { applyAskMode(); }
 
   const convKey = conversationKey || clientConvId || 'default-chat';
   let conversationId = clientConvId || null;
@@ -1217,33 +1303,30 @@ wss.on('connection', (ws, req) => {
     const { model, messages, effort, permissions, conversationKey, conversationId: clientConvId } = body;
     const permRaw = String(permissions || '').trim().toLowerCase();
 
-    // ── subscribe 模式：刷新/重开页面后，前端请求挂接到正在跑的后台任务，不创建新任务 ──
+    // ── subscribe 模式：刷新/重开/切回页面后，前端请求挂接到后台任务，自动回放已生成及正在生成的全部流式内容 ──
     if (body.action === 'subscribe' && conversationKey) {
       const convKey = conversationKey || clientConvId || 'default-chat';
       const existingRun = activeRuns.get(convKey);
       if (existingRun) {
         debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=${existingRun.isRunning}, done=${existingRun.done}, events=${existingRun.events.length})`);
-        if (existingRun.done) {
-          // run 已完成：不回放事件（历史已在 localStorage/服务端持久化），直接告诉前端"没有正在跑的任务"
-          try { ws.send(JSON.stringify({ idle: true })); } catch (_) {}
-          return;
+        
+        // 无论正在运行还是刚完成，都把所有事件完整回放给前端客户端
+        for (const ev of existingRun.events) {
+          const match = ev.match(/^data: (.+)$/s);
+          if (match) { try { ws.send(match[1]); } catch (_) {} }
         }
+
         if (existingRun.isRunning) {
-          // run 正在跑：回放所有错过的事件，然后挂接继续接收实时流
-          for (const ev of existingRun.events) {
-            const match = ev.match(/^data: (.+)$/s);
-            if (match) { try { ws.send(match[1]); } catch (_) {} }
-          }
           const wsListener = (chunk) => {
             const m = chunk.match(/^data: (.+)$/s);
             if (m) { try { ws.send(m[1]); } catch (_) {} }
           };
           existingRun.listeners.add(wsListener);
           ws.on('close', () => existingRun.listeners.delete(wsListener));
-          return;
         }
+        return;
       }
-      // 后台没有正在跑的任务
+      // 后台没有正在跑的任务，通知前端同步完成
       ws.send(JSON.stringify({ done: true, conversationId: clientConvId || null }));
       return;
     }
@@ -1258,7 +1341,7 @@ wss.on('connection', (ws, req) => {
     }
     debugLog('[ws/chat] authOK');
 
-    if (permRaw === 'approve' || permRaw === '') applyAutoAllow();
+    if (permRaw === 'approve' || permRaw === '') { applyAutoAllow(); } else if (permRaw === 'ask') { applyAskMode(); }
 
     const convKey = conversationKey || clientConvId || 'default-chat';
     let conversationId = clientConvId || null;
