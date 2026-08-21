@@ -42,14 +42,49 @@ function debugLog(...args) {
   console.log(line);
 }
 
-// ---------- WebUI 私有访问身份验证 (用户名/密码网关) ----------
+// ---------- WebUI 私有访问身份验证 (持久化令牌 + Cookie 保护) ----------
+const AUTH_TOKENS_FILE = path.join(__dirname, 'data', 'auth_tokens.json');
 const activeAuthTokens = new Map(); // token -> { username, loginAt }
+
+function loadAuthTokens() {
+  try {
+    if (fs.existsSync(AUTH_TOKENS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(AUTH_TOKENS_FILE, 'utf8'));
+      const now = Date.now();
+      for (const [token, val] of Object.entries(data)) {
+        // 30 天持久有效期，保证重启服务或刷新页面永不掉登录态
+        if (val && val.loginAt && (now - val.loginAt < 30 * 24 * 3600 * 1000)) {
+          activeAuthTokens.set(token, val);
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+function saveAuthTokens() {
+  try {
+    const obj = {};
+    for (const [token, val] of activeAuthTokens.entries()) {
+      obj[token] = val;
+    }
+    fs.mkdirSync(path.dirname(AUTH_TOKENS_FILE), { recursive: true });
+    fs.writeFileSync(AUTH_TOKENS_FILE, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (_) {}
+}
+
+loadAuthTokens();
 
 function isWebAuthed(req) {
   if (!config.auth || config.auth.enabled === false) return true;
   // 1. Session 校验
   if (req.session && req.session.authenticatedUser) return true;
-  // 2. Bearer / Header / Query 校验
+  // 2. Cookie 校验 (agy_auth_token)
+  const cookieHeader = req.headers.cookie || '';
+  const matchCookie = cookieHeader.match(/(?:^|;\s*)agy_auth_token=([^;]+)/);
+  const cookieToken = matchCookie ? decodeURIComponent(matchCookie[1]) : null;
+  if (cookieToken && activeAuthTokens.has(cookieToken)) return true;
+
+  // 3. Bearer / Header / Query 校验
   const token = req.headers['x-auth-token'] || 
     (req.headers.authorization ? req.headers.authorization.replace(/^Bearer\s+/i, '').trim() : null) ||
     req.query?.auth_token;
@@ -88,11 +123,19 @@ app.post('/api/web-auth/login', (req, res) => {
   if (inputUser === validUser && inputPass === validPass) {
     const token = crypto.randomBytes(32).toString('hex');
     activeAuthTokens.set(token, { username: inputUser, loginAt: Date.now() });
+    saveAuthTokens();
 
     if (req.session) {
       req.session.authenticatedUser = inputUser;
       req.session.authToken = token;
     }
+
+    res.cookie('agy_auth_token', token, {
+      maxAge: 30 * 24 * 3600 * 1000,
+      httpOnly: false,
+      sameSite: 'lax',
+      path: '/'
+    });
 
     return send(res, 200, {
       ok: true,
@@ -109,11 +152,20 @@ app.post('/api/web-auth/login', (req, res) => {
 });
 
 app.post('/api/web-auth/logout', (req, res) => {
+  const cookieHeader = req.headers.cookie || '';
+  const matchCookie = cookieHeader.match(/(?:^|;\s*)agy_auth_token=([^;]+)/);
+  const cookieToken = matchCookie ? decodeURIComponent(matchCookie[1]) : null;
+
   const token = req.headers['x-auth-token'] || 
     (req.headers.authorization ? req.headers.authorization.replace(/^Bearer\s+/i, '').trim() : null) ||
+    cookieToken ||
     req.session?.authToken;
-  if (token) activeAuthTokens.delete(token);
+  if (token) {
+    activeAuthTokens.delete(token);
+    saveAuthTokens();
+  }
 
+  res.clearCookie('agy_auth_token', { path: '/' });
   if (req.session) {
     req.session.destroy(() => {});
   }
