@@ -637,20 +637,12 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
   let bubble;
   if (role === "assistant") {
     bubble = el("div", "message-bubble markdown-body");
-    // 渲染工具执行事件（刷新后从 localStorage 恢复）
-    if (tools && tools.length) {
-      const toolHtml = tools.map(t => {
-        const icon = t.tool === 'run_command' ? '▶' : (t.tool === 'view_file' ? '📄' : '🔧');
-        const label = t.tool === 'run_command' ? '执行命令' : (t.tool === 'view_file' ? '查看文件' : (t.tool || '工具'));
-        return `<details class="tool-event-box"><summary><span class="tool-icon">${icon}</span> <span class="tool-label">${escapeHtml(label)}</span> <span class="tool-step">${escapeHtml(t.stepType || '')}</span></summary><div class="tool-detail">${escapeHtml(t.tip || '')}</div></details>`;
-      }).join('');
-      bubble.innerHTML = toolHtml;
-    }
     const clean = String(content || "").replace(/[\u200b\s]/g, "");
     if (isStreaming && !clean) {
       bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>`;
     } else {
       bubble.innerHTML = formatMarkdown(content);
+      if (tools && tools.length) { const toolHtml = tools.map(t => { const icon = t.tool === "run_command" ? "▶" : (t.tool === "view_file" ? "📄" : "🔧"); const label = t.tool === "run_command" ? "执行命令" : (t.tool === "view_file" ? "查看文件" : (t.tool || "工具")); return `<details class="tool-event-box"><summary><span class="tool-icon">${icon}</span> <span class="tool-label">${escapeHtml(label)}</span> <span class="tool-step">${escapeHtml(t.stepType || "")}</span></summary><div class="tool-detail">${escapeHtml(t.tip || "")}</div></details>`; }).join(""); bubble.innerHTML += toolHtml; }
       if (!isStreaming && clean) {
         const durText = meta?.duration ? `${meta.duration}s` : '';
         const tokens = meta?.tokens || Math.max(1, Math.round(clean.length / 3.2));
@@ -728,7 +720,7 @@ function getBaseModels(rawModels) {
     { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
     { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
-    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B" }
+    { id: "gpt-oss-120b", label: "GPT-OSS 120B" }
   ];
 
   predefined.forEach((p) => {
@@ -743,7 +735,8 @@ function getBaseModels(rawModels) {
 
   // 加入其他 CLI 发现的模型
   (rawModels || []).forEach((m) => {
-    const baseId = m.replace(/-(low|medium|high)$/i, "");
+    // 忽略带后缀的模型名称, 归类为基础模型
+    const baseId = m.replace(/-(low|medium|high|off)$/i, "");
     if (!seen.has(baseId)) {
       seen.add(baseId);
       cleanList.push({ id: baseId, label: formatModelDisplayName(baseId) });
@@ -766,10 +759,12 @@ function resolveActualModelName(baseModel, effort) {
   }
   if (baseModel.startsWith("gemini-3.6-flash")) {
     if (eff === "low") return "gemini-3.6-flash-low";
+    if (eff === "medium") return "gemini-3.6-flash-medium";
     return "gemini-3.6-flash-high";
   }
   if (baseModel.startsWith("gemini-3.5-flash")) {
     if (eff === "low") return "gemini-3.5-flash-low";
+    if (eff === "medium") return "gemini-3.5-flash-medium";
     return "gemini-3.5-flash-high";
   }
   if (baseModel.startsWith("gemini-3.1-pro")) {
@@ -777,6 +772,62 @@ function resolveActualModelName(baseModel, effort) {
     return "gemini-3.1-pro-high";
   }
   return baseModel;
+}
+
+function updateEffortDropdown(baseModel) {
+  const effortWrap = $("#effort-wrap");
+  const effortSelect = $("#effort");
+  if (!effortWrap || !effortSelect) return;
+
+  const currentModels = state.models || [];
+  const availableEfforts = [];
+
+  if (baseModel.startsWith("gemini-3.7-flash")) {
+    availableEfforts.push(
+      { value: "high", label: "思考: 高" },
+      { value: "medium", label: "思考: 中" },
+      { value: "low", label: "思考: 低" },
+      { value: "off", label: "思考: 关" }
+    );
+  } else if (baseModel.startsWith("gemini-3.1-pro")) {
+    availableEfforts.push(
+      { value: "high", label: "思考: 高" },
+      { value: "low", label: "思考: 低" }
+    );
+  } else if (baseModel.startsWith("gemini-3.6-flash") || baseModel.startsWith("gemini-3.5-flash")) {
+    availableEfforts.push(
+      { value: "high", label: "思考: 高" },
+      { value: "medium", label: "思考: 中" },
+      { value: "low", label: "思考: 低" }
+    );
+  } else {
+    const hasHigh = currentModels.some((m) => m === `${baseModel}-high` || m.includes(`${baseModel}-high`));
+    const hasMedium = currentModels.some((m) => m === `${baseModel}-medium` || m.includes(`${baseModel}-medium`));
+    const hasLow = currentModels.some((m) => m === `${baseModel}-low` || m.includes(`${baseModel}-low`));
+
+    if (hasHigh) availableEfforts.push({ value: "high", label: "思考: 高" });
+    if (hasMedium) availableEfforts.push({ value: "medium", label: "思考: 中" });
+    if (hasLow) availableEfforts.push({ value: "low", label: "思考: 低" });
+  }
+
+  if (availableEfforts.length === 0) {
+    effortWrap.style.display = "none";
+  } else {
+    effortWrap.style.display = "inline-flex";
+    const oldVal = effortSelect.value || localStorage.getItem("agy-effort") || "high";
+    effortSelect.innerHTML = "";
+    availableEfforts.forEach((opt) => {
+      const o = el("option", "", opt.label);
+      o.value = opt.value;
+      effortSelect.append(o);
+    });
+
+    if (availableEfforts.some((o) => o.value === oldVal)) {
+      effortSelect.value = oldVal;
+    } else {
+      effortSelect.value = availableEfforts[0].value;
+    }
+  }
 }
 
 function renderModelSelect() {
@@ -788,6 +839,7 @@ function renderModelSelect() {
     const o = el("option", "", "无可用模型");
     o.value = "";
     sel.append(o);
+    updateEffortDropdown("");
     return;
   }
   
@@ -806,12 +858,15 @@ function renderModelSelect() {
   }
   state.selectedModel = saved;
   sel.value = saved;
+  updateEffortDropdown(saved);
 }
 
 $("#model-select").addEventListener("change", (e) => {
   state.selectedModel = e.target.value;
   try { localStorage.setItem("agy-model", state.selectedModel); } catch (_) {}
+  updateEffortDropdown(state.selectedModel);
 });
+
 
 // Auto-grow Input
 const inputArea = $("#input");
