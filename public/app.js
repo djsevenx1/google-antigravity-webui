@@ -510,17 +510,18 @@ function formatMarkdown(text, isStreaming = false) {
   if (!text) return "";
   let processed = text.replace(/\u200b/g, "");
   
-  // 1. Handle complete <thought>...</thought> blocks
-  processed = processed.replace(/<thought>([\s\S]*?)<\/thought>/gi, (match, p1) => {
-    return `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span>思考过程 (已完成)</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
+  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> blocks
+  processed = processed.replace(/<(?:thought|thinking)>([\s\S]*?)<\/(?:thought|thinking)>/gi, (match, p1) => {
+    return `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span>思考过程 (已折叠)</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
   });
 
-  // 2. Handle ACTIVE / UNCLOSED <thought> during streaming (Model is actively thinking!)
+  // 2. Handle ACTIVE / UNCLOSED <thought> or <thinking> during streaming (Model is actively thinking!)
   let activeThinkingHtml = "";
-  if (processed.includes("<thought>")) {
-    const parts = processed.split("<thought>");
-    const beforeThought = parts[0];
-    const currentThought = parts.slice(1).join("<thought>");
+  const thoughtMatch = processed.match(/<(?:thought|thinking)>([\s\S]*)$/i);
+  if (thoughtMatch) {
+    const idx = thoughtMatch.index;
+    const beforeThought = processed.substring(0, idx);
+    const currentThought = thoughtMatch[1];
     
     activeThinkingHtml = `<details class="thinking-block active" open><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="color:var(--accent);font-weight:500;">正在深度思考中...</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought)}<span class="streaming-cursor"></span></div></details>`;
     processed = beforeThought;
@@ -530,7 +531,16 @@ function formatMarkdown(text, isStreaming = false) {
   if (processed.trim()) {
     if (typeof marked !== "undefined") {
       try {
-        let rawHtml = marked.parse(processed);
+        // Fix unclosed code fences during streaming so markdown AST doesn't break
+        let textToParse = processed;
+        if (isStreaming) {
+          const fenceCount = (textToParse.match(/```/g) || []).length;
+          if (fenceCount % 2 !== 0) {
+            textToParse += "\n```";
+          }
+        }
+
+        let rawHtml = marked.parse(textToParse);
         // Wrap code blocks
         rawHtml = rawHtml.replace(/<pre><code class="language-([^">]+)">([\s\S]*?)<\/code><\/pre>/gi, (match, lang, code) => {
           return `<div class="code-block-wrapper"><div class="code-block-header"><span>${escapeHtml(lang)}</span><button class="copy-code-btn" onclick="copyCodeFromBlock(this)"><i data-lucide="copy" style="width:12px;height:12px;"></i> 复制</button></div><pre><code class="language-${lang}">${code}</code></pre></div>`;
