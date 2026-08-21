@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Google Antigravity Web UI</title>
+  <link rel="stylesheet" href="/vendor/github-dark.min.css" id="hljs-theme" />
+  <link rel="stylesheet" href="/style.css" />
+  <script defer src="/vendor/marked.min.js"></script>
+  <script defer src="/vendor/highlight.min.js"></script>
+  <script defer src="/vendor/lucide.min.js"></script>
+</head>
+<body>
+  <!-- Header / Topbar -->
+  <header class="header">
+    <div class="brand">
+      <button id="btn-menu" class="btn btn-ghost btn-icon" title="切换菜单">
+        <i data-lucide="menu" style="width: 18px; height: 18px;"></i>
+      </button>
+      <div class="brand-icon">◇</div>
+      <div class="brand-title">
+        <span>Antigravity</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div id="login-area"></div>
+      <button id="btn-theme" class="btn btn-ghost btn-icon" title="切换主题">
+        <i data-lucide="sun" id="theme-icon" style="width: 17px; height: 17px;"></i>
+      </button>
+      <button id="btn-about" class="btn btn-ghost btn-icon" title="设置与关于">
+        <i data-lucide="settings" style="width: 17px; height: 17px;"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Layout -->
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <button id="btn-new" class="new-chat-btn">
+          <span style="display: flex; align-items: center; gap: 6px;">
+            <i data-lucide="plus" style="width: 15px; height: 15px;"></i>
+            新建对话
+          </span>
+          <kbd style="font-size: 10px; opacity: 0.6; padding: 2px 4px; border: 1px solid var(--border-color); border-radius: 4px;">Ctrl+K</kbd>
+        </button>
+        <div class="search-input-wrap">
+          <i data-lucide="search" class="search-icon"></i>
+          <input type="text" id="session-search" class="search-input" placeholder="搜索历史会话..." />
+        </div>
+      </div>
+
+      <div id="conv-list" class="sidebar-list"></div>
+
+      <div class="sidebar-footer">
+        <button id="btn-usage-sidebar" class="sidebar-nav-btn usage-sidebar-btn" title="查看 Google Antigravity 模型用量与配额">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <i data-lucide="gauge" style="width: 15px; height: 15px; color: var(--accent);"></i>
+            <span>模型用量与配额</span>
+          </div>
+          <span id="usage-sidebar-badge" class="usage-sidebar-pill">5h: 94%</span>
+        </button>
+        <button id="btn-export" class="sidebar-nav-btn" title="导出当前对话为 Markdown">
+          <i data-lucide="download" style="width: 15px; height: 15px;"></i>
+          <span>导出对话 (.md)</span>
+        </button>
+        <button id="btn-plugins" class="sidebar-nav-btn">
+          <i data-lucide="blocks" style="width: 15px; height: 15px;"></i>
+          <span>插件中心</span>
+        </button>
+      </div>
+    </aside>
+    <div id="sidebar-backdrop" class="sidebar-backdrop hidden"></div>
+
+    <!-- Main Chat Content -->
+    <main class="main-chat">
+      <!-- Empty State -->
+      <div id="chat-empty" class="chat-empty">
+        <div class="empty-icon">◇</div>
+        <h1 class="empty-title">Google Antigravity</h1>
+        <p id="empty-hint" class="empty-subtitle">选择模型与思考强度，开始全新的 AI 编程协作</p>
+        
+        <div class="starter-grid">
+          <div class="starter-card" data-prompt="帮我查看当前系统的环境配置与正在运行的服务">
+            <strong>🖥️ 系统环境排查</strong>
+            <span>检查 CPU、内存、Docker 与运行状态</span>
+          </div>
+          <div class="starter-card" data-prompt="写一个 Node.js Express 快速启动的 RESTful API 示例">
+            <strong>⚡ 快速构建 API</strong>
+            <span>创建现代后端 REST 路由与中间件</span>
+          </div>
+          <div class="starter-card" data-prompt="如何使用 Antigravity CLI 进行代码重构与自动化测试？">
+            <strong>🛠️ CLI 使用指南</strong>
+            <span>学习 TaskMaster、沙箱与自动化命令</span>
+          </div>
+          <div class="starter-card" data-prompt="请设计一个微服务架构方案并给出流程图说明">
+            <strong>💡 架构设计</strong>
+            <span>系统解耦、高可用与数据库设计方案</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Chat Feed -->
+      <div id="chat-feed" class="chat-feed hidden"></div>
+
+      <!-- Composer / Input Box -->
+      <div class="composer-wrap">
+        <!-- Quick Prompts Bar -->
+        <div class="quick-prompts-bar">
+          <button class="quick-pill" data-insert="请帮我重构并优化以下代码的结构与可读性：\n\n">⚡ 代码重构</button>
+          <button class="quick-pill" data-insert="请为以下代码编写详细的单元测试用例：\n\n">🧪 编写单测</button>
+          <button class="quick-pill" data-insert="请帮我分析排查以下报错与异常的根本原因：\n\n">🐞 报错排查</button>
+          <button class="quick-pill" data-insert="请为以下代码生成标准的注释与 Markdown 文档说明：\n\n">📑 编写文档</button>
+          <button class="quick-pill" data-insert="请帮我设计一个高可用、可扩展的架构方案：\n\n">💡 架构设计</button>
+        </div>
+
+        <div class="composer-box">
+          <!-- Controls Bar (Compact) -->
+          <div class="composer-controls">
+            <div class="pill-select-wrap" title="选择模型">
+              <i data-lucide="cpu" style="width: 12px; height: 12px; color: var(--accent);"></i>
+              <select id="model-select"></select>
+            </div>
+
+            <div class="pill-select-wrap" id="effort-wrap" title="思考强度 (Deep Thinking)">
+              <i data-lucide="sparkles" style="width: 12px; height: 12px; color: #f59e0b;"></i>
+              <select id="effort">
+                <option value="high" selected>思考: 高</option>
+                <option value="medium">思考: 中</option>
+                <option value="low">思考: 低</option>
+                <option value="off">思考: 关</option>
+              </select>
+            </div>
+
+            <div class="pill-select-wrap" title="CLI 命令执行权限策略">
+              <i data-lucide="shield-check" style="width: 12px; height: 12px; color: #10b981;"></i>
+              <select id="permissions">
+                <option value="approve" selected>自动批准</option>
+                <option value="sandbox">沙箱隔离</option>
+                <option value="accept-edits">接受修改</option>
+                <option value="plan">只读计划</option>
+                <option value="default">严格询问</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Input Row -->
+          <div class="composer-input-row">
+            <textarea id="input" class="composer-textarea" rows="1" placeholder="向 Antigravity 发送指令... (Enter 发送, Shift+Enter 换行)" autocomplete="off"></textarea>
+            <button id="btn-send" class="send-action-btn" title="发送 (Enter)">
+              <i data-lucide="arrow-up" id="send-icon" style="width: 18px; height: 18px;"></i>
+            </button>
+          </div>
+
+          <div id="composer-status" class="hidden"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Dynamic Modal Overlay -->
+  <div id="modal-root" class="modal-overlay hidden">
+    <div class="modal-dialog" id="modal-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-title"></div>
+        <button id="modal-close" class="btn btn-ghost btn-icon">
+          <i data-lucide="x" style="width: 16px; height: 16px;"></i>
+        </button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast-msg hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

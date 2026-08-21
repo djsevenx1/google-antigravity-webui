@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Runtime / secrets
+config.json
+state.json
+.env
+
+# Logs
+*.log
+
+# OS
+.DS_Store_ui_redesign/
+data/
+*.pre-ws
+_ui_redesign/
+*.pre-ws
+data/
