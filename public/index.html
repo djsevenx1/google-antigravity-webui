@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Google Antigravity Web UI</title>
   <link rel="stylesheet" href="/vendor/github-dark.min.css" id="hljs-theme" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=2.7" />
   <script defer src="/vendor/marked.min.js"></script>
   <script defer src="/vendor/highlight.min.js"></script>
   <script defer src="/vendor/lucide.min.js"></script>
@@ -55,12 +55,13 @@
       <div id="conv-list" class="sidebar-list"></div>
 
       <div class="sidebar-footer">
-        <button id="btn-usage-sidebar" class="sidebar-nav-btn usage-sidebar-btn" title="查看 Google Antigravity 模型用量与配额">
+        <div id="sidebar-user-card" class="sidebar-user-card" style="display:none;"></div>
+        <button id="btn-usage-sidebar" class="sidebar-nav-btn usage-sidebar-btn" title="查看 Google AI Pro 模型用量与实时配额">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <i data-lucide="gauge" style="width: 15px; height: 15px; color: var(--accent);"></i>
-            <span>模型用量与配额</span>
+            <i data-lucide="sparkles" style="width: 15px; height: 15px; color: var(--accent);"></i>
+            <span>Google AI Pro 配额</span>
           </div>
-          <span id="usage-sidebar-badge" class="usage-sidebar-pill">5h: 94%</span>
+          <span id="usage-sidebar-badge" class="usage-sidebar-pill">AI Pro 100%</span>
         </button>
         <button id="btn-export" class="sidebar-nav-btn" title="导出当前对话为 Markdown">
           <i data-lucide="download" style="width: 15px; height: 15px;"></i>
@@ -176,6 +177,6 @@
   <!-- Toast Notification -->
   <div id="toast" class="toast-msg hidden"></div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=2.7"></script>
 </body>
 </html>

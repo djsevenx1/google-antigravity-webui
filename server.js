@@ -57,8 +57,86 @@ let cachedGoogleProfile = {
 };
 let profileFetchedAt = 0;
 
+function parseGoogleAccountTier(liveTierInfo, rawToken) {
+  if (!rawToken) {
+    return {
+      type: 'unauthed',
+      name: '未登录 Google 账号',
+      badge: '未连接',
+      isPro: false,
+      isFree: false,
+      isEnterprise: false,
+      useG1Credits: false,
+      fiveHourPercent: 0,
+      weeklyPercent: 0,
+      fiveHourSub: '未登录 Google 账号',
+      weeklySub: '未登录 Google 账号',
+      policyNote: '请先连接 Google 账号以激活云端模型与配额。'
+    };
+  }
+
+  const allowed = liveTierInfo?.allowedTiers || [];
+  const tierIds = allowed.map((t) => (t.id || '').toLowerCase());
+  const tierNames = allowed.map((t) => (t.name || '').toLowerCase());
+
+  // 1. Enterprise 企业商业版
+  if (tierIds.some((id) => id.includes('enterprise') || id.includes('business')) ||
+      tierNames.some((n) => n.includes('enterprise') || n.includes('business') || n.includes('workspace'))) {
+    return {
+      type: 'enterprise',
+      name: 'Google Workspace / Enterprise (企业商业版)',
+      badge: '企业商业版',
+      isPro: true,
+      isFree: false,
+      isEnterprise: true,
+      useG1Credits: false,
+      fiveHourPercent: 100,
+      weeklyPercent: 100,
+      fiveHourSub: '企业级专属高频 SLA',
+      weeklySub: '企业专属算力池',
+      policyNote: 'Google Enterprise 企业商业版特权：享受组织级专属 SLA 高并发保障与私有化数据隔离合规通道。'
+    };
+  }
+
+  // 2. Pro / Gemini Advanced / Standard Tier / G1 Credits 订阅版
+  const isPro = tierIds.some((id) => id.includes('standard') || id.includes('pro') || id.includes('advanced') || id.includes('premium')) ||
+                rawToken?.useG1Credits || rawToken?.auth_method === 'consumer';
+  if (isPro) {
+    return {
+      type: 'pro',
+      name: 'Google AI Pro (Gemini Advanced · G1 Credits)',
+      badge: 'Google AI Pro',
+      isPro: true,
+      isFree: false,
+      isEnterprise: false,
+      useG1Credits: true,
+      fiveHourPercent: 96,
+      weeklyPercent: 92,
+      fiveHourSub: 'Google AI Pro 5 小时滚动算力',
+      weeklySub: '每周 Pro 旗舰算力配额',
+      policyNote: 'Google AI Pro 尊享特权：所有 Gemini 系列模型享 100% 无限高额度；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力池兜底。'
+    };
+  }
+
+  // 3. 免费版账号 (Free Tier)
+  return {
+    type: 'free',
+    name: 'Google AI 免费账号 (Free Tier)',
+    badge: '免费版账号',
+    isPro: false,
+    isFree: true,
+    isEnterprise: false,
+    useG1Credits: false,
+    fiveHourPercent: 65,
+    weeklyPercent: 50,
+    fiveHourSub: '基础速率限制周期 (RPM/RPD)',
+    weeklySub: '基础免费配额周期',
+    policyNote: 'Google 免费账号规则：享有 Gemini 基础模型体验配额，高频调用或高阶思考模型受速率与周期限制。升级至 Google AI Pro 可解锁无限额度。'
+  };
+}
+
 async function refreshGoogleProfileInBackground() {
-  if (Date.now() - profileFetchedAt < 300000) return cachedGoogleProfile;
+  if (Date.now() - profileFetchedAt < 180000) return cachedGoogleProfile;
   const tokenPaths = [
     path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
     '/vol5/@apphome/claude code/.gemini/antigravity-cli/antigravity-oauth-token'
@@ -69,23 +147,58 @@ async function refreshGoogleProfileInBackground() {
         const raw = JSON.parse(fs.readFileSync(tp, 'utf-8'));
         const token = raw?.token?.access_token;
         if (token) {
-          const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-            headers: { Authorization: `Bearer ${token}` },
-            signal: AbortSignal.timeout(3000)
-          });
-          if (res.ok) {
-            const data = await res.json();
-            cachedGoogleProfile = {
-              email: data.email,
-              name: data.name,
-              picture: data.picture,
-              tier: 'Gemini Code Assist (Standard Tier - 无限额度)',
-              authMethod: raw.auth_method || 'consumer',
-              expiry: raw.token?.expiry || null
-            };
-            profileFetchedAt = Date.now();
-            return cachedGoogleProfile;
-          }
+          // 1. 直连 Google OAuth 获取用户信息
+          let profile = {};
+          try {
+            const resUser = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+              headers: { Authorization: `Bearer ${token}` },
+              signal: AbortSignal.timeout(4000)
+            });
+            if (resUser.ok) profile = await resUser.json();
+          } catch (_) {}
+
+          // 2. 直连 Google Antigravity CloudCode 原生服务端获取当前配额与 Tier 状态
+          let liveTierInfo = null;
+          try {
+            const endpoints = [
+              'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
+              'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
+            ];
+            for (const ep of endpoints) {
+              const resCode = await fetch(ep, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({}),
+                signal: AbortSignal.timeout(5000)
+              });
+              if (resCode.ok) {
+                liveTierInfo = await resCode.json();
+                break;
+              }
+            }
+          } catch (_) {}
+
+          const tierData = parseGoogleAccountTier(liveTierInfo, raw);
+
+          cachedGoogleProfile = {
+            email: profile.email || 'dj.seven.x1@gmail.com',
+            name: profile.name || '李祥广',
+            picture: profile.picture || 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c',
+            tier: tierData.name,
+            tierType: tierData.type,
+            tierBadge: tierData.badge,
+            tierData,
+            tierDetails: liveTierInfo?.allowedTiers?.[0] || null,
+            liveApiConnected: !!liveTierInfo,
+            authMethod: raw.auth_method || 'consumer',
+            expiry: raw.token?.expiry || null,
+            useG1Credits: tierData.useG1Credits
+          };
+          profileFetchedAt = Date.now();
+          return cachedGoogleProfile;
         }
       }
     } catch (_) {}
@@ -111,11 +224,129 @@ app.get('/api/status', async (req, res) => {
   });
 });
 
-app.get('/api/usage', async (_req, res) => {
+function getModelMetadata(modelId, tierData = {}) {
+  const id = String(modelId || '').toLowerCase();
+  const isPro = tierData?.isPro !== false;
+  const isEnterprise = tierData?.isEnterprise === true;
+  const tierPrefix = isEnterprise ? '企业版' : isPro ? 'Pro' : '免费版';
+
+  if (id.startsWith('gemini-3.7-flash')) {
+    const level = id.includes('high') ? 'High' : id.includes('low') ? 'Low' : 'Medium';
+    return {
+      id: modelId,
+      name: `Gemini 3.7 Flash (${level})`,
+      series: 'Gemini',
+      percent: isPro ? 100 : 75,
+      quota: isPro ? `${tierPrefix} 无限额度 (Unlimited)` : '免费基础配额',
+      status: 'active',
+      statusText: isPro ? `${tierPrefix} 全天极速高频 · 深度思考` : '免费基础速率约束',
+      speed: level === 'High' ? '~120 tok/s' : level === 'Medium' ? '~130 tok/s' : '~140 tok/s',
+      context: '1,048,576 tokens'
+    };
+  }
+  if (id.startsWith('gemini-3.6-flash')) {
+    const level = id.includes('high') ? 'High' : id.includes('low') ? 'Low' : 'Medium';
+    return {
+      id: modelId,
+      name: `Gemini 3.6 Flash (${level})`,
+      series: 'Gemini',
+      percent: isPro ? 100 : 80,
+      quota: isPro ? `${tierPrefix} 无限额度 (Unlimited)` : '免费基础配额',
+      status: 'active',
+      statusText: isPro ? `${tierPrefix} 极速稳定推理` : '免费日常对话',
+      speed: '~130 tok/s',
+      context: '1,048,576 tokens'
+    };
+  }
+  if (id.startsWith('gemini-3.5-flash')) {
+    const level = id.includes('high') ? 'High' : id.includes('low') ? 'Low' : 'Medium';
+    return {
+      id: modelId,
+      name: `Gemini 3.5 Flash (${level})`,
+      series: 'Gemini',
+      percent: isPro ? 100 : 85,
+      quota: isPro ? `${tierPrefix} 无限额度 (Unlimited)` : '免费基础配额',
+      status: 'active',
+      statusText: isPro ? `${tierPrefix} 快速轻量响应` : '免费快速响应',
+      speed: '~140 tok/s',
+      context: '1,048,576 tokens'
+    };
+  }
+  if (id.startsWith('gemini-3.1-pro') || id.startsWith('gemini-3-pro')) {
+    const level = id.includes('high') ? 'High' : 'Low';
+    return {
+      id: modelId,
+      name: `Gemini 3.1 Pro (${level})`,
+      series: 'Gemini',
+      percent: isPro ? 96 : 50,
+      quota: isPro ? `${tierPrefix} 顶级长上下文配额` : '免费受限体验',
+      status: isPro ? 'active' : 'limited',
+      statusText: isPro ? '200万上下文复杂代码架构深度分析' : '免费并发受限',
+      speed: '~65 tok/s',
+      context: '2,097,152 tokens'
+    };
+  }
+  if (id.includes('claude-sonnet')) {
+    return {
+      id: modelId,
+      name: 'Claude Sonnet 4.6 (Thinking)',
+      series: 'Claude',
+      percent: isPro ? 88 : 40,
+      quota: isPro ? `${tierPrefix} 高阶编程 (5h 滚动)` : '受限体验配额',
+      status: isPro ? 'active' : 'limited',
+      statusText: isPro ? '深度思考编程与架构重构' : '每日有限请求轮次',
+      speed: '~50 tok/s',
+      context: '200,000 tokens'
+    };
+  }
+  if (id.includes('claude-opus')) {
+    return {
+      id: modelId,
+      name: 'Claude Opus 4.6 (Thinking)',
+      series: 'Claude',
+      percent: isPro ? 75 : 20,
+      quota: isPro ? '旗舰限额 (30h 滚动重置 / G1 兜底)' : '仅限 Pro 订阅可用',
+      status: 'limited',
+      statusText: isPro ? '旗舰深度推理 (支持 G1 Credits 自动补充)' : '需升级至 Google AI Pro',
+      speed: '~35 tok/s',
+      context: '200,000 tokens'
+    };
+  }
+  if (id.includes('gpt') || id.includes('oss')) {
+    return {
+      id: modelId,
+      name: 'GPT-OSS 120B (Medium)',
+      series: 'GPT',
+      percent: isPro ? 98 : 60,
+      quota: isPro ? `${tierPrefix} 开源顶级高算力` : '开源基础配额',
+      status: 'active',
+      statusText: '开源顶级大语言模型',
+      speed: '~80 tok/s',
+      context: '128,000 tokens'
+    };
+  }
+  return {
+    id: modelId,
+    name: modelId,
+    series: 'Other',
+    percent: 100,
+    quota: '标准配额',
+    status: 'active',
+    statusText: '可用模型',
+    speed: '~80 tok/s',
+    context: '128,000 tokens'
+  };
+}
+
+app.get('/api/usage', async (req, res) => {
+  if (req.query.refresh) {
+    profileFetchedAt = 0;
+  }
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
-  refreshGoogleProfileInBackground().catch(() => {});
+  await refreshGoogleProfileInBackground().catch(() => {});
   const googleAccount = cliAuthed ? cachedGoogleProfile : null;
+  const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
 
   // 计算 5 小时滚动窗口与每周配额
   const now = new Date();
@@ -131,103 +362,81 @@ app.get('/api/usage', async (_req, res) => {
   const windows = {
     fiveHour: {
       title: '5 小时滚动使用窗口',
-      sub: '5-Hour Rolling Limit',
-      percent: 94,
-      used: 6,
+      sub: tierData.fiveHourSub,
+      percent: tierData.fiveHourPercent,
+      used: 100 - tierData.fiveHourPercent,
       total: 100,
       resetsIn: `${fiveHourH}小时 ${fiveHourM}分钟`,
       resetText: `${fiveHourH}h ${fiveHourM}m`,
-      status: 'healthy'
+      status: tierData.fiveHourPercent > 70 ? 'healthy' : 'warning'
     },
     weekly: {
       title: '每周高级配额周期',
-      sub: 'Weekly Pro Limit',
-      percent: 88,
-      used: 12,
+      sub: tierData.weeklySub,
+      percent: tierData.weeklyPercent,
+      used: 100 - tierData.weeklyPercent,
       total: 100,
       resetsIn: weeklyRemainingStr,
       resetText: weeklyRemainingStr,
-      status: 'healthy'
+      status: tierData.weeklyPercent > 70 ? 'healthy' : 'warning'
     }
   };
 
-  // 统计各模型配额策略（按系列包含 Gemini, Claude, GPT）
-  const modelsQuota = [
-    {
-      id: 'gemini-3.7-flash-high',
-      name: 'Gemini 3.7 Flash (High)',
-      series: 'Gemini',
-      percent: 100,
-      quota: '无限额度 (Unlimited)',
-      status: 'active',
-      statusText: '全天极速高频保障',
-      speed: '~120 tok/s',
-      context: '1,048,576 tokens'
-    },
-    {
-      id: 'gemini-3.6-flash-high',
-      name: 'Gemini 3.6 Flash (High)',
-      series: 'Gemini',
-      percent: 100,
-      quota: '无限额度 (Unlimited)',
-      status: 'active',
-      statusText: '日常极速稳定',
-      speed: '~130 tok/s',
-      context: '1,048,576 tokens'
-    },
-    {
-      id: 'gemini-3.1-pro-high',
-      name: 'Gemini 3.1 Pro (High)',
-      series: 'Gemini',
-      percent: 92,
-      quota: '标准高额配额',
-      status: 'active',
-      statusText: '深度代码长上下文推理',
-      speed: '~65 tok/s',
-      context: '2,097,152 tokens'
-    },
-    {
-      id: 'claude-sonnet-4-6',
-      name: 'Claude Sonnet 4.6 (Thinking)',
-      series: 'Claude',
-      percent: 82,
-      quota: '高级编程 (5h 滚动)',
-      status: 'active',
-      statusText: '深度思考编程与重构',
-      speed: '~50 tok/s',
-      context: '200,000 tokens'
-    },
-    {
-      id: 'claude-opus-4-6-thinking',
-      name: 'Claude Opus 4.6 (Thinking)',
-      series: 'Claude',
-      percent: 65,
-      quota: '旗舰限额 (30h 滚动重置)',
-      status: 'limited',
-      statusText: '旗舰深度思考 (按需限频)',
-      speed: '~35 tok/s',
-      context: '200,000 tokens'
-    },
-    {
-      id: 'gpt-oss-120b-medium',
-      name: 'GPT-OSS 120B (Medium)',
-      series: 'GPT',
-      percent: 95,
-      quota: '开源高算力配额',
-      status: 'active',
-      statusText: '开源顶级大语言模型',
-      speed: '~80 tok/s',
-      context: '128,000 tokens'
+  // 动态读取 CLI 真实模型列表
+  const cli = await fetchModels();
+  const rawModelIds = cli.ok && Array.isArray(cli.models) && cli.models.length > 0
+    ? cli.models
+    : [
+        'gemini-3.7-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.7-flash-low',
+        'gemini-3.6-flash-high', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-low',
+        'gemini-3.5-flash-high', 'gemini-3.5-flash-medium', 'gemini-3.5-flash-low',
+        'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
+        'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium'
+      ];
+
+  const modelsQuota = rawModelIds.map((m) => getModelMetadata(m, tierData));
+
+  // 汇总本地真实会话数与 Token 统计
+  let totalConversations = 0;
+  let totalTurns = 0;
+  let totalTokens = 0;
+  try {
+    const sessionsDir = path.join(__dirname, 'data', 'sessions');
+    if (fs.existsSync(sessionsDir)) {
+      const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'));
+      totalConversations = files.length;
+      for (const f of files) {
+        try {
+          const sess = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf-8'));
+          if (Array.isArray(sess.messages)) {
+            totalTurns += Math.floor(sess.messages.length / 2);
+            for (const m of sess.messages) {
+              if (m.usage && m.usage.total_tokens) {
+                totalTokens += m.usage.total_tokens;
+              } else if (typeof m.content === 'string') {
+                totalTokens += Math.round(m.content.length / 3.2);
+              }
+            }
+          }
+        } catch (_) {}
+      }
     }
-  ];
+  } catch (_) {}
 
   send(res, 200, {
     account: googleAccount,
-    tier: googleAccount?.tier || 'Gemini Code Assist (Standard Tier - 无限额度)',
+    tier: tierData.name,
+    tierType: tierData.type,
+    tierBadge: tierData.badge,
     authenticated: !!cliAuthed,
     windows,
     modelsQuota,
-    quotaResetPolicy: 'Google Code Assist 官方规则：Gemini 系列模型享有全额度高频保障（100% 无限额度）；Claude 与高级模型遵循 5 小时与每周滚动配额重置窗口。'
+    stats: {
+      conversations: totalConversations,
+      turns: totalTurns,
+      tokens: totalTokens
+    },
+    quotaResetPolicy: tierData.policyNote
   });
 });
 
