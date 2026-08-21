@@ -1060,21 +1060,21 @@ wss.on('connection', (ws, req) => {
     ws.send(JSON.stringify({ meta: { demo: false } }));
     ws.send(JSON.stringify({ delta: '​' }));
 
-    // 复用 Run Registry：如果已有同会话的后台任务（无论是在跑还是刚完成），直接回放历史并 attach
+    // 复用 Run Registry：如果已有同会话的后台任务
     let existingRun = activeRuns.get(convKey);
     if (existingRun) {
-      debugLog(`[ws/chat] attach to run ${convKey} (isRunning=${existingRun.isRunning}, done=${existingRun.done}, replaying ${existingRun.events.length} events)`);
-      for (const ev of existingRun.events) {
-        const match = ev.match(/^data: (.+)$/s);
-        if (match) {
-          try { ws.send(match[1]); } catch (_) {}
-        }
-      }
+      debugLog(`[ws/chat] attach to run ${convKey} (isRunning=${existingRun.isRunning}, done=${existingRun.done}, events=${existingRun.events.length})`);
       if (existingRun.done) {
-        try { ws.send(JSON.stringify({ done: true, conversationId: existingRun.conversationId })); } catch (_) {}
+        // run 已完成：不回放事件（历史已在 localStorage/服务端持久化），直接返回 idle
+        try { ws.send(JSON.stringify({ idle: true })); } catch (_) {}
         return;
       }
       if (existingRun.isRunning) {
+        // run 正在跑：回放所有错过的事件，然后挂接继续接收实时流
+        for (const ev of existingRun.events) {
+          const match = ev.match(/^data: (.+)$/s);
+          if (match) { try { ws.send(match[1]); } catch (_) {} }
+        }
         const wsListener = (chunk) => {
           const m = chunk.match(/^data: (.+)$/s);
           if (m) { try { ws.send(m[1]); } catch (_) {} }
