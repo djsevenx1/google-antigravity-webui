@@ -287,10 +287,12 @@ function renderLoginArea() {
     nameSpan.style.cssText = "font-size:12px;color:var(--text-primary);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;";
     userWrap.append(nameSpan);
 
-    if (tierType === 'pro') {
-      const proPill = el("span", "", "PRO");
-      proPill.style.cssText = "font-size:9.5px;font-weight:800;background:linear-gradient(135deg,#f59e0b,#8b5cf6);color:white;padding:1px 5px;border-radius:10px;line-height:1.2;box-shadow:0 1px 3px rgba(139,92,246,0.4);";
-      userWrap.append(proPill);
+    if (tierType) {
+      const pillText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
+      const pillBg = tierType === 'pro' ? 'linear-gradient(135deg,#f59e0b,#8b5cf6)' : tierType === 'enterprise' ? 'linear-gradient(135deg,#06b6d4,#3b82f6)' : '#64748b';
+      const tierPill = el("span", "", pillText);
+      tierPill.style.cssText = `font-size:9.5px;font-weight:800;background:${pillBg};color:white;padding:1px 5px;border-radius:10px;line-height:1.2;box-shadow:0 1px 3px rgba(0,0,0,0.2);`;
+      userWrap.append(tierPill);
     }
 
 
@@ -1346,21 +1348,25 @@ window.handlePluginOp = async function(op, name) {
 
 // Google Antigravity Model Usage & Quota Modal
 async function showUsageModal() {
+  const googleAcc = state.status?.googleAccount || {};
+  const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
+  const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
+
   openModal("📊 Google AI Pro 模型用量与配额中心", `
     <div class="usage-modal-wrap">
       <!-- 账号信息卡片 -->
       <div id="usage-account-card" class="usage-account-card">
         <div style="display:flex;align-items:center;gap:14px;">
-          <div id="usage-avatar-frame-wrap" class="usage-avatar-frame pro">
-            <span id="usage-avatar-crown" class="modal-avatar-crown">👑</span>
+          <div id="usage-avatar-frame-wrap" class="usage-avatar-frame ${tierType}">
+            <span id="usage-avatar-crown" class="modal-avatar-crown" style="display:${tierType === 'pro' ? 'block' : 'none'}">👑</span>
             <div id="usage-avatar-box" class="usage-avatar-box">
               <span class="usage-default-avatar">◇</span>
             </div>
-            <span id="usage-avatar-corner-badge" class="usage-avatar-corner-badge pro">PRO</span>
+            <span id="usage-avatar-corner-badge" class="usage-avatar-corner-badge ${tierType}">${badgeText}</span>
           </div>
           <div>
-            <div id="usage-user-name" style="font-weight:600;font-size:14.5px;color:var(--text-primary);">加载中...</div>
-            <div id="usage-user-email" style="font-size:12px;color:var(--text-muted);">正在连接 Google AI Pro 云端服务...</div>
+            <div id="usage-user-name" style="font-weight:600;font-size:14.5px;color:var(--text-primary);">${googleAcc.name || '加载中...'}</div>
+            <div id="usage-user-email" style="font-size:12px;color:var(--text-muted);">${googleAcc.email || '正在连接 Google AI Pro 云端服务...'}</div>
           </div>
         </div>
         <div id="usage-tier-badge" class="usage-tier-pill" style="background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(147,51,234,0.15));border:1px solid rgba(147,51,234,0.3);color:#818cf8;font-weight:600;">Google AI Pro (Gemini Advanced)</div>
