@@ -505,17 +505,19 @@ $("#session-search").addEventListener("input", (e) => {
   renderConvList();
 });
 
+
+
 // Markdown & Code Highlighting Parser with Continuous Streaming Thinking Support
 function formatMarkdown(text, isStreaming = false) {
   if (!text) return "";
   let processed = text.replace(/\u200b/g, "");
   
-  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> blocks
+  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> blocks (默认收纳折叠，用户点击可展开查看)
   processed = processed.replace(/<(?:thought|thinking)>([\s\S]*?)<\/(?:thought|thinking)>/gi, (match, p1) => {
-    return `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span>思考过程 (已折叠)</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
+    return `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
   });
 
-  // 2. Handle ACTIVE / UNCLOSED <thought> or <thinking> during streaming (Model is actively thinking!)
+  // 2. Handle ACTIVE / UNCLOSED <thought> or <thinking> during streaming (正在思考中时实时展开打印)
   let activeThinkingHtml = "";
   const thoughtMatch = processed.match(/<(?:thought|thinking)>([\s\S]*)$/i);
   if (thoughtMatch) {
@@ -523,7 +525,7 @@ function formatMarkdown(text, isStreaming = false) {
     const beforeThought = processed.substring(0, idx);
     const currentThought = thoughtMatch[1];
     
-    activeThinkingHtml = `<details class="thinking-block active" open><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="color:var(--accent);font-weight:500;">正在深度思考中...</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought)}<span class="streaming-cursor"></span></div></details>`;
+    activeThinkingHtml = `<details class="thinking-block active" open><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="color:var(--accent);font-weight:600;">正在实时深度思考中...</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought)}<span class="streaming-cursor"></span></div></details>`;
     processed = beforeThought;
   }
 
@@ -671,7 +673,14 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
       bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>`;
     } else {
       bubble.innerHTML = formatMarkdown(content);
-      if (tools && tools.length) { const toolHtml = tools.map(t => { const icon = t.tool === "run_command" ? "▶" : (t.tool === "view_file" ? "📄" : "🔧"); const label = t.tool === "run_command" ? "执行命令" : (t.tool === "view_file" ? "查看文件" : (t.tool || "工具")); return `<details class="tool-event-box"><summary><span class="tool-icon">${icon}</span> <span class="tool-label">${escapeHtml(label)}</span> <span class="tool-step">${escapeHtml(t.stepType || "")}</span></summary><div class="tool-detail">${escapeHtml(t.tip || "")}</div></details>`; }).join(""); bubble.innerHTML += toolHtml; }
+      if (tools && tools.length) {
+        const toolHtml = tools.map(t => {
+          const icon = t.tool === "run_command" ? "▶" : (t.tool === "view_file" ? "📄" : "🔧");
+          const label = t.tool === "run_command" ? "执行命令" : (t.tool === "view_file" ? "查看文件" : (t.tool || "工具"));
+          return `<details class="tool-event-box"><summary><span class="tool-icon">${icon}</span> <span class="tool-label">${escapeHtml(label)}</span> <span class="tool-step">${escapeHtml(t.stepType || "")}</span></summary><div class="tool-detail">${escapeHtml(t.tip || "")}</div></details>`;
+        }).join("");
+        bubble.innerHTML += toolHtml;
+      }
       if (!isStreaming && clean) {
         const durText = meta?.duration ? `${meta.duration}s` : '';
         const tokens = meta?.tokens || Math.max(1, Math.round(clean.length / 3.2));
