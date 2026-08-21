@@ -9,9 +9,6 @@
   <script defer src="/vendor/marked.min.js"></script>
   <script defer src="/vendor/highlight.min.js"></script>
   <script defer src="/vendor/lucide.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
-  <script defer src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 </head>
 <body>
   <!-- Header / Topbar -->
@@ -134,7 +131,6 @@
           <i data-lucide="download" style="width: 15px; height: 15px;"></i>
           <span>导出对话 (.md)</span>
         </button>
-        <button id="btn-terminal" class="sidebar-nav-btn" title="网页终端">
           <i data-lucide="terminal" style="width: 15px; height: 15px;"></i>
           <span>终端</span>
         </button>
@@ -239,13 +235,6 @@
     </main>
   </div>
 
-  <!-- 网页终端面板 -->
-  <div id="terminal-panel" class="terminal-panel hidden">
-    <div class="terminal-header">
-      <span>终端</span>
-      <button id="terminal-close" class="btn btn-ghost btn-icon" title="关闭终端">✕</button>
-    </div>
-    <div id="terminal-container" class="terminal-container"></div>
   </div>
 
   <!-- 文件管理面板 -->

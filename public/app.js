@@ -2503,49 +2503,6 @@ function renderAttachmentPreview() {
   });
 }
 
-// ── 网页终端（xterm.js + WebSocket /ws/terminal）──
-let term = null;
-let termFit = null;
-let termWs = null;
-
-function openTerminal() {
-  const panel = $("#terminal-panel");
-  if (!panel) return;
-  panel.classList.remove("hidden");
-  // 如果已创建，只 focus
-  if (term) { setTimeout(() => { term.focus(); termFit.fit(); }, 50); return; }
-  // 等待 xterm 库加载
-  if (typeof Terminal === 'undefined') { setTimeout(openTerminal, 200); return; }
-  term = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#0b0f17' } });
-  termFit = new FitAddon.FitAddon();
-  term.loadAddon(termFit);
-  term.open($("#terminal-container"));
-  termFit.fit();
-
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  termWs = new WebSocket(`${proto}//${location.host}/ws/terminal`);
-
-  termWs.onopen = () => {
-    termWs.send(JSON.stringify({ type: 'start', cols: term.cols, rows: term.rows, cwd: "/vol5/@apphome/claude code/workspace/google-antigravity-webui" }));
-    term.write('\r\n\x1b[32m连接成功，终端已启动\x1b[0m\r\n');
-  };
-  termWs.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'data') term.write(msg.data);
-    if (msg.type === 'exit') term.write(`\r\n\x1b[31m进程退出 (code=${msg.exitCode})\x1b[0m\r\n`);
-  };
-  termWs.onclose = () => term.write('\r\n\x1b[31m连接已断开\x1b[0m\r\n');
-  termWs.onerror = () => term.write('\r\n\x1b[31m连接错误\x1b[0m\r\n');
-
-  term.onData((data) => { if (termWs && termWs.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'input', data })); });
-  term.onResize((cols, rows) => { if (termWs && termWs.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'resize', cols, rows })); });
-
-  // 响应面板大小变化
-  new ResizeObserver(() => { if (termFit) termFit.fit(); }).observe($("#terminal-container"));
-}
-
-function closeTerminal() { $("#terminal-panel").classList.add("hidden"); }
-
 // ── 文件管理 ──
 async function openFilePanel() {
   $("#file-panel").classList.remove("hidden");
@@ -2607,10 +2564,7 @@ async function openFile(filePath) {
 }
 
 // 绑定按钮
-const btnTerminal = $("#btn-terminal");
 const btnFiles = $("#btn-files");
-if (btnTerminal) btnTerminal.addEventListener("click", openTerminal);
-if ($("#terminal-close")) $("#terminal-close").addEventListener("click", closeTerminal);
 if (btnFiles) btnFiles.addEventListener("click", openFilePanel);
 if ($("#file-close")) $("#file-close").addEventListener("click", () => $("#file-panel").classList.add("hidden"));
 if ($("#file-save")) $("#file-save").addEventListener("click", async () => {

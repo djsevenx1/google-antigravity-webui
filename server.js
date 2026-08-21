@@ -1284,57 +1284,6 @@ wss.on('connection', (ws, req) => {
   ws.on('error', () => debugLog('[ws/chat] socket error'));
 });
 
-// ── 网页终端（借鉴 CloudCLI：node-pty + WebSocket 双向传输）──
-const { spawn: ptySpawn } = createRequire(import.meta.url)('node-pty');
-const terminalSessions = new Map();
-
-wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, 'http://localhost');
-  if (url.pathname !== '/ws/terminal') return; // 只处理 /ws/terminal，/ws/chat 已上面处理
-
-  debugLog('[ws/terminal] client connected');
-  let ptyProcess = null;
-
-  ws.on('message', (rawData) => {
-    let msg;
-    try { msg = JSON.parse(rawData.toString()); } catch { return; }
-
-    if (msg.type === 'start') {
-      const cols = msg.cols || 80;
-      const rows = msg.rows || 24;
-      const cwd = msg.cwd || process.cwd();
-      const shell = process.env.SHELL || '/bin/bash';
-      ptyProcess = ptySpawn(shell, [], {
-        name: 'xterm-color',
-        cols, rows, cwd,
-        env: { ...process.env, TERM: 'xterm-256color' }
-      });
-      debugLog('[ws/terminal] started pid=' + ptyProcess.pid);
-
-      ptyProcess.onData((data) => {
-        try { ws.send(JSON.stringify({ type: 'data', data })); } catch (_) {}
-      });
-      ptyProcess.onExit((e) => {
-        try { ws.send(JSON.stringify({ type: 'exit', exitCode: e.exitCode })); } catch (_) {}
-        debugLog('[ws/terminal] exited code=' + e.exitCode);
-      });
-      ws.send(JSON.stringify({ type: 'ready' }));
-    }
-
-    if (msg.type === 'input' && ptyProcess) {
-      ptyProcess.write(msg.data);
-    }
-    if (msg.type === 'resize' && ptyProcess) {
-      try { ptyProcess.resize(msg.cols || 80, msg.rows || 24); } catch (_) {}
-    }
-  });
-
-  ws.on('close', () => {
-    if (ptyProcess) { try { ptyProcess.kill(); } catch (_) {} }
-    debugLog('[ws/terminal] client disconnected');
-  });
-  ws.on('error', () => debugLog('[ws/terminal] socket error'));
-});
 
 // ── 文件管理接口（补充：创建/删除/重命名/保存）──
 app.post('/api/workspace/file', async (req, res) => {
