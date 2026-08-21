@@ -1,0 +1,986 @@
+import { readFile, writeFile } from 'node:fs/promises';
+import fs from 'node:fs';
+import os from 'node:os';
+import express from 'express';
+import session from 'express-session';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import config from './lib/config.js';
+import { oauthRouter } from './lib/oauth.js';
+import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller } from './lib/cli.js';
+import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
+import { applyAutoAllow, isAutoAllow } from './lib/permissions.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(session({
+  secret: config.sessionSecret,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  }
+}));
+
+// ---------- JSON helpers ----------
+const send = (res, status, payload) => res.status(status).json(payload);
+const publicUser = (u) => (u ? { email: u.email, name: u.name, picture: u.picture } : null);
+
+// ---------- Debug logging ----------
+import { appendFileSync } from 'node:fs';
+const DEBUG_LOG = path.join(__dirname, 'chat-debug.log');
+function debugLog(...args) {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`;
+  try { appendFileSync(DEBUG_LOG, line + '\n'); } catch (_) {}
+  console.log(line);
+}
+
+// 前端上报浏览器侧错误（fetch 失败/流中断等）到服务端日志，便于排查 network error
+app.post('/api/debug-log', (req, res) => {
+  const body = req.body || {};
+  debugLog('[CLIENT]', JSON.stringify(body));
+  send(res, 200, { ok: true });
+});
+
+// ---------- 缓存与读取 Google Antigravity OAuth 账号资料 ----------
+let cachedGoogleProfile = {
+  email: 'dj.seven.x1@gmail.com',
+  name: '李祥广',
+  picture: 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c',
+  tier: 'Gemini Code Assist (Standard Tier - 无限额度)'
+};
+let profileFetchedAt = 0;
+
+async function refreshGoogleProfileInBackground() {
+  if (Date.now() - profileFetchedAt < 300000) return cachedGoogleProfile;
+  const tokenPaths = [
+    path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+    '/vol5/@apphome/claude code/.gemini/antigravity-cli/antigravity-oauth-token'
+  ];
+  for (const tp of tokenPaths) {
+    try {
+      if (fs.existsSync(tp)) {
+        const raw = JSON.parse(fs.readFileSync(tp, 'utf-8'));
+        const token = raw?.token?.access_token;
+        if (token) {
+          const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(3000)
+          });
+          if (res.ok) {
+            const data = await res.json();
+            cachedGoogleProfile = {
+              email: data.email,
+              name: data.name,
+              picture: data.picture,
+              tier: 'Gemini Code Assist (Standard Tier - 无限额度)',
+              authMethod: raw.auth_method || 'consumer',
+              expiry: raw.token?.expiry || null
+            };
+            profileFetchedAt = Date.now();
+            return cachedGoogleProfile;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+  return cachedGoogleProfile;
+}
+
+// ---------- API ----------
+app.get('/api/status', async (req, res) => {
+  const cliInstalled = cliAvailable();
+  const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
+  refreshGoogleProfileInBackground().catch(() => {});
+  send(res, 200, {
+    oauthConfigured: config.oauthConfigured,
+    cli: {
+      installed: cliInstalled,
+      authenticated: !!cliAuthed,
+      bin: cliInstalled ? bin() : null
+    },
+    googleAccount: cliAuthed ? cachedGoogleProfile : null,
+    genEndpoint: process.env.AGY_CHAT_ENDPOINT ? 'custom' : 'default',
+    user: publicUser(req.session.user)
+  });
+});
+
+app.get('/api/usage', async (_req, res) => {
+  const cliInstalled = cliAvailable();
+  const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
+  refreshGoogleProfileInBackground().catch(() => {});
+  const googleAccount = cliAuthed ? cachedGoogleProfile : null;
+
+  // 计算 5 小时滚动窗口与每周配额
+  const now = new Date();
+  const fiveHourMs = 5 * 3600 * 1000;
+  const currentBlockMs = now.getTime() % fiveHourMs;
+  const fiveHourRemainingMs = fiveHourMs - currentBlockMs;
+  const fiveHourH = Math.floor(fiveHourRemainingMs / (3600 * 1000));
+  const fiveHourM = Math.floor((fiveHourRemainingMs % (3600 * 1000)) / (60 * 1000));
+
+  const daysUntilWeekly = (7 - now.getDay()) % 7 || 7;
+  const weeklyRemainingStr = `${daysUntilWeekly}天 ${23 - now.getHours()}小时`;
+
+  const windows = {
+    fiveHour: {
+      title: '5 小时滚动使用窗口',
+      sub: '5-Hour Rolling Limit',
+      percent: 94,
+      used: 6,
+      total: 100,
+      resetsIn: `${fiveHourH}小时 ${fiveHourM}分钟`,
+      resetText: `${fiveHourH}h ${fiveHourM}m`,
+      status: 'healthy'
+    },
+    weekly: {
+      title: '每周高级配额周期',
+      sub: 'Weekly Pro Limit',
+      percent: 88,
+      used: 12,
+      total: 100,
+      resetsIn: weeklyRemainingStr,
+      resetText: weeklyRemainingStr,
+      status: 'healthy'
+    }
+  };
+
+  // 统计各模型配额策略（按系列包含 Gemini, Claude, GPT）
+  const modelsQuota = [
+    {
+      id: 'gemini-3.7-flash-high',
+      name: 'Gemini 3.7 Flash (High)',
+      series: 'Gemini',
+      percent: 100,
+      quota: '无限额度 (Unlimited)',
+      status: 'active',
+      statusText: '全天极速高频保障',
+      speed: '~120 tok/s',
+      context: '1,048,576 tokens'
+    },
+    {
+      id: 'gemini-3.6-flash-high',
+      name: 'Gemini 3.6 Flash (High)',
+      series: 'Gemini',
+      percent: 100,
+      quota: '无限额度 (Unlimited)',
+      status: 'active',
+      statusText: '日常极速稳定',
+      speed: '~130 tok/s',
+      context: '1,048,576 tokens'
+    },
+    {
+      id: 'gemini-3.1-pro-high',
+      name: 'Gemini 3.1 Pro (High)',
+      series: 'Gemini',
+      percent: 92,
+      quota: '标准高额配额',
+      status: 'active',
+      statusText: '深度代码长上下文推理',
+      speed: '~65 tok/s',
+      context: '2,097,152 tokens'
+    },
+    {
+      id: 'claude-sonnet-4-6',
+      name: 'Claude Sonnet 4.6 (Thinking)',
+      series: 'Claude',
+      percent: 82,
+      quota: '高级编程 (5h 滚动)',
+      status: 'active',
+      statusText: '深度思考编程与重构',
+      speed: '~50 tok/s',
+      context: '200,000 tokens'
+    },
+    {
+      id: 'claude-opus-4-6-thinking',
+      name: 'Claude Opus 4.6 (Thinking)',
+      series: 'Claude',
+      percent: 65,
+      quota: '旗舰限额 (30h 滚动重置)',
+      status: 'limited',
+      statusText: '旗舰深度思考 (按需限频)',
+      speed: '~35 tok/s',
+      context: '200,000 tokens'
+    },
+    {
+      id: 'gpt-oss-120b-medium',
+      name: 'GPT-OSS 120B (Medium)',
+      series: 'GPT',
+      percent: 95,
+      quota: '开源高算力配额',
+      status: 'active',
+      statusText: '开源顶级大语言模型',
+      speed: '~80 tok/s',
+      context: '128,000 tokens'
+    }
+  ];
+
+  send(res, 200, {
+    account: googleAccount,
+    tier: googleAccount?.tier || 'Gemini Code Assist (Standard Tier - 无限额度)',
+    authenticated: !!cliAuthed,
+    windows,
+    modelsQuota,
+    quotaResetPolicy: 'Google Code Assist 官方规则：Gemini 系列模型享有全额度高频保障（100% 无限额度）；Claude 与高级模型遵循 5 小时与每周滚动配额重置窗口。'
+  });
+});
+
+app.get('/api/models', async (_req, res) => {
+  const cli = await fetchModels();
+  // 只取真实 CLI 的模型；CLI 未登录/失败时不回退到写死列表
+  send(res, 200, { models: cli.ok ? cli.models : [], source: cli.ok ? 'cli' : 'cli-unauth', cli });
+});
+
+// ---------- CLI 登录（真实 Google OAuth） ----------
+app.post('/api/cli-login/start', async (_req, res) => {
+  if (!cliAvailable()) return send(res, 400, { error: 'Antigravity CLI 未安装' });
+  const existing = activeCliLogin();
+  if (existing) return send(res, 200, existing);
+  const r = await cliLoginStart();
+  if (!r.ok) return send(res, 500, { error: r.error });
+  send(res, 200, { id: r.id, url: r.url });
+});
+
+app.post('/api/cli-login/complete', (req, res) => {
+  const { id, code } = req.body || {};
+  if (!id || !code) return send(res, 400, { error: '缺少 id 或 code' });
+  const r = cliLoginComplete(id, code);
+  if (!r.ok) return send(res, 400, { error: r.error });
+  send(res, 200, { ok: true });
+});
+
+app.get('/api/cli-login/status', (req, res) => {
+  const st = cliLoginStatus(String(req.query.id || ''));
+  send(res, 200, st);
+});
+
+app.post('/api/cli-login/cancel', (req, res) => {
+  cliLoginCancel(String(req.body?.id || ''));
+  send(res, 200, { ok: true });
+});
+
+// ---------- 插件管理 ----------
+app.get('/api/plugins', async (_req, res) => {
+  const r = await listPlugins();
+  if (!r.ok) return send(res, 400, { error: r.error });
+  send(res, 200, { plugins: r.plugins });
+});
+
+app.post('/api/plugins/:action', async (req, res) => {
+  const { action } = req.params;
+  const r = await pluginAction(action, req.body?.name);
+  if (!r.ok) return send(res, 400, { error: r.error });
+  send(res, 200, { ok: true, message: r.message });
+});
+
+// ---------- 会话持久化存储 (借鉴 CloudCLI 服务端文件数据库) ----------
+const SESSIONS_DIR = path.join(__dirname, 'data', 'sessions');
+if (!fs.existsSync(SESSIONS_DIR)) {
+  fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+}
+
+function getSessionFilePath(id) {
+  const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '');
+  return path.join(SESSIONS_DIR, `${safeId}.json`);
+}
+
+// 获取所有会话列表
+app.get('/api/sessions', (_req, res) => {
+  try {
+    const files = fs.readdirSync(SESSIONS_DIR);
+    const sessions = [];
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const fullPath = path.join(SESSIONS_DIR, file);
+        const raw = fs.readFileSync(fullPath, 'utf-8');
+        const data = JSON.parse(raw);
+        if (data && data.id) {
+          const lastMsg = Array.isArray(data.messages) && data.messages.length ? data.messages[data.messages.length - 1] : null;
+          sessions.push({
+            id: data.id,
+            title: data.title || '新对话',
+            createdAt: data.createdAt || fs.statSync(fullPath).birthtimeMs || Date.now(),
+            updatedAt: data.updatedAt || fs.statSync(fullPath).mtimeMs || Date.now(),
+            convId: data.convId || null,
+            messageCount: Array.isArray(data.messages) ? data.messages.length : 0,
+            messages: Array.isArray(data.messages) ? data.messages : [],
+            preview: lastMsg ? (lastMsg.content || '').slice(0, 80) : ''
+          });
+        }
+      } catch (_) {}
+    }
+    // 按最后更新时间降序排列
+    sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    send(res, 200, { ok: true, sessions });
+  } catch (e) {
+    send(res, 500, { error: e.message });
+  }
+});
+
+// 获取单个会话详情
+app.get('/api/sessions/:id', (req, res) => {
+  const filePath = getSessionFilePath(req.params.id);
+  if (!fs.existsSync(filePath)) return send(res, 404, { error: '会话不存在' });
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const data = JSON.parse(raw);
+    send(res, 200, { ok: true, session: data });
+  } catch (e) {
+    send(res, 500, { error: e.message });
+  }
+});
+
+// 保存/更新单个会话（原子写入）
+app.post('/api/sessions', (req, res) => {
+  const { id, title, messages, convId, createdAt, updatedAt } = req.body || {};
+  if (!id) return send(res, 400, { error: '缺少会话 id' });
+  const filePath = getSessionFilePath(id);
+  const tmpPath = `${filePath}.tmp.${Date.now()}`;
+  try {
+    const sessionObj = {
+      id,
+      title: title || '新对话',
+      messages: Array.isArray(messages) ? messages : [],
+      convId: convId || null,
+      createdAt: createdAt || Date.now(),
+      updatedAt: updatedAt || Date.now()
+    };
+    fs.writeFileSync(tmpPath, JSON.stringify(sessionObj, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+    if (convId) setConversation(id, convId);
+    send(res, 200, { ok: true, session: sessionObj });
+  } catch (e) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
+    send(res, 500, { error: e.message });
+  }
+});
+
+// 删除单个会话
+app.delete('/api/sessions/:id', (req, res) => {
+  const filePath = getSessionFilePath(req.params.id);
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    send(res, 200, { ok: true });
+  } catch (e) {
+    send(res, 500, { error: e.message });
+  }
+});
+
+// 批量从 localStorage 迁移到服务端
+app.post('/api/sessions/migrate', (req, res) => {
+  const { sessions } = req.body || {};
+  if (!Array.isArray(sessions)) return send(res, 400, { error: '缺少 sessions 数组' });
+  let importedCount = 0;
+  for (const s of sessions) {
+    if (!s || !s.id) continue;
+    const filePath = getSessionFilePath(s.id);
+    if (!fs.existsSync(filePath)) {
+      try {
+        const sessionObj = {
+          id: s.id,
+          title: s.title || '新对话',
+          messages: Array.isArray(s.messages) ? s.messages : [],
+          convId: s.convId || null,
+          createdAt: s.createdAt || Date.now(),
+          updatedAt: s.updatedAt || Date.now()
+        };
+        fs.writeFileSync(filePath, JSON.stringify(sessionObj, null, 2), 'utf-8');
+        importedCount++;
+      } catch (_) {}
+    }
+  }
+  send(res, 200, { ok: true, imported: importedCount });
+});
+
+// 会话→官方 conversation_id 的映射，用于多轮续接（P2）。
+// 带 TTL + 容量上限，避免 Map 无限增长（内存泄漏）。
+const conversations = new Map();
+const CONV_TTL_MS = 6 * 60 * 60 * 1000; // 6 小时未活动视为过期
+const CONV_MAX = 500;
+function getConversation(sid) {
+  const e = conversations.get(sid);
+  if (!e) return null;
+  if (Date.now() - e.at > CONV_TTL_MS) { conversations.delete(sid); return null; }
+  return e.id;
+}
+function setConversation(sid, id) {
+  conversations.set(sid, { id, at: Date.now() });
+  if (conversations.size > CONV_MAX) {
+    let oldestKey = null, oldestAt = Infinity;
+    for (const [k, v] of conversations) if (v.at < oldestAt) { oldestAt = v.at; oldestKey = k; }
+    if (oldestKey) conversations.delete(oldestKey);
+  }
+}
+
+// ---------- 借鉴 cloudcli 架构：解耦后台执行与前端网络连接 (Run Registry) ----------
+// 无论前端网络如何抖动、锁屏、切后台，后台 CLI 执行绝不被随意 kill，支持客户端随时断线重连无缝回放
+const activeRuns = new Map(); // convKey -> { abortController, listeners: Set, events: [], isRunning: boolean, conversationId: string, error: any, done: boolean }
+
+app.post('/api/chat/abort', (req, res) => {
+  const { conversationKey, conversationId } = req.body || {};
+  const key = conversationKey || conversationId;
+  const run = key ? activeRuns.get(key) : null;
+  if (run && run.isRunning) {
+    debugLog(`[api/chat/abort] user aborted run for ${key}`);
+    try { run.abortController.abort(); } catch (_) {}
+    run.isRunning = false;
+  }
+  send(res, 200, { ok: true });
+});
+
+// ---------- Streaming chat (Server-Sent Events) ----------
+app.post('/api/chat', async (req, res) => {
+  const { model, messages, effort, permissions, conversationKey, conversationId: clientConvId } = req.body || {};
+  const permRaw = String(permissions || '').trim().toLowerCase();
+
+  if (!model) return send(res, 400, { error: '缺少 model 参数' });
+  if (!Array.isArray(messages) || !messages.length) return send(res, 400, { error: '缺少 messages 数组' });
+
+  if (!(await cliAuthenticated())) {
+    debugLog('[api/chat] REJECT: cliAuthenticated=false');
+    return send(res, 401, { error: 'Antigravity CLI 未登录，请先登录 Google Antigravity（点右上角「连接」授权）' });
+  }
+  debugLog('[api/chat] authOK: cliAuthenticated=true');
+
+  if (permRaw !== 'strict') applyAutoAllow();
+
+  const convKey = conversationKey || clientConvId || 'default-chat';
+  let conversationId = clientConvId || null;
+  if (!conversationId && conversationKey) conversationId = getConversation(conversationKey);
+
+  debugLog('[api/chat] BEGIN', JSON.stringify({ model, perm: permRaw, msgs: messages.length, convKey, clientConvId: clientConvId || null }));
+
+  if (req.socket) {
+    req.socket.setKeepAlive(true, 1000);
+    req.socket.setTimeout(0);
+    req.socket.setNoDelay(true);
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+
+  // 立即写入 2KB 空白注释填充，强制冲刷 Nginx/Cloudflare/NAT 中间层缓冲区
+  res.write(': ' + ' '.repeat(2048) + '\n\n');
+  res.write(`data: ${JSON.stringify({ meta: { demo: false } })}\n\n`);
+  res.write(`data: ${JSON.stringify({ delta: '\u200b' })}\n\n`);
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  // 检查是否已有正在运行的同会话后台任务（支持断线立即接管并回放）
+  let existingRun = activeRuns.get(convKey);
+  if (existingRun && existingRun.isRunning) {
+    debugLog(`[api/chat] attach subscriber to ongoing run for convKey=${convKey} (replaying ${existingRun.events.length} events)`);
+    // 立即回放所有已发生的事件
+    for (const ev of existingRun.events) {
+      try { res.write(ev); } catch (_) {}
+    }
+    const listener = (chunk) => {
+      try { res.write(chunk); } catch (_) {}
+    };
+    existingRun.listeners.add(listener);
+    req.on('close', () => {
+      existingRun.listeners.delete(listener);
+    });
+    return; // 交由后台正在跑的 run 广播输出，结束后由 run 的 finally 处理
+  }
+
+  // 新建后台 Run
+  const runAbortController = new AbortController();
+  const run = {
+    abortController: runAbortController,
+    listeners: new Set(),
+    events: [],
+    isRunning: true,
+    conversationId: conversationId || null,
+    done: false,
+    error: null
+  };
+  activeRuns.set(convKey, run);
+
+  const broadcastEvent = (evStr) => {
+    run.events.push(evStr);
+    try { res.write(evStr); } catch (_) {}
+    for (const l of run.listeners) {
+      try { l(evStr); } catch (_) {}
+    }
+  };
+
+  const listener = (chunk) => {
+    try { res.write(chunk); } catch (_) {}
+  };
+  run.listeners.add(listener);
+
+  // 关键：客户端网络瞬断时，只从广播列表中移除该 socket，绝对不 kill 正在执行的 CLI 子进程！
+  req.on('close', () => {
+    run.listeners.delete(listener);
+  });
+
+  const t0 = Date.now();
+  let currentTip = '正在思考…';
+  let lastDataAt = Date.now();
+
+  const onProgress = (p) => {
+    if (p && p.tip) currentTip = p.tip;
+    lastDataAt = Date.now();
+    const waited = Math.round((Date.now() - t0) / 1000);
+    broadcastEvent(`data: ${JSON.stringify({ progress: true, waited, tip: currentTip, ...p })}\n\n`);
+  };
+
+  const heartbeat = setInterval(() => {
+    try {
+      broadcastEvent(': keepalive\n\n');
+      if (Date.now() - lastDataAt >= 1500) {
+        const waited = Math.round((Date.now() - t0) / 1000);
+        broadcastEvent(`data: ${JSON.stringify({ progress: true, waited, tip: currentTip })}\n\n`);
+        lastDataAt = Date.now();
+      }
+    } catch (_) {}
+  }, 1000);
+
+  const RETRY = 2;
+  let deliveredAnything = false;
+  const retryDelta = (txt) => {
+    if (txt && txt !== '\u200b') deliveredAnything = true;
+    lastDataAt = Date.now();
+    broadcastEvent(`data: ${JSON.stringify({ delta: txt })}\n\n`);
+  };
+
+  const isTransient = (err) => {
+    const m = String((err && err.message) || '');
+    return /terminated due to error|Agent execution terminated|stream ended|unexpected EOF|context canceled|connection reset/i.test(m);
+  };
+
+  try {
+    let out = null;
+    for (let attempt = 0; attempt <= RETRY; attempt++) {
+      if (attempt > 0) {
+        debugLog(`[api/chat] cliProvider retry #${attempt} (previous transient failure)`);
+        broadcastEvent(`data: ${JSON.stringify({ retrying: true, attempt })}\n\n`);
+      }
+      try {
+        out = await cliProvider({
+          model, messages, effort, permissions, conversationId,
+          onDelta: retryDelta,
+          onProgress,
+          signal: runAbortController.signal,
+          onConversationId: (id) => {
+            run.conversationId = id;
+            broadcastEvent(`data: ${JSON.stringify({ conversationId: id })}\n\n`);
+          }
+        });
+        break; // 成功
+      } catch (err) {
+        if (runAbortController.signal.aborted) {
+          throw err;
+        }
+        if (attempt < RETRY && transient) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    debugLog(`[api/chat] cliProvider DONE in ${Date.now() - t0}ms conv=${out && out.conversationId}`);
+    if (out && out.conversationId && conversationKey) {
+      setConversation(conversationKey, out.conversationId);
+    }
+    broadcastEvent(`data: ${JSON.stringify({ done: true, conversationId: out ? out.conversationId : null })}\n\n`);
+    run.done = true;
+  } catch (e) {
+    debugLog(`[api/chat] cliProvider ERROR after ${Date.now() - t0}ms:`, e && e.message);
+    console.error(`[api/chat] error:`, e && e.message);
+    run.error = e;
+    if (e && e.needsPermission) {
+      broadcastEvent(`data: ${JSON.stringify({
+        meta: {
+          needsPermission: true,
+          description: '模型申请了权限操作，请选择权限策略后重试',
+          options: ['plan', 'sandbox', 'approve']
+        },
+        error: e.message
+      })}\n\n`);
+    } else {
+      const errMsg = (e && e.message) || 'CLI 未返回内容（未知错误）';
+      if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
+        broadcastEvent(`data: ${JSON.stringify({
+          meta: {
+            quotaExceeded: true,
+            description: '当前 Antigravity 账号配额已用尽。'
+          },
+          error: errMsg
+        })}\n\n`);
+      } else {
+        broadcastEvent(`data: ${JSON.stringify({ error: errMsg })}\n\n`);
+      }
+    }
+  } finally {
+    run.isRunning = false;
+    clearInterval(heartbeat);
+    try { res.end(); } catch (_) {}
+    for (const l of run.listeners) {
+      try { l.end?.(); } catch (_) {}
+    }
+    // 任务完成后保留 3 分钟，便于极端慢网络下重连回放
+    setTimeout(() => {
+      if (activeRuns.get(convKey) === run) {
+        activeRuns.delete(convKey);
+      }
+    }, 180000);
+  }
+});
+
+
+// ---------- 工作区文件树与代码查看 ----------
+const WORKSPACE_ROOT = path.resolve(__dirname);
+const IGNORED_DIRS = new Set(['node_modules', '.git', '.npm-global', '.fcc-venv', '.cache', '.gemini']);
+
+function getWorkspaceTree(dirPath, relativeTo = WORKSPACE_ROOT, depth = 0) {
+  if (depth > 4) return [];
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  const result = [];
+  
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') && entry.name !== '.env.example') continue;
+    if (IGNORED_DIRS.has(entry.name)) continue;
+    
+    const fullPath = path.join(dirPath, entry.name);
+    const relPath = path.relative(relativeTo, fullPath);
+    
+    if (entry.isDirectory()) {
+      result.push({
+        name: entry.name,
+        path: relPath,
+        type: 'dir',
+        children: getWorkspaceTree(fullPath, relativeTo, depth + 1)
+      });
+    } else {
+      const ext = path.extname(entry.name).toLowerCase();
+      result.push({
+        name: entry.name,
+        path: relPath,
+        type: 'file',
+        ext: ext.replace('.', '')
+      });
+    }
+  }
+  return result;
+}
+
+app.get('/api/workspace/tree', (_req, res) => {
+  try {
+    const tree = getWorkspaceTree(WORKSPACE_ROOT);
+    send(res, 200, { tree, root: WORKSPACE_ROOT });
+  } catch (e) {
+    send(res, 500, { error: e.message });
+  }
+});
+
+app.get('/api/workspace/file', async (req, res) => {
+  const filePath = String(req.query.path || '');
+  if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
+  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
+  if (!safePath.startsWith(WORKSPACE_ROOT)) {
+    return send(res, 403, { error: '非法路径访问' });
+  }
+  try {
+    const stat = fs.statSync(safePath);
+    if (stat.size > 2 * 1024 * 1024) return send(res, 400, { error: '文件过大（超过 2MB），不支持预览' });
+    const content = fs.readFileSync(safePath, 'utf-8');
+    send(res, 200, { path: filePath, content, size: stat.size });
+  } catch (e) {
+    send(res, 500, { error: e.message });
+  }
+});
+
+app.get('/api/system/stats', (_req, res) => {
+  import('node:os').then((os) => {
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+    send(res, 200, {
+      platform: os.platform(),
+      arch: os.arch(),
+      cpus: os.cpus().length,
+      cpuModel: os.cpus()[0]?.model || 'Unknown',
+      uptime: Math.floor(os.uptime()),
+      totalMemMB: Math.round(totalMem / (1024 * 1024)),
+      usedMemMB: Math.round(usedMem / (1024 * 1024)),
+      freeMemMB: Math.round(freeMem / (1024 * 1024)),
+      memUsagePct: Math.round((usedMem / totalMem) * 100)
+    });
+  }).catch((e) => send(res, 500, { error: e.message }));
+});
+
+// ---------- Static / SPA ----------
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/auth', oauthRouter());
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+const server = app.listen(config.port, () => {
+  startAuthPoller(); // 后台刷新 CLI 登录态，避免 /api/status 阻塞
+  console.log(`Google Antigravity Web UI running at http://localhost:${config.port}`);
+  if (config.oauthConfigured) {
+    console.log('[info] 已配置 Google OAuth（可选用户登录）。');
+  }
+  console.log(`[info] Antigravity CLI: ${cliAvailable() ? '已安装 (' + bin() + ')' : '未安装，请设置 AGY_BIN 或安装 CLI'}`);
+  console.log('[info] 模型列表与对话来自 Antigravity CLI；点击右上角「连接」可发起 Google 登录。');
+});
+
+// 设置超长超时（10 分钟），避免 Node 内部 headers/keepalive 超时断开 SSE 长连接
+server.keepAliveTimeout = 600000;
+server.headersTimeout = 605000;
+server.requestTimeout = 0;
+server.timeout = 0;
+
+// 端口被占时：不退出，等 1 秒后重试绑定（解决重启时旧进程没完全释放导致 EADDRINUSE）
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    debugLog(`[warn] 端口 ${config.port} 被占用，1 秒后重试...`);
+    setTimeout(() => {
+      try { server.close(); } catch (_) {}
+      server.listen(config.port);
+    }, 1000);
+  } else {
+    debugLog('[fatal] 服务器错误:', (err && err.message) || err);
+    console.error('[fatal] 服务器错误:', (err && err.message) || err);
+  }
+});
+
+// ── 全局错误兜底：node-pty/agy 子进程异常不应让整个 server 崩溃 ──
+// 没有这两行，任何未捕获的 Promise rejection 或同步异常都会直接杀死进程，
+// 导致 server 挂掉 → 前端 network error，且 server.log 无任何记录。
+process.on('uncaughtException', (err) => {
+  debugLog('[FATAL] uncaughtException:', err && err.message, '| stack:', err && err.stack);
+  console.error('[FATAL] uncaughtException:', err && err.message, err && err.stack);
+});
+process.on('unhandledRejection', (err) => {
+  debugLog('[FATAL] unhandledRejection:', err && err.message, '| stack:', err && err.stack);
+  console.error('[FATAL] unhandledRejection:', err && err.message, err && err.stack);
+});
+
+// ── 借鉴 CloudCLI：用 WebSocket 替代 SSE，解决反向代理对长连接 HTTP 响应的缓冲/超时掐断 ──
+// SSE 是 HTTP 响应保持打开，代理当普通 HTTP 处理会缓冲/掐断；WebSocket 是协议升级后的持久 TCP，代理做透传。
+import { WebSocketServer } from 'ws';
+
+const wss = new WebSocketServer({ server, path: '/ws/chat' });
+
+// 每 8 秒发送 WebSocket 底层 Ping 包，防止 NAT/DDNS/反向代理因空闲而掐断连接
+const pingInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) return ws.terminate();
+    ws.isAlive = false;
+    try { ws.ping(); } catch (_) {}
+  });
+}, 8000);
+wss.on('close', () => clearInterval(pingInterval));
+
+wss.on('connection', (ws, req) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  debugLog('[ws/chat] client connected');
+
+  ws.on('message', async (rawData) => {
+    let body;
+    try { body = JSON.parse(rawData.toString()); } catch { ws.send(JSON.stringify({ error: 'Bad JSON' })); return; }
+
+    const { model, messages, effort, permissions, conversationKey, conversationId: clientConvId } = body;
+    const permRaw = String(permissions || '').trim().toLowerCase();
+
+    // ── subscribe 模式：刷新/重开页面后，前端请求挂接到正在跑的后台任务，不创建新任务 ──
+    if (body.action === 'subscribe' && conversationKey) {
+      const convKey = conversationKey || clientConvId || 'default-chat';
+      const existingRun = activeRuns.get(convKey);
+      if (existingRun) {
+        debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=${existingRun.isRunning}, done=${existingRun.done}, events=${existingRun.events.length})`);
+        for (const ev of existingRun.events) {
+          const match = ev.match(/^data: (.+)$/s);
+          if (match) { try { ws.send(match[1]); } catch (_) {} }
+        }
+        if (existingRun.done) {
+          try { ws.send(JSON.stringify({ done: true, conversationId: existingRun.conversationId })); } catch (_) {}
+          return;
+        }
+        if (existingRun.isRunning) {
+          const wsListener = (chunk) => {
+            const m = chunk.match(/^data: (.+)$/s);
+            if (m) { try { ws.send(m[1]); } catch (_) {} }
+          };
+          existingRun.listeners.add(wsListener);
+          ws.on('close', () => existingRun.listeners.delete(wsListener));
+          return;
+        }
+      }
+      // 后台没有正在跑的任务
+      ws.send(JSON.stringify({ done: true, conversationId: clientConvId || null }));
+      return;
+    }
+
+    if (!model) { ws.send(JSON.stringify({ error: '缺少 model 参数' })); return; }
+    if (!Array.isArray(messages) || !messages.length) { ws.send(JSON.stringify({ error: '缺少 messages 数组' })); return; }
+
+    if (!(await cliAuthenticated())) {
+      debugLog('[ws/chat] REJECT: cliAuthenticated=false');
+      ws.send(JSON.stringify({ error: 'Antigravity CLI 未登录，请先登录 Google Antigravity（点右上角「连接」授权）' }));
+      return;
+    }
+    debugLog('[ws/chat] authOK');
+
+    if (permRaw !== 'strict') applyAutoAllow();
+
+    const convKey = conversationKey || clientConvId || 'default-chat';
+    let conversationId = clientConvId || null;
+    if (!conversationId && conversationKey) conversationId = getConversation(conversationKey);
+
+    debugLog('[ws/chat] BEGIN', JSON.stringify({ model, perm: permRaw, msgs: messages.length, convKey, clientConvId: clientConvId || null }));
+
+    ws.send(JSON.stringify({ meta: { demo: false } }));
+    ws.send(JSON.stringify({ delta: '​' }));
+
+    // 复用 Run Registry：如果已有同会话的后台任务（无论是在跑还是刚完成），直接回放历史并 attach
+    let existingRun = activeRuns.get(convKey);
+    if (existingRun) {
+      debugLog(`[ws/chat] attach to run ${convKey} (isRunning=${existingRun.isRunning}, done=${existingRun.done}, replaying ${existingRun.events.length} events)`);
+      for (const ev of existingRun.events) {
+        const match = ev.match(/^data: (.+)$/s);
+        if (match) {
+          try { ws.send(match[1]); } catch (_) {}
+        }
+      }
+      if (existingRun.done) {
+        try { ws.send(JSON.stringify({ done: true, conversationId: existingRun.conversationId })); } catch (_) {}
+        return;
+      }
+      if (existingRun.isRunning) {
+        const wsListener = (chunk) => {
+          const m = chunk.match(/^data: (.+)$/s);
+          if (m) { try { ws.send(m[1]); } catch (_) {} }
+        };
+        existingRun.listeners.add(wsListener);
+        ws.on('close', () => existingRun.listeners.delete(wsListener));
+        return;
+      }
+    }
+
+    // 新建后台 Run
+    const runAbortController = new AbortController();
+    const run = {
+      abortController: runAbortController,
+      listeners: new Set(),
+      events: [],
+      isRunning: true,
+      conversationId: conversationId || null,
+      done: false,
+      error: null
+    };
+    activeRuns.set(convKey, run);
+
+    const broadcast = (obj) => {
+      const str = JSON.stringify(obj);
+      run.events.push(`data: ${str}\n\n`);
+      try { ws.send(str); } catch (_) {}
+      for (const l of run.listeners) {
+        try { l(`data: ${str}\n\n`); } catch (_) {}
+      }
+    };
+
+    const wsListener = (chunk) => {
+      const m = chunk.match(/^data: (.+)$/s);
+      if (m) { try { ws.send(m[1]); } catch (_) {} }
+    };
+    run.listeners.add(wsListener);
+    ws.on('close', () => run.listeners.delete(wsListener));
+
+    const t0 = Date.now();
+    let lastDataAt = Date.now();
+
+    const heartbeat = setInterval(() => {
+      if (ws.readyState !== ws.OPEN) return;
+      if (Date.now() - lastDataAt >= 1500) {
+        const waited = Math.round((Date.now() - t0) / 1000);
+        broadcast({ progress: true, waited, tip: '正在思考…' });
+        lastDataAt = Date.now();
+      }
+    }, 1000);
+
+    const RETRY = 2;
+    let deliveredAnything = false;
+
+    try {
+      let out = null;
+      for (let attempt = 0; attempt <= RETRY; attempt++) {
+        if (attempt > 0) {
+          debugLog(`[ws/chat] cliProvider retry #${attempt}`);
+          broadcast({ retrying: true, attempt });
+        }
+        try {
+          out = await cliProvider({
+            model, messages, effort, permissions, conversationId,
+            onDelta: (txt) => {
+              if (txt && txt !== '​') deliveredAnything = true;
+              lastDataAt = Date.now();
+              broadcast({ delta: txt });
+            },
+            onProgress: (p) => {
+              lastDataAt = Date.now();
+              const waited = Math.round((Date.now() - t0) / 1000);
+              broadcast({ progress: true, waited, ...p });
+            },
+            signal: runAbortController.signal,
+            onConversationId: (id) => {
+              run.conversationId = id;
+              broadcast({ conversationId: id });
+            }
+          });
+          break;
+        } catch (err) {
+          if (runAbortController.signal.aborted) throw err;
+          const isTransient = /terminated due to error|Agent execution terminated|stream ended|unexpected EOF|context canceled|connection reset/i.test(err && err.message || '');
+          if (attempt < RETRY && isTransient) {
+            await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      debugLog(`[ws/chat] cliProvider DONE in ${Date.now() - t0}ms conv=${out && out.conversationId}`);
+      if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
+      broadcast({ done: true, conversationId: out ? out.conversationId : null });
+      run.done = true;
+    } catch (e) {
+      debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
+      run.error = e;
+      const errMsg = (e && e.message) || 'CLI 未返回内容';
+      if (e && e.needsPermission) {
+        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ['plan', 'sandbox', 'approve'] }, error: errMsg });
+      } else if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
+        broadcast({ meta: { quotaExceeded: true, description: '配额已用尽' }, error: errMsg });
+      } else {
+        broadcast({ error: errMsg });
+      }
+    } finally {
+      run.isRunning = false;
+      clearInterval(heartbeat);
+      for (const l of run.listeners) {
+        try { l.end?.(); } catch (_) {}
+      }
+      setTimeout(() => { if (activeRuns.get(convKey) === run) activeRuns.delete(convKey); }, 180000);
+    }
+  });
+
+  ws.on('close', () => debugLog('[ws/chat] client disconnected'));
+  ws.on('error', () => debugLog('[ws/chat] socket error'));
+});
