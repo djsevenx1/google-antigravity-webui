@@ -898,7 +898,7 @@ app.post('/api/chat', async (req, res) => {
 
 
 // ---------- 工作区文件树与代码查看 ----------
-const WORKSPACE_ROOT = path.resolve(__dirname);
+const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 const IGNORED_DIRS = new Set(['node_modules', '.git', '.npm-global', '.fcc-venv', '.cache', '.gemini']);
 
 function getWorkspaceTree(dirPath, relativeTo = WORKSPACE_ROOT, depth = 0) {
