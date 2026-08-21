@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import express from 'express';
 import session from 'express-session';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +10,7 @@ import config from './lib/config.js';
 import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
-import { applyAutoAllow, isAutoAllow } from './lib/permissions.js';
+import { applyAutoAllow, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -23,7 +24,7 @@ app.use(session({
   cookie: {
     httpOnly: true,
     sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000
+    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 天会话
   }
 }));
 
@@ -41,11 +42,97 @@ function debugLog(...args) {
   console.log(line);
 }
 
+// ---------- WebUI 私有访问身份验证 (用户名/密码网关) ----------
+const activeAuthTokens = new Map(); // token -> { username, loginAt }
+
+function isWebAuthed(req) {
+  if (!config.auth || config.auth.enabled === false) return true;
+  // 1. Session 校验
+  if (req.session && req.session.authenticatedUser) return true;
+  // 2. Bearer / Header / Query 校验
+  const token = req.headers['x-auth-token'] || 
+    (req.headers.authorization ? req.headers.authorization.replace(/^Bearer\s+/i, '').trim() : null) ||
+    req.query?.auth_token;
+  if (token && activeAuthTokens.has(token)) return true;
+  return false;
+}
+
+// 身份验证检查中间件
+function requireWebAuth(req, res, next) {
+  if (isWebAuthed(req)) return next();
+  return send(res, 401, { ok: false, unauthenticated: true, error: '请先登录以访问系统' });
+}
+
+// Web 认证接口（无需先登录）
+app.get('/api/web-auth/status', (req, res) => {
+  const authed = isWebAuthed(req);
+  send(res, 200, {
+    enabled: config.auth?.enabled !== false,
+    authenticated: authed,
+    username: authed ? (req.session?.authenticatedUser || 'DJSeven') : null
+  });
+});
+
+app.post('/api/web-auth/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (!config.auth || config.auth.enabled === false) {
+    return send(res, 200, { ok: true, username: 'Guest', message: '免密模式' });
+  }
+
+  const inputUser = String(username || '').trim();
+  const inputPass = String(password || '').trim();
+
+  const validUser = config.auth.username || 'DJSeven';
+  const validPass = config.auth.password || 'admin';
+
+  if (inputUser === validUser && inputPass === validPass) {
+    const token = crypto.randomBytes(32).toString('hex');
+    activeAuthTokens.set(token, { username: inputUser, loginAt: Date.now() });
+
+    if (req.session) {
+      req.session.authenticatedUser = inputUser;
+      req.session.authToken = token;
+    }
+
+    return send(res, 200, {
+      ok: true,
+      token,
+      username: inputUser,
+      message: '登录成功'
+    });
+  }
+
+  return send(res, 401, {
+    ok: false,
+    error: '用户名或密码错误，请检查后重试'
+  });
+});
+
+app.post('/api/web-auth/logout', (req, res) => {
+  const token = req.headers['x-auth-token'] || 
+    (req.headers.authorization ? req.headers.authorization.replace(/^Bearer\s+/i, '').trim() : null) ||
+    req.session?.authToken;
+  if (token) activeAuthTokens.delete(token);
+
+  if (req.session) {
+    req.session.destroy(() => {});
+  }
+  send(res, 200, { ok: true, message: '已安全退出登录' });
+});
+
 // 前端上报浏览器侧错误（fetch 失败/流中断等）到服务端日志，便于排查 network error
 app.post('/api/debug-log', (req, res) => {
   const body = req.body || {};
   debugLog('[CLIENT]', JSON.stringify(body));
   send(res, 200, { ok: true });
+});
+
+// 对其余所有 /api 接口强制鉴权
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/web-auth') || req.path === '/debug-log') {
+    return next();
+  }
+  return requireWebAuth(req, res, next);
 });
 
 // ---------- 缓存与读取 Google Antigravity OAuth 账号资料 ----------
@@ -679,6 +766,15 @@ app.get('/api/assets/files/:filename', (req, res) => {
   }
 });
 
+// 允许特定工具（记住选择，写入 settings.json allow 列表）
+app.post('/api/permissions/allow', (req, res) => {
+  const { toolName } = req.body || {};
+  if (!toolName) return send(res, 400, { error: '缺少 toolName' });
+  const ok = allowTool(toolName);
+  debugLog('[permissions] allowTool:', toolName, '→', ok);
+  send(res, 200, { ok, toolName });
+});
+
 app.post('/api/chat/abort', (req, res) => {
   const { conversationKey, conversationId } = req.body || {};
   const key = conversationKey || conversationId;
@@ -862,7 +958,8 @@ app.post('/api/chat', async (req, res) => {
         meta: {
           needsPermission: true,
           description: '模型申请了权限操作，请选择权限策略后重试',
-          options: ["approve"]
+          options: ["approve"],
+          toolName: e.toolName || ''
         },
         error: e.message
       })}\n\n`);
@@ -1049,6 +1146,21 @@ wss.on('connection', (ws, req) => {
   ws.on('message', async (rawData) => {
     let body;
     try { body = JSON.parse(rawData.toString()); } catch { ws.send(JSON.stringify({ error: 'Bad JSON' })); return; }
+
+    // ── 检查 WebUI 鉴权 ──
+    if (config.auth && config.auth.enabled !== false) {
+      let authed = false;
+      try {
+        const urlParams = new URL(req.url, 'http://localhost').searchParams;
+        const token = body.token || urlParams.get('token') || req.headers['x-auth-token'];
+        if (token && activeAuthTokens.has(token)) authed = true;
+        if (req.headers.cookie && req.headers.cookie.includes('connect.sid')) authed = true;
+      } catch (_) {}
+      if (!authed) {
+        ws.send(JSON.stringify({ error: '请先登录以访问系统', unauthenticated: true }));
+        return;
+      }
+    }
 
     const { model, messages, effort, permissions, conversationKey, conversationId: clientConvId } = body;
     const permRaw = String(permissions || '').trim().toLowerCase();
@@ -1264,7 +1376,7 @@ wss.on('connection', (ws, req) => {
       run.error = e;
       const errMsg = (e && e.message) || 'CLI 未返回内容';
       if (e && e.needsPermission) {
-        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"] }, error: errMsg });
+        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"], toolName: e.toolName || '' }, error: errMsg });
       } else if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
         broadcast({ meta: { quotaExceeded: true, description: '配额已用尽' }, error: errMsg });
       } else {

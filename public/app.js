@@ -20,6 +20,7 @@ const state = {
   streaming: false,
   pendingQueue: [],
   searchQuery: "",
+  showThinking: localStorage.getItem("agy-show-thinking") === "true", // 默认关 (false)
   codeFile: null
 };
 
@@ -46,6 +47,156 @@ if (typeof marked !== "undefined") {
 function refreshIcons() {
   if (typeof lucide !== "undefined" && lucide.createIcons) {
     lucide.createIcons();
+  }
+}
+
+// ---------- Web UI Authentication & Login Gate Control ----------
+let authToken = localStorage.getItem("agy-auth-token") || sessionStorage.getItem("agy-auth-token") || "";
+
+// 全局 Fetch 拦截器：自动携带鉴权 Token 并捕获 401 未认证状态
+const _origFetch = window.fetch;
+window.fetch = async function(url, options = {}) {
+  const opts = { ...options };
+  opts.headers = new Headers(opts.headers || {});
+  if (authToken && !opts.headers.has("x-auth-token")) {
+    opts.headers.set("x-auth-token", authToken);
+  }
+  const response = await _origFetch(url, opts);
+  if (response.status === 401) {
+    try {
+      const cloned = response.clone();
+      const data = await cloned.json();
+      if (data.unauthenticated) {
+        showLoginGate();
+      }
+    } catch (_) {}
+  }
+  return response;
+};
+
+window.showLoginGate = function() {
+  const overlay = $("#login-gate-overlay");
+  if (overlay) {
+    overlay.classList.remove("hidden");
+    const err = $("#login-error-alert");
+    if (err) err.style.display = "none";
+    setTimeout(() => {
+      $("#login-username")?.focus();
+    }, 100);
+    refreshIcons();
+  }
+};
+
+window.hideLoginGate = function() {
+  const overlay = $("#login-gate-overlay");
+  if (overlay) {
+    overlay.classList.add("hidden");
+  }
+};
+
+window.togglePasswordVisibility = function() {
+  const input = $("#login-password");
+  const eye = $("#icon-pwd-eye");
+  if (!input) return;
+  if (input.type === "password") {
+    input.type = "text";
+    eye?.setAttribute("data-lucide", "eye-off");
+  } else {
+    input.type = "password";
+    eye?.setAttribute("data-lucide", "eye");
+  }
+  refreshIcons();
+};
+
+window.handleWebLogin = async function(event) {
+  if (event) event.preventDefault();
+  const username = $("#login-username")?.value.trim();
+  const password = $("#login-password")?.value.trim();
+  const errorAlert = $("#login-error-alert");
+  const card = $("#login-card");
+  const submitBtn = $("#btn-submit-login");
+  const btnText = $("#login-btn-text");
+
+  if (!username || !password) {
+    if (errorAlert) {
+      errorAlert.textContent = "请输入管理账号与访问密码";
+      errorAlert.style.display = "flex";
+    }
+    return;
+  }
+
+  if (submitBtn) submitBtn.disabled = true;
+  if (btnText) btnText.textContent = "正在验证身份...";
+
+  try {
+    const res = await _origFetch("/api/web-auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password })
+    });
+    const d = await res.json();
+    if (!res.ok || !d.ok) {
+      throw new Error(d.error || "用户名或密码错误，请检查后重试");
+    }
+
+    authToken = d.token || "";
+    if ($("#login-remember")?.checked) {
+      localStorage.setItem("agy-auth-token", authToken);
+    } else {
+      sessionStorage.setItem("agy-auth-token", authToken);
+    }
+
+    toast(`欢迎进入 Antigravity，${d.username || 'DJSeven'}！`);
+    hideLoginGate();
+    await initApp();
+  } catch (err) {
+    if (errorAlert) {
+      errorAlert.textContent = err.message || "登录失败，请检查账号密码";
+      errorAlert.style.display = "flex";
+    }
+    if (card) {
+      card.classList.remove("shake");
+      void card.offsetWidth; // force reflow
+      card.classList.add("shake");
+    }
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+    if (btnText) btnText.textContent = "安全登入系统";
+    refreshIcons();
+  }
+};
+
+window.handleWebLogout = async function() {
+  if (!confirm("确定要退出当前的私有访问权限吗？")) return;
+  try {
+    await fetch("/api/web-auth/logout", {
+      method: "POST",
+      headers: { "x-auth-token": authToken }
+    });
+  } catch (_) {}
+  authToken = "";
+  localStorage.removeItem("agy-auth-token");
+  sessionStorage.removeItem("agy-auth-token");
+  toast("已安全退出登录");
+  showLoginGate();
+};
+
+async function checkWebAuthStatus() {
+  try {
+    const token = localStorage.getItem("agy-auth-token") || sessionStorage.getItem("agy-auth-token") || "";
+    authToken = token;
+    const res = await _origFetch("/api/web-auth/status", {
+      headers: token ? { "x-auth-token": token } : {}
+    });
+    const d = await res.json();
+    if (d.enabled && !d.authenticated) {
+      showLoginGate();
+      return false;
+    }
+    hideLoginGate();
+    return true;
+  } catch (_) {
+    return true;
   }
 }
 
@@ -189,6 +340,19 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     newChat();
   }
+  // Ctrl+F / Cmd+F for search conversations
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+    const isEditingCode = document.activeElement && (document.activeElement.classList.contains("monaco-editor") || document.activeElement.id === "code-editor-area");
+    if (!isEditingCode) {
+      const searchInput = $("#session-search");
+      if (searchInput) {
+        e.preventDefault();
+        openSidebar();
+        searchInput.focus();
+        searchInput.select();
+      }
+    }
+  }
 });
 
 // Escape HTML
@@ -199,6 +363,42 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function highlightMatch(text, query) {
+  if (!text) return "";
+  if (!query) return escapeHtml(text);
+  const q = String(query).trim();
+  if (!q) return escapeHtml(text);
+  const escapedQuery = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`(${escapedQuery})`, "gi");
+  const parts = String(text).split(regex);
+  return parts.map((part) => {
+    if (part.toLowerCase() === q.toLowerCase()) {
+      return `<mark class="search-highlight">${escapeHtml(part)}</mark>`;
+    }
+    return escapeHtml(part);
+  }).join("");
+}
+
+function findSnippetMatch(messages, query) {
+  if (!messages || !query) return null;
+  const q = String(query).trim().toLowerCase();
+  if (!q) return null;
+  for (const m of messages) {
+    const raw = String(m.content || "").replace(/<(?:thought|thinking)>[\s\S]*?<\/(?:thought|thinking)>/gi, "");
+    const lower = raw.toLowerCase();
+    const idx = lower.indexOf(q);
+    if (idx !== -1) {
+      const start = Math.max(0, idx - 12);
+      const end = Math.min(raw.length, idx + q.length + 22);
+      let snippet = raw.substring(start, end).replace(/[\r\n\t]+/g, " ").trim();
+      if (start > 0) snippet = "..." + snippet;
+      if (end < raw.length) snippet = snippet + "...";
+      return snippet;
+    }
+  }
+  return null;
 }
 
 // Theme Toggle
@@ -223,6 +423,40 @@ function initTheme() {
   let t = "light";
   try { t = localStorage.getItem("agy-theme") || "light"; } catch (_) {}
   applyTheme(t);
+}
+
+// Thinking & Tools Visibility Mode
+function applyThinkingVisibility(show) {
+  state.showThinking = !!show;
+  document.body.classList.toggle("hide-thinking-tools", !state.showThinking);
+  const toggleInput = $("#toggle-thinking");
+  if (toggleInput) {
+    toggleInput.checked = state.showThinking;
+  }
+  try {
+    localStorage.setItem("agy-show-thinking", state.showThinking ? "true" : "false");
+  } catch (_) {}
+}
+
+function initThinkingToggle() {
+  applyThinkingVisibility(state.showThinking);
+  const toggleRow = $("#toggle-thinking-row");
+  const toggleInput = $("#toggle-thinking");
+  if (toggleInput) {
+    toggleInput.addEventListener("change", (e) => {
+      applyThinkingVisibility(e.target.checked);
+    });
+  }
+  if (toggleRow) {
+    toggleRow.addEventListener("click", (e) => {
+      if (e.target !== toggleInput) {
+        if (toggleInput) {
+          toggleInput.checked = !toggleInput.checked;
+          applyThinkingVisibility(toggleInput.checked);
+        }
+      }
+    });
+  }
 }
 
 // Render Sidebar & Usage Summary
@@ -376,27 +610,93 @@ function renderLoginArea() {
 function renderConvList() {
   const list = $("#conv-list");
   list.innerHTML = "";
-  const query = state.searchQuery.trim().toLowerCase();
+  const rawQuery = (state.searchQuery || "").trim();
+  const query = rawQuery.toLowerCase();
+
+  // Search stats & clear button state
+  const clearBtn = $("#btn-clear-search");
+  const kbdHint = $("#search-kbd-hint");
+  const searchStats = $("#search-stats");
+  const searchCountText = $("#search-count-text");
+
+  if (clearBtn && kbdHint) {
+    if (rawQuery) {
+      clearBtn.style.display = "flex";
+      kbdHint.style.display = "none";
+    } else {
+      clearBtn.style.display = "none";
+      kbdHint.style.display = "inline-block";
+    }
+  }
 
   const filtered = state.conversations.filter((c) => {
     if (!query) return true;
-    return (c.title || "").toLowerCase().includes(query) ||
-           (c.messages || []).some(m => String(m.content || "").toLowerCase().includes(query));
+    const titleMatch = (c.title || "").toLowerCase().includes(query);
+    if (titleMatch) return true;
+    return (c.messages || []).some(m => String(m.content || "").toLowerCase().includes(query));
   });
 
+  if (searchStats && searchCountText) {
+    if (rawQuery) {
+      searchStats.style.display = "flex";
+      searchCountText.textContent = `共 ${filtered.length} 条匹配`;
+    } else {
+      searchStats.style.display = "none";
+    }
+  }
+
   if (filtered.length === 0) {
-    const empty = el("div", "", query ? "无匹配会话" : "暂无历史会话");
-    empty.style.cssText = "padding:20px;text-align:center;color:var(--text-dim);font-size:12px;";
-    list.append(empty);
+    if (rawQuery) {
+      const emptyCard = el("div", "search-empty-card");
+      emptyCard.innerHTML = `
+        <div class="search-empty-icon-wrap">
+          <i data-lucide="search-x" style="width: 20px; height: 20px;"></i>
+        </div>
+        <div class="search-empty-text">未找到相关会话</div>
+        <div class="search-empty-sub">没有与「${escapeHtml(rawQuery)}」匹配的内容</div>
+        <button class="search-empty-btn" id="btn-empty-clear">清空搜索</button>
+      `;
+      const emptyClearBtn = emptyCard.querySelector("#btn-empty-clear");
+      if (emptyClearBtn) {
+        emptyClearBtn.onclick = clearSessionSearch;
+      }
+      list.append(emptyCard);
+    } else {
+      const empty = el("div", "", "暂无历史会话");
+      empty.style.cssText = "padding:28px 12px;text-align:center;color:var(--text-dim);font-size:12px;";
+      list.append(empty);
+    }
+    refreshIcons();
     return;
   }
 
   filtered.forEach((c) => {
-    const item = el("div", "session-item" + (c.id === state.activeId ? " active" : ""));
+    const isCur = c.id === state.activeId;
+    const item = el("div", "session-item" + (isCur ? " active" : ""));
     
-    const titleSpan = el("span", "session-title", c.title || "新对话");
+    // Top row
+    const row = el("div", "session-row");
+    const main = el("div", "session-main");
+    
+    // Icon
+    const icon = document.createElement("i");
+    icon.setAttribute("data-lucide", isCur ? "message-square-dot" : "message-square");
+    icon.className = "session-icon";
+    
+    // Title
+    const titleSpan = el("span", "session-title");
+    if (rawQuery) {
+      titleSpan.innerHTML = highlightMatch(c.title || "新对话", rawQuery);
+    } else {
+      titleSpan.textContent = c.title || "新对话";
+    }
     titleSpan.title = c.title || "新对话";
 
+    main.append(icon);
+    main.append(titleSpan);
+    row.append(main);
+
+    // Actions
     const actions = el("div", "session-actions");
     
     // Rename button
@@ -419,14 +719,33 @@ function renderConvList() {
 
     actions.append(renameBtn);
     actions.append(delBtn);
+    row.append(actions);
+    item.append(row);
 
-    item.append(titleSpan);
-    item.append(actions);
+    // If searching, check for message match snippet
+    if (rawQuery) {
+      const snippet = findSnippetMatch(c.messages, rawQuery);
+      if (snippet) {
+        const snippetEl = el("div", "session-snippet");
+        snippetEl.innerHTML = highlightMatch(snippet, rawQuery);
+        item.append(snippetEl);
+      }
+    }
 
     item.onclick = () => selectConv(c.id);
     list.append(item);
   });
   refreshIcons();
+}
+
+function clearSessionSearch() {
+  const input = $("#session-search");
+  if (input) {
+    input.value = "";
+    state.searchQuery = "";
+    renderConvList();
+    input.focus();
+  }
 }
 
 function promptRenameConv(id) {
@@ -500,9 +819,32 @@ $("#btn-menu").addEventListener("click", () => {
 $("#sidebar-backdrop").addEventListener("click", closeSidebar);
 
 // Session search
-$("#session-search").addEventListener("input", (e) => {
-  state.searchQuery = e.target.value;
-  renderConvList();
+const sessionSearchInput = $("#session-search");
+if (sessionSearchInput) {
+  sessionSearchInput.addEventListener("input", (e) => {
+    state.searchQuery = e.target.value;
+    renderConvList();
+  });
+  sessionSearchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (sessionSearchInput.value) {
+        clearSessionSearch();
+      } else {
+        sessionSearchInput.blur();
+      }
+    }
+  });
+}
+
+$("#btn-clear-search")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  clearSessionSearch();
+});
+
+$("#btn-cancel-search")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  clearSessionSearch();
 });
 
 
@@ -601,7 +943,9 @@ function formatMarkdown(text, isStreaming = false) {
   if (isStreaming && !activeThinkingHtml && result) {
     result += `<span class="streaming-cursor"></span>`;
   }
-  return result || (isStreaming ? `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>` : "");
+  return result || (isStreaming ? `
+    <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>
+  ` : "");
 }
 
 window.copyCodeFromBlock = function(btn) {
@@ -708,7 +1052,9 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     bubble = el("div", "message-bubble markdown-body");
     const clean = String(content || "").replace(/[\u200b\s]/g, "");
     if (isStreaming && !clean) {
-      bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>`;
+      bubble.innerHTML = `
+        <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>
+      `;
     } else {
       bubble.innerHTML = formatMarkdown(content);
       if (tools && tools.length) {
@@ -1138,6 +1484,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           const actualModel = resolveActualModelName(state.selectedModel, effortVal);
           
           ws.send(JSON.stringify({
+            token: authToken,
             model: actualModel,
             messages: conv.messages,
             effort: effortVal,
@@ -1150,6 +1497,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
         ws.onmessage = (event) => {
           let data;
           try { data = JSON.parse(event.data); } catch (_) { return; }
+          if (data.unauthenticated) { showLoginGate(); done(() => reject(new Error("请先登录"))); return; }
           if (data.idle) { receivedDone = true; done(() => resolve()); return; } // 后台没在跑，当 done 处理
           if (data.meta && data.meta.needsPermission) { needsPerm = true; permMsg = data.error || "CLI 需要授权"; return; }
           if (data.meta && data.meta.quotaExceeded) { streamError = Object.assign(new Error(data.error || "模型配额已用尽"), { quotaExceeded: true }); done(() => reject(streamError)); return; }
@@ -1163,7 +1511,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
             const cleanAcc = (acc || "").replace(/​/g, "").trim();
             if (!cleanAcc) {
-              asstNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>`;
+              asstNode.bubble.innerHTML = `
+                <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
+              `;
             }
             return;
           }
@@ -1284,7 +1634,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           asstNode.bubble.innerHTML = errorHtml;
         }
         asstNode.row.className = "message-row error";
-        if (e.needsPermission) openPermissionModal(errMsg, text);
+        if (e.needsPermission) openPermissionModal(errMsg, text, e.toolName);
       }
       break;
     }
@@ -1337,33 +1687,48 @@ window.switchModelAndRetry = function(modelName) {
   window.retryLastConversationTurn();
 };
 
-function openPermissionModal(message, retryPrompt) {
+function openPermissionModal(message, retryPrompt, toolName) {
+  const toolLabel = toolName ? `<div style="margin-bottom:8px;font-size:13px;color:var(--text-primary);">工具: <code style="background:var(--bg-secondary);padding:2px 6px;border-radius:4px;font-size:12px;">${escapeHtml(toolName)}</code></div>` : '';
   openModal("🛡️ CLI 权限确认", `
-    <div style="margin-bottom:12px;color:var(--text-muted);">
-      模型在执行命令时触发了权限保护策略，请选择处理方式：
+    <div style="margin-bottom:12px;color:var(--text-muted);font-size:13px;">
+      模型在执行操作时触发了权限保护策略，请选择处理方式：
     </div>
+    ${toolLabel}
     <div style="background:var(--bg-primary);border:1px solid var(--border-color);padding:10px 12px;border-radius:var(--radius-sm);font-family:monospace;font-size:12.5px;max-height:180px;overflow-y:auto;white-space:pre-wrap;color:#f87171;margin-bottom:16px;">
       ${escapeHtml(message)}
     </div>
-    <div class="modal-footer" style="margin:-18px;margin-top:10px;padding:12px 18px;">
-      <button class="btn btn-ghost" data-cancel>关闭 / 拒绝</button>
-      <button class="btn btn-primary" id="btn-approve-retry">以【自动批准】重试</button>
+    <div class="modal-footer" style="margin:-18px;margin-top:10px;padding:12px 18px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-ghost" data-cancel>拒绝</button>
+      ${toolName ? `<button class="btn btn-ghost" id="btn-allow-remember">允许并记住</button>` : ''}
+      <button class="btn btn-primary" id="btn-approve-retry">允许并重试</button>
     </div>
   `);
   $("#modal-root").querySelector("[data-cancel]").onclick = closeModal;
+  // 允许并重试：切换到自动批准模式，重发消息
   $("#btn-approve-retry").onclick = () => {
     if ($("#permissions")) {
       $("#permissions").value = "approve";
       localStorage.setItem("agy-permissions", "approve");
     }
     closeModal();
-    // 移除最后一条失败的错误气泡，避免视觉重复
     const lastRow = $("#chat-feed")?.lastElementChild;
-    if (lastRow && lastRow.classList.contains("error")) {
-      lastRow.remove();
-    }
+    if (lastRow && lastRow.classList.contains("error")) lastRow.remove();
     runConversationTurn(retryPrompt, false);
   };
+  // 允许并记住：先调用 server 把工具加到 allow 列表，再重试
+  const btnRemember = $("#btn-allow-remember");
+  if (btnRemember) {
+    btnRemember.onclick = async () => {
+      try {
+        await fetch("/api/permissions/allow", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ toolName }) });
+      } catch (_) {}
+      if ($("#permissions")) { $("#permissions").value = "approve"; localStorage.setItem("agy-permissions", "approve"); }
+      closeModal();
+      const lastRow = $("#chat-feed")?.lastElementChild;
+      if (lastRow && lastRow.classList.contains("error")) lastRow.remove();
+      runConversationTurn(retryPrompt, false);
+    };
+  }
 }
 
 // Google OAuth / CLI Connect Modal
@@ -1462,23 +1827,199 @@ async function showCliLogin() {
   }, 1500);
 }
 
-// Plugins Modal & Marketplace
+// Plugins Modal & Comprehensive Marketplace
+const MARKETPLACE_CATEGORIES = [
+  { id: "all", label: "全部", icon: "sparkles" },
+  { id: "hot", label: "🔥 热门精选", icon: "flame" },
+  { id: "frontend", label: "🎨 前端与UI", icon: "palette" },
+  { id: "code", label: "💻 代码质量", icon: "code-2" },
+  { id: "docs", label: "📊 文档办公", icon: "file-text" },
+  { id: "agent", label: "🤖 智能体协作", icon: "bot" },
+  { id: "git", label: "🌿 版本控制", icon: "git-branch" },
+  { id: "data", label: "🌐 检索与数据", icon: "database" }
+];
+
 const MARKETPLACE_PLUGINS = [
   {
-    id: "@antigravity/code-reviewer",
-    name: "AI Code Reviewer Pro",
-    category: "代码质量",
-    icon: "🔍",
-    badge: "官方精选",
-    desc: "在每次代码生成与提交前，自动执行多维度安全、性能与代码坏味道检测。",
-    version: "v1.4.2",
-    author: "Google Antigravity Team",
-    downloads: "128k"
+    id: "ui-ux-pro-max",
+    name: "UI/UX Pro Max 智能设计体系",
+    category: "frontend",
+    categoryLabel: "前端与UI",
+    icon: "🎨",
+    badge: "官方旗舰",
+    desc: "集成 84 种 UI 风格、192 套专业调色板、74 种字体配对与 98 条设计无障碍规范，覆盖 React/Vue/Tailwind。",
+    version: "v4.2.0",
+    author: "Antigravity Design Team",
+    downloads: "240k",
+    hot: true
   },
   {
-    id: "@antigravity/git-companion",
+    id: "code-reviewer",
+    name: "AI Code Reviewer Pro",
+    category: "code",
+    categoryLabel: "代码质量",
+    icon: "🔍",
+    badge: "官方精选",
+    desc: "在每次代码生成与提交前，自动执行多维度安全、性能隐患、并发安全与 Clean Code 规范审查。",
+    version: "v2.1.0",
+    author: "Google Antigravity Team",
+    downloads: "185k",
+    hot: true
+  },
+  {
+    id: "web-researcher",
+    name: "Deep Web & Markdown Scraper",
+    category: "data",
+    categoryLabel: "检索与数据",
+    icon: "🌐",
+    badge: "知识检索",
+    desc: "增强型网页内容深度提取、动态 JavaScript 渲染解析并清洗转为高质量结构化 Markdown 知识库。",
+    version: "v2.5.0",
+    author: "Antigravity Research",
+    downloads: "168k",
+    hot: true
+  },
+  {
+    id: "systematic-debugging",
+    name: "Systematic Debugger 根因定位",
+    category: "code",
+    categoryLabel: "代码质量",
+    icon: "🐛",
+    badge: "工程排错",
+    desc: "遭遇任何 Bug 或报错时，严格遵循科学假设验证法，调查根本原因，杜绝试探性盲目修改。",
+    version: "v3.0.0",
+    author: "Reliability Labs",
+    downloads: "142k",
+    hot: true
+  },
+  {
+    id: "test-driven-development",
+    name: "TDD 测试驱动开发套件",
+    category: "code",
+    categoryLabel: "代码质量",
+    icon: "🧪",
+    badge: "开发严谨",
+    desc: "严格遵循 Red-Green-Refactor 循环，在编写业务代码前先编写单元测试，保障代码覆盖率与健壮性。",
+    version: "v2.3.1",
+    author: "Quality Ops",
+    downloads: "115k"
+  },
+  {
+    id: "ui-styling",
+    name: "Shadcn & Tailwind UI Styling",
+    category: "frontend",
+    categoryLabel: "前端与UI",
+    icon: "💅",
+    badge: "UI构建",
+    desc: "构建现代优雅、无障碍友好的界面：基于 Radix UI 与 Tailwind CSS，支持暗色模式与主题定制。",
+    version: "v2.0.8",
+    author: "UI Frameworks",
+    downloads: "156k",
+    hot: true
+  },
+  {
+    id: "banner-design",
+    name: "Banner & Poster Creative Studio",
+    category: "frontend",
+    categoryLabel: "前端与UI",
+    icon: "📢",
+    badge: "视觉艺术",
+    desc: "设计社交媒体横幅、广告图、网站 Hero 首屏及印刷海报，提供 22 种艺术流派与视觉方案。",
+    version: "v1.9.0",
+    author: "Creative AI Labs",
+    downloads: "98k"
+  },
+  {
+    id: "design-system",
+    name: "Design Token & Architecture",
+    category: "frontend",
+    categoryLabel: "前端与UI",
+    icon: "📐",
+    badge: "系统架构",
+    desc: "构建三层 Design Token（Primitive/Semantic/Component）、CSS 变量规范与可扩展组件库。",
+    version: "v2.2.0",
+    author: "Design Systems Inc",
+    downloads: "87k"
+  },
+  {
+    id: "design",
+    name: "Brand Identity & Logo Generator",
+    category: "frontend",
+    categoryLabel: "前端与UI",
+    icon: "🎭",
+    badge: "品牌全案",
+    desc: "支持 55 种风格 Logo 设计、企业视觉识别系统 (CIP) 交付物规范与品牌指南自动生成。",
+    version: "v3.1.2",
+    author: "Brand Studio",
+    downloads: "120k"
+  },
+  {
+    id: "slides",
+    name: "Strategic HTML Presentation Slides",
+    category: "docs",
+    categoryLabel: "文档办公",
+    icon: "📽️",
+    badge: "高质感汇报",
+    desc: "利用 Chart.js 图表、设计令牌与响应式布局制作高质感战略演示文稿及技术汇报幻灯片。",
+    version: "v2.0.1",
+    author: "Presentation Pro",
+    downloads: "108k",
+    hot: true
+  },
+  {
+    id: "document-docx",
+    name: "Word (.docx) Document Engine",
+    category: "docs",
+    categoryLabel: "文档办公",
+    icon: "📝",
+    badge: "办公文档",
+    desc: "专业 Word 文档创建、排版修改、变更追踪（Tracked Changes）与批注自动化处理。",
+    version: "v2.4.0",
+    author: "Office Toolkit",
+    downloads: "135k"
+  },
+  {
+    id: "document-pdf",
+    name: "PDF Toolkit Pro",
+    category: "docs",
+    categoryLabel: "文档办公",
+    icon: "📑",
+    badge: "PDF处理",
+    desc: "PDF 文本与表格精准提取、表单自动填写、文档合并拆分及大文件批量处理。",
+    version: "v3.0.0",
+    author: "PDF Systems",
+    downloads: "160k",
+    hot: true
+  },
+  {
+    id: "document-pptx",
+    name: "PowerPoint (.pptx) Generator",
+    category: "docs",
+    categoryLabel: "文档办公",
+    icon: "📊",
+    badge: "PPT套件",
+    desc: "PPTX 幻灯片自动化创建、母版布局定制、演讲者备注生成与图表版式设计。",
+    version: "v1.8.5",
+    author: "Office Toolkit",
+    downloads: "112k"
+  },
+  {
+    id: "document-xlsx",
+    name: "Excel & Data Sheet Analyzer",
+    category: "docs",
+    categoryLabel: "文档办公",
+    icon: "📈",
+    badge: "数据分析",
+    desc: "处理复杂 Excel 公式、数据透视表构建、多工作表数据关联与报表可视化。",
+    version: "v2.6.2",
+    author: "Data Sheet Labs",
+    downloads: "145k"
+  },
+  {
+    id: "git-companion",
     name: "Smart Git Workflow",
-    category: "版本控制",
+    category: "git",
+    categoryLabel: "版本控制",
     icon: "🌿",
     badge: "高频推荐",
     desc: "AI 自动生成符合 Conventional Commits 规范的提交日志、分支合并分析与冲突解决建议。",
@@ -1487,9 +2028,34 @@ const MARKETPLACE_PLUGINS = [
     downloads: "95k"
   },
   {
-    id: "@antigravity/python-expert",
+    id: "permissioned-github",
+    name: "GitHub Automation Suite",
+    category: "git",
+    categoryLabel: "版本控制",
+    icon: "🐙",
+    badge: "GitHub集成",
+    desc: "GitHub 远程仓库协同管理、权限提示代理、自动化 PR 创建与 Issue 流程联动。",
+    version: "v1.5.0",
+    author: "GitHub Connect",
+    downloads: "88k"
+  },
+  {
+    id: "using-git-worktrees",
+    name: "Git Worktrees Manager",
+    category: "git",
+    categoryLabel: "版本控制",
+    icon: "🌲",
+    badge: "分支隔离",
+    desc: "支持跨分支多目录物理隔离工作区，在不影响主开发树的情况下并发执行多任务。",
+    version: "v1.2.0",
+    author: "DevOps Core",
+    downloads: "72k"
+  },
+  {
+    id: "python-expert",
     name: "Python Intelligence Suite",
-    category: "语言工具",
+    category: "code",
+    categoryLabel: "语言工具",
     icon: "🐍",
     badge: "开发增强",
     desc: "深度集成 Pyright 与 venv 虚拟环境诊断，提供高级代码补全、重构建议与依赖审计。",
@@ -1498,9 +2064,10 @@ const MARKETPLACE_PLUGINS = [
     downloads: "84k"
   },
   {
-    id: "@antigravity/database-toolkit",
+    id: "database-toolkit",
     name: "Database & SQL Studio",
-    category: "数据架构",
+    category: "data",
+    categoryLabel: "检索与数据",
     icon: "🗄️",
     badge: "企业级",
     desc: "支持 PostgreSQL, MySQL, SQLite 架构内省、SQL 查询优化分析与迁移脚本自动生成。",
@@ -1509,9 +2076,10 @@ const MARKETPLACE_PLUGINS = [
     downloads: "62k"
   },
   {
-    id: "@antigravity/docker-devops",
+    id: "docker-devops",
     name: "Docker & CI/CD Pipeline",
-    category: "DevOps",
+    category: "agent",
+    categoryLabel: "智能体协作",
     icon: "🐳",
     badge: "自动化",
     desc: "多阶段 Dockerfile 自动优化、Kubernetes YAML 校验及 GitHub Actions 流水线一键生成。",
@@ -1520,20 +2088,10 @@ const MARKETPLACE_PLUGINS = [
     downloads: "77k"
   },
   {
-    id: "@antigravity/web-researcher",
-    name: "Deep Web & Markdown Scraper",
-    category: "网络检索",
-    icon: "🌐",
-    badge: "知识检索",
-    desc: "增强型网页内容提取、动态渲染解析并转为高质量结构化 Markdown 知识库。",
-    version: "v2.0.4",
-    author: "Antigravity Research",
-    downloads: "110k"
-  },
-  {
-    id: "@antigravity/mcp-filesystem-pro",
+    id: "mcp-filesystem-pro",
     name: "MCP Universal Workspace",
-    category: "MCP 服务",
+    category: "agent",
+    categoryLabel: "智能体协作",
     icon: "⚡",
     badge: "MCP 扩展",
     desc: "基于 Model Context Protocol 的跨仓库文件检索、符号跳转与跨项目上下文共享桥梁。",
@@ -1542,19 +2100,141 @@ const MARKETPLACE_PLUGINS = [
     downloads: "53k"
   },
   {
-    id: "@antigravity/frontend-canvas",
+    id: "frontend-canvas",
     name: "Creative UI Canvas",
-    category: "前端设计",
+    category: "frontend",
+    categoryLabel: "前端与UI",
     icon: "🎨",
     badge: "视觉构建",
     desc: "支持 Tailwind CSS、React、Vue 原型可视化预览与实时组件样式微调。",
     version: "v1.6.0",
     author: "DesignX",
     downloads: "91k"
+  },
+  {
+    id: "brainstorming",
+    name: "Idea & Feature Brainstorming",
+    category: "agent",
+    categoryLabel: "思维规划",
+    icon: "💡",
+    badge: "需求探索",
+    desc: "在编写任何代码前，深入探索用户真实意图、边界条件与最佳架构选型。",
+    version: "v2.0.0",
+    author: "Product AI",
+    downloads: "99k"
+  },
+  {
+    id: "writing-plans",
+    name: "Implementation Plan Architect",
+    category: "agent",
+    categoryLabel: "思维规划",
+    icon: "🗺️",
+    badge: "多步规划",
+    desc: "为大型多步骤任务编写详尽的阶段实施计划书，明确依赖关系与验收标准。",
+    version: "v2.1.0",
+    author: "Planning Engine",
+    downloads: "86k"
+  },
+  {
+    id: "executing-plans",
+    name: "Execution Engine & Checkpoints",
+    category: "agent",
+    categoryLabel: "智能体协作",
+    icon: "🎯",
+    badge: "阶段执行",
+    desc: "根据实施规划独立执行各阶段任务，并在关键阶段设置人工检查点确保质量。",
+    version: "v2.0.0",
+    author: "Planning Engine",
+    downloads: "79k"
+  },
+  {
+    id: "subagent-driven-development",
+    name: "Subagent Driven Development",
+    category: "agent",
+    categoryLabel: "智能体协作",
+    icon: "🤖",
+    badge: "子智能体调度",
+    desc: "在当前会话中自主创建具有针对性上下文的子智能体并发执行独立子任务。",
+    version: "v3.0.0",
+    author: "Multi-Agent Labs",
+    downloads: "130k"
+  },
+  {
+    id: "dispatching-parallel-agents",
+    name: "Parallel Multi-Agent Orchestra",
+    category: "agent",
+    categoryLabel: "智能体协作",
+    icon: "👥",
+    badge: "并发编排",
+    desc: "面临两个以上无状态依赖的独立任务时，自动调度多 Agent 并行开发以大幅缩短工期。",
+    version: "v1.7.0",
+    author: "Multi-Agent Labs",
+    downloads: "104k"
+  },
+  {
+    id: "pua",
+    name: "High-Agency Dev Loop Engine",
+    category: "agent",
+    categoryLabel: "自主闭环",
+    icon: "⚡",
+    badge: "极高自主权",
+    desc: "全自动开发循环引擎：Plan → Execute → CodeReview → Security → Verify → Commit 闭环。",
+    version: "v3.2.0",
+    author: "DevOps Engine",
+    downloads: "148k"
+  },
+  {
+    id: "skill-creator",
+    name: "Custom Skill Designer",
+    category: "agent",
+    categoryLabel: "扩展生态",
+    icon: "🛠️",
+    badge: "技能制作",
+    desc: "指导并自动生成符合 Google Antigravity 规范的全新自定义技能包与 SKILL.md。",
+    version: "v1.5.0",
+    author: "Extensibility Team",
+    downloads: "67k"
+  },
+  {
+    id: "generative_ui",
+    name: "Generative UI & Visual Widgets",
+    category: "frontend",
+    categoryLabel: "前端与UI",
+    icon: "✨",
+    badge: "可视化组件",
+    desc: "在聊天对话与独立工件中实时渲染交互式 HTML 小部件、数据图表与图形控件。",
+    version: "v2.0.0",
+    author: "Google DeepMind",
+    downloads: "190k"
+  },
+  {
+    id: "agy-customizations",
+    name: "Antigravity Customization Framework",
+    category: "agent",
+    categoryLabel: "系统扩展",
+    icon: "⚙️",
+    badge: "核心扩展",
+    desc: "深入配置 Antigravity Rules、Skills、Hooks、MCP Servers 与环境继承优先级。",
+    version: "v2.0.0",
+    author: "Antigravity Core",
+    downloads: "175k"
+  },
+  {
+    id: "antigravity-guide",
+    name: "Google Antigravity 2.0 Encyclopedia",
+    category: "agent",
+    categoryLabel: "官方手册",
+    icon: "📖",
+    badge: "全功能速查",
+    desc: "包含 Antigravity CLI、IDE、Python SDK、斜杠命令与快捷键绑定的官方百科指南。",
+    version: "v2.0.0",
+    author: "Google Antigravity",
+    downloads: "210k"
   }
 ];
 
 let currentPluginTab = "market";
+let currentMarketCategory = "all";
 let installedPluginsCache = [];
 
 async function showPlugins(initialTab = "market") {
@@ -1565,7 +2245,7 @@ async function showPlugins(initialTab = "market") {
       <!-- Tabs Header -->
       <div class="plugin-tabs">
         <button class="plugin-tab-btn ${currentPluginTab === 'market' ? 'active' : ''}" onclick="switchPluginTab('market')">
-          <i data-lucide="compass" style="width:14px;height:14px;"></i> 推荐市场
+          <i data-lucide="compass" style="width:14px;height:14px;"></i> 推荐市场 <span id="market-total-badge" style="background:rgba(255,255,255,0.2);padding:1px 6px;border-radius:10px;font-size:10px;">${MARKETPLACE_PLUGINS.length}</span>
         </button>
         <button class="plugin-tab-btn ${currentPluginTab === 'installed' ? 'active' : ''}" onclick="switchPluginTab('installed')">
           <i data-lucide="package" style="width:14px;height:14px;"></i> 已安装插件 <span id="installed-count-badge" style="background:rgba(255,255,255,0.2);padding:1px 6px;border-radius:10px;font-size:10px;">0</span>
@@ -1582,8 +2262,22 @@ async function showPlugins(initialTab = "market") {
       <div id="plugin-tab-market" class="plugin-tab-content" style="display:${currentPluginTab === 'market' ? 'block' : 'none'};">
         <div class="plugin-search-bar">
           <input id="market-search-input" class="form-input" placeholder="🔍 搜索热门插件、工具或 MCP 服务..." oninput="filterMarketPlugins(this.value)" />
-          <button class="btn btn-ghost btn-icon" onclick="renderMarketPlugins()" title="刷新市场"><i data-lucide="rotate-cw" style="width:14px;height:14px;"></i></button>
+          <button class="btn btn-ghost" style="white-space:nowrap;font-size:12px;gap:5px;" onclick="triggerMarketRefresh(true)" title="下拉或点击刷新市场">
+            <i data-lucide="rotate-cw" id="market-refresh-icon" style="width:13px;height:13px;"></i> 刷新
+          </button>
         </div>
+
+        <!-- Category Filter Pills -->
+        <div class="plugin-categories-bar" id="market-cat-bar">
+          ${renderCategoryPills()}
+        </div>
+
+        <!-- Pull Down Indicator -->
+        <div id="pull-refresh-indicator" class="pull-refresh-indicator">
+          <span class="thinking-dots"><i></i><i></i><i></i></span>
+          <span id="pull-refresh-text">正在同步最新市场插件...</span>
+        </div>
+
         <div id="market-plugins-grid" class="plugin-grid"></div>
       </div>
 
@@ -1605,7 +2299,7 @@ async function showPlugins(initialTab = "market") {
         <div style="font-size:13px;color:var(--text-dim);margin-bottom:14px;line-height:1.6;">
           Antigravity 原生兼容多平台 AI 插件体系。您可以一键将已有环境中的插件生态同步导入至当前工作区：
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+        <div class="plugin-ecosystem-grid">
           <div class="plugin-market-card" style="padding:14px;">
             <div class="plugin-market-header">
               <div class="plugin-market-icon">✨</div>
@@ -1628,7 +2322,7 @@ async function showPlugins(initialTab = "market") {
                 <span class="plugin-market-badge" style="background:rgba(249,115,22,0.15);color:#fb923c;">跨生态扩展</span>
               </div>
             </div>
-            <div class="plugin-market-desc" style="margin:8px 0;">一键从 Claude Code 目录导入全部自定义 Skills 与 Rules。</div>
+            <div class="plugin-market-desc" style="margin:8px 0;">一键从 Claude Code 目录导入全部 29 项自定义技能包。</div>
             <button class="btn btn-primary" style="width:100%;font-size:12.5px;margin-top:6px;" onclick="handlePluginOp('import', 'claude')">
               <i data-lucide="download" style="width:14px;height:14px;"></i> 一键导入 Claude 插件
             </button>
@@ -1637,8 +2331,8 @@ async function showPlugins(initialTab = "market") {
 
         <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:12px;">
           <div class="form-label" style="margin-bottom:6px;">从本地目录或特定源导入</div>
-          <div style="display:flex;gap:8px;">
-            <input id="import-source-path" class="form-input" placeholder="输入本地文件夹路径或特定插件源 (如 /path/to/plugins)" />
+          <div class="plugin-import-input-row">
+            <input id="import-source-path" class="form-input" placeholder="输入本地文件夹路径或特定插件源" />
             <button class="btn btn-ghost" onclick="const p = $('#import-source-path').value.trim(); if(!p) return toast('请输入源路径'); handlePluginOp('import', p);">导入</button>
           </div>
         </div>
@@ -1649,10 +2343,10 @@ async function showPlugins(initialTab = "market") {
         <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:14px;margin-bottom:14px;">
           <div class="form-label" style="font-weight:600;margin-bottom:6px;">安装自定义插件包 / Git 仓库</div>
           <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">
-            支持直接输入官方市场标识 <code>plugin@marketplace</code>、npm 包名 <code>@scope/pkg</code>、Git 仓库地址或本地插件路径。
+            支持直接输入插件包标识、Git 仓库地址或本地插件路径。
           </div>
-          <div style="display:flex;gap:8px;">
-            <input id="new-plugin-name" class="form-input" placeholder="例如: @antigravity/code-reviewer 或 https://github.com/..." />
+          <div class="plugin-import-input-row">
+            <input id="new-plugin-name" class="form-input" placeholder="例如: web-researcher 或 https://github.com/..." />
             <button id="btn-install-plugin" class="btn btn-primary" style="white-space:nowrap;">
               <i data-lucide="download" style="width:14px;height:14px;"></i> 立即安装
             </button>
@@ -1669,6 +2363,7 @@ async function showPlugins(initialTab = "market") {
   `);
 
   refreshIcons();
+  setupPullToRefresh();
   renderMarketPlugins();
   loadInstalledPlugins();
 
@@ -1680,6 +2375,78 @@ async function showPlugins(initialTab = "market") {
       await handlePluginOp("install", name);
     };
   }
+}
+
+function renderCategoryPills() {
+  return MARKETPLACE_CATEGORIES.map(cat => {
+    let count = 0;
+    if (cat.id === "all") count = MARKETPLACE_PLUGINS.length;
+    else if (cat.id === "hot") count = MARKETPLACE_PLUGINS.filter(p => p.hot).length;
+    else count = MARKETPLACE_PLUGINS.filter(p => p.category === cat.id).length;
+
+    const isActive = currentMarketCategory === cat.id;
+    return `
+      <button class="plugin-cat-pill ${isActive ? 'active' : ''}" onclick="switchMarketCategory('${cat.id}')">
+        <span>${cat.label}</span>
+        <span class="plugin-cat-count">${count}</span>
+      </button>
+    `;
+  }).join("");
+}
+
+window.switchMarketCategory = function(catId) {
+  currentMarketCategory = catId;
+  const bar = $("#market-cat-bar");
+  if (bar) bar.innerHTML = renderCategoryPills();
+  renderMarketPlugins($("#market-search-input")?.value || "");
+};
+
+window.triggerMarketRefresh = async function(manualToast = false) {
+  const indicator = $("#pull-refresh-indicator");
+  const icon = $("#market-refresh-icon");
+  if (indicator) indicator.classList.add("visible");
+  if (icon) icon.classList.add("animate-spin");
+
+  await new Promise(r => setTimeout(r, 450));
+  await loadInstalledPlugins();
+  renderMarketPlugins($("#market-search-input")?.value || "");
+
+  if (indicator) indicator.classList.remove("visible");
+  if (icon) icon.classList.remove("animate-spin");
+  if (manualToast) toast(`已刷新市场插件库 (共 ${MARKETPLACE_PLUGINS.length} 款)`);
+};
+
+function setupPullToRefresh() {
+  const grid = $("#market-plugins-grid");
+  const indicator = $("#pull-refresh-indicator");
+  if (!grid || !indicator) return;
+
+  let startY = 0;
+  let isPulling = false;
+
+  grid.addEventListener("touchstart", (e) => {
+    if (grid.scrollTop <= 0) {
+      startY = e.touches[0].clientY;
+      isPulling = true;
+    }
+  }, { passive: true });
+
+  grid.addEventListener("touchmove", (e) => {
+    if (!isPulling) return;
+    const currentY = e.touches[0].clientY;
+    const diff = currentY - startY;
+    if (diff > 40 && grid.scrollTop <= 0) {
+      indicator.classList.add("visible");
+    }
+  }, { passive: true });
+
+  grid.addEventListener("touchend", async (e) => {
+    if (isPulling && indicator.classList.contains("visible")) {
+      isPulling = false;
+      await triggerMarketRefresh(true);
+    }
+    isPulling = false;
+  });
 }
 
 window.switchPluginTab = function(tab) {
@@ -1699,12 +2466,22 @@ window.renderMarketPlugins = function(filter = "") {
   if (!grid) return;
 
   const q = (filter || "").toLowerCase().trim();
-  const list = MARKETPLACE_PLUGINS.filter(p => 
-    !q || p.name.toLowerCase().includes(q) || p.desc.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || p.id.toLowerCase().includes(q)
-  );
+  const list = MARKETPLACE_PLUGINS.filter(p => {
+    // 1. 分类匹配
+    if (currentMarketCategory === "hot" && !p.hot) return false;
+    if (currentMarketCategory !== "all" && currentMarketCategory !== "hot" && p.category !== currentMarketCategory) return false;
+    // 2. 搜索词匹配
+    if (q) {
+      return p.name.toLowerCase().includes(q) ||
+        p.desc.toLowerCase().includes(q) ||
+        (p.categoryLabel || "").toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q);
+    }
+    return true;
+  });
 
   if (!list.length) {
-    grid.innerHTML = `<div style="grid-column:1/-1;color:var(--text-dim);font-size:12.5px;padding:32px;text-align:center;">没有找到与 "${escapeHtml(filter)}" 相关的插件</div>`;
+    grid.innerHTML = `<div style="grid-column:1/-1;color:var(--text-dim);font-size:12.5px;padding:36px;text-align:center;">没有找到与 "${escapeHtml(filter || currentMarketCategory)}" 相关的插件</div>`;
     return;
   }
 
@@ -1717,7 +2494,7 @@ window.renderMarketPlugins = function(filter = "") {
             <div class="plugin-market-icon">${p.icon}</div>
             <div class="plugin-market-title">
               <h4>${escapeHtml(p.name)}</h4>
-              <span class="plugin-market-badge">${escapeHtml(p.category)} · ${escapeHtml(p.badge)}</span>
+              <span class="plugin-market-badge">${escapeHtml(p.categoryLabel || p.category)} · ${escapeHtml(p.badge)}</span>
             </div>
           </div>
           <div class="plugin-market-desc" style="margin-top:8px;">${escapeHtml(p.desc)}</div>
@@ -2305,6 +3082,9 @@ async function refreshSystemStatus() {
 // Application Bootstrap (Instant zero-latency paint)
 async function initApp() {
   initTheme();
+  initThinkingToggle();
+  const isAuthed = await checkWebAuthStatus();
+  if (!isAuthed) return;
   await refreshSystemStatus();
   await loadConversations();
 
@@ -2380,6 +3160,7 @@ function tryReconnectToOngoingRun() {
   ws.onopen = () => {
     // 发送 subscribe 请求：不创建新任务，只要求挂接到正在跑的 run（如有）
     ws.send(JSON.stringify({
+      token: authToken,
       action: 'subscribe',
       model: state.selectedModel || 'gemini-3.7-flash-high',
       messages: conv.messages || [{ role: 'user', content: '' }],
@@ -2434,7 +3215,9 @@ function tryReconnectToOngoingRun() {
       if (asstNode && !acc.replace(/​/g, '').trim()) {
         const tip = data.tip || '正在思考…';
         const wait = data.waited ? ` (${data.waited}s)` : '';
-        asstNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span></div>`;
+        asstNode.bubble.innerHTML = `
+          <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span></div>
+        `;
       }
       return;
     }
