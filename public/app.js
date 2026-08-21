@@ -220,8 +220,8 @@ function applyTheme(t) {
 }
 
 function initTheme() {
-  let t = "dark";
-  try { t = localStorage.getItem("agy-theme") || "dark"; } catch (_) {}
+  let t = "light";
+  try { t = localStorage.getItem("agy-theme") || "light"; } catch (_) {}
   applyTheme(t);
 }
 
@@ -679,7 +679,41 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     }
   } else {
     bubble = el("div", "message-bubble");
-    bubble.textContent = content;
+    let raw = String(content || "");
+    let images = [];
+    let files = [];
+
+    raw = raw.replace(/<images_input>([\s\S]*?)<\/images_input>/g, (_, paths) => {
+      paths.split('\n').map(p => p.trim()).filter(Boolean).forEach(p => images.push(p));
+      return '';
+    });
+    raw = raw.replace(/<files_input>([\s\S]*?)<\/files_input>/g, (_, paths) => {
+      paths.split('\n').map(p => p.trim()).filter(Boolean).forEach(p => files.push(p));
+      return '';
+    });
+    raw = raw.trim();
+
+    let html = "";
+    if (images.length) {
+      html += `<div class="user-msg-images" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:${raw ? '8px' : '0'};">`;
+      images.forEach(imgPath => {
+        const fn = imgPath.split('/').pop();
+        html += `<img src="/api/assets/files/${encodeURIComponent(fn)}" style="max-width:240px;max-height:180px;border-radius:8px;cursor:pointer;border:1px solid rgba(255,255,255,0.2);object-fit:cover;background:rgba(0,0,0,0.2);" onclick="window.open(this.src)" title="点击查看大图" />`;
+      });
+      html += `</div>`;
+    }
+    if (files.length) {
+      html += `<div class="user-msg-files" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:${raw ? '8px' : '0'};">`;
+      files.forEach(filePath => {
+        const fn = filePath.split('/').pop();
+        html += `<a href="/api/assets/files/${encodeURIComponent(fn)}" target="_blank" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;background:rgba(0,0,0,0.15);font-size:12px;color:inherit;text-decoration:none;">📎 ${escapeHtml(fn)}</a>`;
+      });
+      html += `</div>`;
+    }
+    if (raw) {
+      html += `<div style="white-space:pre-wrap;">${escapeHtml(raw)}</div>`;
+    }
+    bubble.innerHTML = html || `<span style="font-style:italic;opacity:0.8;">[发送了附件]</span>`;
   }
   contentCol.append(bubble);
 
@@ -955,12 +989,17 @@ async function handleSend() {
     return;
   }
   const text = inputArea.value.trim();
+  const currentAttachments = pendingAttachments && pendingAttachments.length ? [...pendingAttachments] : [];
   // 没文本也没附件 → 不发
-  if (!text && (!pendingAttachments || !pendingAttachments.length)) return;
+  if (!text && !currentAttachments.length) return;
   if (!state.selectedModel) return toast("请先选择模型");
 
   inputArea.value = "";
   autoResizeInput();
+
+  // 立即清空输入框内的附件暂存与 UI 预览
+  pendingAttachments = null;
+  renderAttachmentPreview();
 
   let conv = activeConv();
   if (!conv) {
@@ -968,13 +1007,22 @@ async function handleSend() {
     conv = activeConv();
   }
 
+  // 组装用户消息正文（包含图片/文件路径标签）
+  let fullUserContent = text;
+  if (currentAttachments.length) {
+    const imgPaths = currentAttachments.filter(a => a.mimeType?.startsWith('image/')).map(a => a.path);
+    const filePaths = currentAttachments.filter(a => !a.mimeType?.startsWith('image/')).map(a => a.path);
+    if (imgPaths.length) fullUserContent += (fullUserContent ? '\n' : '') + '<images_input>' + imgPaths.join('\n') + '</images_input>';
+    if (filePaths.length) fullUserContent += (fullUserContent ? '\n' : '') + '<files_input>' + filePaths.join('\n') + '</files_input>';
+  }
+
   // Auto Title
   if (conv.title === "新对话") {
-    conv.title = text.slice(0, 20) + (text.length > 20 ? "..." : "");
+    conv.title = (text || "图片/文件分析").slice(0, 20) + ((text || "").length > 20 ? "..." : "");
     renderConvList();
   }
 
-  await runConversationTurn(text, true);
+  await runConversationTurn(fullUserContent, true);
 }
 
 async function runConversationTurn(text, appendUserMsg = true) {
@@ -1031,25 +1079,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
           acc = ""; // 每次连接重放时从头构建，防止重连造成文本重复叠加
           const effortVal = $("#effort")?.value || "";
           const actualModel = resolveActualModelName(state.selectedModel, effortVal);
-          // 把附件路径注入最后一条 user 消息（借鉴 CloudCLI）
-          let messagesToSend = conv.messages;
-          if (pendingAttachments && pendingAttachments.length) {
-            messagesToSend = conv.messages.map(m => {
-              if (m.role === 'user' && m === conv.messages[conv.messages.length - 1]) {
-                const imgPaths = pendingAttachments.filter(a => a.mimeType?.startsWith('image/')).map(a => a.path);
-                const filePaths = pendingAttachments.filter(a => !a.mimeType?.startsWith('image/')).map(a => a.path);
-                let content = m.content;
-                if (imgPaths.length) content += '\n<images_input>' + imgPaths.join('\n') + '</images_input>';
-                if (filePaths.length) content += '\n<files_input>' + filePaths.join('\n') + '</files_input>';
-                return { ...m, content };
-              }
-              return m;
-            });
-            pendingAttachments = null; // 用完清空
-          }
+          
           ws.send(JSON.stringify({
             model: actualModel,
-            messages: messagesToSend,
+            messages: conv.messages,
             effort: effortVal,
             permissions: $("#permissions")?.value || "",
             conversationKey: conv.id,
@@ -1372,57 +1405,359 @@ async function showCliLogin() {
   }, 1500);
 }
 
-// Plugins Modal
-async function showPlugins() {
-  openModal("🧩 Antigravity 插件中心", `
-    <div style="margin-bottom:16px;">
-      <div class="form-label">安装新插件</div>
-      <div style="display:flex;gap:8px;">
-        <input id="new-plugin-name" class="form-input" placeholder="输入插件名 (例如: @org/plugin 或 git 地址)" />
-        <button id="btn-install-plugin" class="btn btn-primary">安装</button>
+// Plugins Modal & Marketplace
+const MARKETPLACE_PLUGINS = [
+  {
+    id: "@antigravity/code-reviewer",
+    name: "AI Code Reviewer Pro",
+    category: "代码质量",
+    icon: "🔍",
+    badge: "官方精选",
+    desc: "在每次代码生成与提交前，自动执行多维度安全、性能与代码坏味道检测。",
+    version: "v1.4.2",
+    author: "Google Antigravity Team",
+    downloads: "128k"
+  },
+  {
+    id: "@antigravity/git-companion",
+    name: "Smart Git Workflow",
+    category: "版本控制",
+    icon: "🌿",
+    badge: "高频推荐",
+    desc: "AI 自动生成符合 Conventional Commits 规范的提交日志、分支合并分析与冲突解决建议。",
+    version: "v2.1.0",
+    author: "Antigravity Devs",
+    downloads: "95k"
+  },
+  {
+    id: "@antigravity/python-expert",
+    name: "Python Intelligence Suite",
+    category: "语言工具",
+    icon: "🐍",
+    badge: "开发增强",
+    desc: "深度集成 Pyright 与 venv 虚拟环境诊断，提供高级代码补全、重构建议与依赖审计。",
+    version: "v3.0.1",
+    author: "PyCommunity",
+    downloads: "84k"
+  },
+  {
+    id: "@antigravity/database-toolkit",
+    name: "Database & SQL Studio",
+    category: "数据架构",
+    icon: "🗄️",
+    badge: "企业级",
+    desc: "支持 PostgreSQL, MySQL, SQLite 架构内省、SQL 查询优化分析与迁移脚本自动生成。",
+    version: "v1.2.0",
+    author: "DataOps Labs",
+    downloads: "62k"
+  },
+  {
+    id: "@antigravity/docker-devops",
+    name: "Docker & CI/CD Pipeline",
+    category: "DevOps",
+    icon: "🐳",
+    badge: "自动化",
+    desc: "多阶段 Dockerfile 自动优化、Kubernetes YAML 校验及 GitHub Actions 流水线一键生成。",
+    version: "v1.8.0",
+    author: "CloudNative AI",
+    downloads: "77k"
+  },
+  {
+    id: "@antigravity/web-researcher",
+    name: "Deep Web & Markdown Scraper",
+    category: "网络检索",
+    icon: "🌐",
+    badge: "知识检索",
+    desc: "增强型网页内容提取、动态渲染解析并转为高质量结构化 Markdown 知识库。",
+    version: "v2.0.4",
+    author: "Antigravity Research",
+    downloads: "110k"
+  },
+  {
+    id: "@antigravity/mcp-filesystem-pro",
+    name: "MCP Universal Workspace",
+    category: "MCP 服务",
+    icon: "⚡",
+    badge: "MCP 扩展",
+    desc: "基于 Model Context Protocol 的跨仓库文件检索、符号跳转与跨项目上下文共享桥梁。",
+    version: "v1.1.5",
+    author: "MCP Standards",
+    downloads: "53k"
+  },
+  {
+    id: "@antigravity/frontend-canvas",
+    name: "Creative UI Canvas",
+    category: "前端设计",
+    icon: "🎨",
+    badge: "视觉构建",
+    desc: "支持 Tailwind CSS、React、Vue 原型可视化预览与实时组件样式微调。",
+    version: "v1.6.0",
+    author: "DesignX",
+    downloads: "91k"
+  }
+];
+
+let currentPluginTab = "market";
+let installedPluginsCache = [];
+
+async function showPlugins(initialTab = "market") {
+  currentPluginTab = initialTab;
+
+  openModal("🧩 Antigravity 插件与扩展中心", `
+    <div class="plugin-modal-wrap">
+      <!-- Tabs Header -->
+      <div class="plugin-tabs">
+        <button class="plugin-tab-btn ${currentPluginTab === 'market' ? 'active' : ''}" onclick="switchPluginTab('market')">
+          <i data-lucide="compass" style="width:14px;height:14px;"></i> 推荐市场
+        </button>
+        <button class="plugin-tab-btn ${currentPluginTab === 'installed' ? 'active' : ''}" onclick="switchPluginTab('installed')">
+          <i data-lucide="package" style="width:14px;height:14px;"></i> 已安装插件 <span id="installed-count-badge" style="background:rgba(255,255,255,0.2);padding:1px 6px;border-radius:10px;font-size:10px;">0</span>
+        </button>
+        <button class="plugin-tab-btn ${currentPluginTab === 'import' ? 'active' : ''}" onclick="switchPluginTab('import')">
+          <i data-lucide="download-cloud" style="width:14px;height:14px;"></i> 生态导入
+        </button>
+        <button class="plugin-tab-btn ${currentPluginTab === 'custom' ? 'active' : ''}" onclick="switchPluginTab('custom')">
+          <i data-lucide="plus-circle" style="width:14px;height:14px;"></i> 自定义安装
+        </button>
       </div>
-    </div>
-    <div class="form-label">已安装插件列表</div>
-    <div id="plugin-items-wrap">
-      <div style="color:var(--text-dim);font-size:12.5px;padding:12px;text-align:center;">加载中...</div>
+
+      <!-- Tab 1: Marketplace -->
+      <div id="plugin-tab-market" class="plugin-tab-content" style="display:${currentPluginTab === 'market' ? 'block' : 'none'};">
+        <div class="plugin-search-bar">
+          <input id="market-search-input" class="form-input" placeholder="🔍 搜索热门插件、工具或 MCP 服务..." oninput="filterMarketPlugins(this.value)" />
+          <button class="btn btn-ghost btn-icon" onclick="renderMarketPlugins()" title="刷新市场"><i data-lucide="rotate-cw" style="width:14px;height:14px;"></i></button>
+        </div>
+        <div id="market-plugins-grid" class="plugin-grid"></div>
+      </div>
+
+      <!-- Tab 2: Installed -->
+      <div id="plugin-tab-installed" class="plugin-tab-content" style="display:${currentPluginTab === 'installed' ? 'block' : 'none'};">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="font-size:12.5px;color:var(--text-dim);">当前已由 Antigravity CLI 成功加载的插件与扩展</span>
+          <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="loadInstalledPlugins()"><i data-lucide="rotate-cw" style="width:12px;height:12px;"></i> 刷新列表</button>
+        </div>
+        <div id="plugin-items-wrap">
+          <div style="color:var(--text-dim);font-size:12.5px;padding:24px;text-align:center;">
+            <span class="thinking-dots"><i></i><i></i><i></i></span> 正在读取 CLI 插件环境...
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 3: Ecosystem Import -->
+      <div id="plugin-tab-import" class="plugin-tab-content" style="display:${currentPluginTab === 'import' ? 'block' : 'none'};">
+        <div style="font-size:13px;color:var(--text-dim);margin-bottom:14px;line-height:1.6;">
+          Antigravity 原生兼容多平台 AI 插件体系。您可以一键将已有环境中的插件生态同步导入至当前工作区：
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+          <div class="plugin-market-card" style="padding:14px;">
+            <div class="plugin-market-header">
+              <div class="plugin-market-icon">✨</div>
+              <div class="plugin-market-title">
+                <h4>Gemini Code Assist</h4>
+                <span class="plugin-market-badge">Google 官方生态</span>
+              </div>
+            </div>
+            <div class="plugin-market-desc" style="margin:8px 0;">自动同步并加载 Gemini 官方扩展及开发环境配置。</div>
+            <button class="btn btn-primary" style="width:100%;font-size:12.5px;margin-top:6px;" onclick="handlePluginOp('import', 'gemini')">
+              <i data-lucide="download" style="width:14px;height:14px;"></i> 一键导入 Gemini 插件
+            </button>
+          </div>
+
+          <div class="plugin-market-card" style="padding:14px;">
+            <div class="plugin-market-header">
+              <div class="plugin-market-icon">⚡</div>
+              <div class="plugin-market-title">
+                <h4>Claude Code 插件</h4>
+                <span class="plugin-market-badge" style="background:rgba(249,115,22,0.15);color:#fb923c;">跨生态扩展</span>
+              </div>
+            </div>
+            <div class="plugin-market-desc" style="margin:8px 0;">一键从 Claude Code 目录导入全部自定义 Skills 与 Rules。</div>
+            <button class="btn btn-primary" style="width:100%;font-size:12.5px;margin-top:6px;" onclick="handlePluginOp('import', 'claude')">
+              <i data-lucide="download" style="width:14px;height:14px;"></i> 一键导入 Claude 插件
+            </button>
+          </div>
+        </div>
+
+        <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:12px;">
+          <div class="form-label" style="margin-bottom:6px;">从本地目录或特定源导入</div>
+          <div style="display:flex;gap:8px;">
+            <input id="import-source-path" class="form-input" placeholder="输入本地文件夹路径或特定插件源 (如 /path/to/plugins)" />
+            <button class="btn btn-ghost" onclick="const p = $('#import-source-path').value.trim(); if(!p) return toast('请输入源路径'); handlePluginOp('import', p);">导入</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 4: Custom Install -->
+      <div id="plugin-tab-custom" class="plugin-tab-content" style="display:${currentPluginTab === 'custom' ? 'block' : 'none'};">
+        <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:14px;margin-bottom:14px;">
+          <div class="form-label" style="font-weight:600;margin-bottom:6px;">安装自定义插件包 / Git 仓库</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">
+            支持直接输入官方市场标识 <code>plugin@marketplace</code>、npm 包名 <code>@scope/pkg</code>、Git 仓库地址或本地插件路径。
+          </div>
+          <div style="display:flex;gap:8px;">
+            <input id="new-plugin-name" class="form-input" placeholder="例如: @antigravity/code-reviewer 或 https://github.com/..." />
+            <button id="btn-install-plugin" class="btn btn-primary" style="white-space:nowrap;">
+              <i data-lucide="download" style="width:14px;height:14px;"></i> 立即安装
+            </button>
+          </div>
+        </div>
+
+        <div style="background:var(--bg-secondary);border-radius:var(--radius-md);padding:12px;font-size:12px;color:var(--text-dim);line-height:1.6;">
+          <div style="font-weight:600;color:var(--text-main);margin-bottom:4px;">💡 插件安装说明：</div>
+          <div>• 插件可包含专属 <code>SKILL.md</code> 技能执行链、<code>GEMINI.md</code> 行为规则及 MCP 外部服务器。</div>
+          <div>• 安装完成后，系统会自动注册并在执行任务时代劳调用，无需手动重启。</div>
+        </div>
+      </div>
     </div>
   `);
 
+  refreshIcons();
+  renderMarketPlugins();
+  loadInstalledPlugins();
+
+  const installBtn = $("#btn-install-plugin");
+  if (installBtn) {
+    installBtn.onclick = async () => {
+      const name = $("#new-plugin-name").value.trim();
+      if (!name) return toast("请输入插件包名或路径");
+      await handlePluginOp("install", name);
+    };
+  }
+}
+
+window.switchPluginTab = function(tab) {
+  currentPluginTab = tab;
+  document.querySelectorAll(".plugin-tab-btn").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".plugin-tab-content").forEach(c => c.style.display = "none");
+  
+  const targetBtn = Array.from(document.querySelectorAll(".plugin-tab-btn")).find(b => b.getAttribute("onclick")?.includes(`'${tab}'`));
+  if (targetBtn) targetBtn.classList.add("active");
+  const targetContent = $(`#plugin-tab-${tab}`);
+  if (targetContent) targetContent.style.display = "block";
+  refreshIcons();
+};
+
+window.renderMarketPlugins = function(filter = "") {
+  const grid = $("#market-plugins-grid");
+  if (!grid) return;
+
+  const q = (filter || "").toLowerCase().trim();
+  const list = MARKETPLACE_PLUGINS.filter(p => 
+    !q || p.name.toLowerCase().includes(q) || p.desc.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || p.id.toLowerCase().includes(q)
+  );
+
+  if (!list.length) {
+    grid.innerHTML = `<div style="grid-column:1/-1;color:var(--text-dim);font-size:12.5px;padding:32px;text-align:center;">没有找到与 "${escapeHtml(filter)}" 相关的插件</div>`;
+    return;
+  }
+
+  grid.innerHTML = list.map(p => {
+    const isInstalled = installedPluginsCache.some(ip => ip.name === p.id || ip.name.includes(p.id.split('/')[1] || p.id));
+    return `
+      <div class="plugin-market-card">
+        <div>
+          <div class="plugin-market-header">
+            <div class="plugin-market-icon">${p.icon}</div>
+            <div class="plugin-market-title">
+              <h4>${escapeHtml(p.name)}</h4>
+              <span class="plugin-market-badge">${escapeHtml(p.category)} · ${escapeHtml(p.badge)}</span>
+            </div>
+          </div>
+          <div class="plugin-market-desc" style="margin-top:8px;">${escapeHtml(p.desc)}</div>
+        </div>
+        <div class="plugin-market-footer">
+          <div class="plugin-market-meta">
+            <span>📦 ${p.version}</span>
+            <span>⬇️ ${p.downloads}</span>
+          </div>
+          ${isInstalled ? `
+            <button class="btn btn-ghost" style="padding:4px 10px;font-size:11.5px;color:var(--success);border-color:rgba(16,185,129,0.3);" disabled>
+              <i data-lucide="check" style="width:12px;height:12px;"></i> 已安装
+            </button>
+          ` : `
+            <button class="btn btn-primary" style="padding:4px 12px;font-size:12px;" onclick="handlePluginOp('install','${escapeHtml(p.id)}')">
+              安装
+            </button>
+          `}
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  refreshIcons();
+};
+
+window.filterMarketPlugins = function(val) {
+  renderMarketPlugins(val);
+};
+
+window.loadInstalledPlugins = async function() {
   const wrap = $("#plugin-items-wrap");
+  const countBadge = $("#installed-count-badge");
+  if (!wrap) return;
+
   try {
     const r = await fetch("/api/plugins");
     const d = await r.json();
     const list = d.plugins || [];
+    installedPluginsCache = list;
+    if (countBadge) countBadge.innerText = String(list.length);
+
     if (!list.length) {
-      wrap.innerHTML = `<div style="color:var(--text-dim);font-size:12.5px;padding:12px;text-align:center;">当前暂未安装任何 Antigravity 插件</div>`;
-    } else {
-      wrap.innerHTML = list.map((p) => `
-        <div class="plugin-card">
-          <div class="plugin-info">
-            <strong>${escapeHtml(p.name)}</strong>
-            <span>${escapeHtml(p.line || "已加载")}</span>
-          </div>
-          <div style="display:flex;gap:6px;">
-            <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="handlePluginOp('enable','${escapeHtml(p.name)}')">启用</button>
-            <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="handlePluginOp('disable','${escapeHtml(p.name)}')">禁用</button>
-            <button class="btn btn-danger" style="padding:4px 8px;font-size:12px;" onclick="handlePluginOp('uninstall','${escapeHtml(p.name)}')">卸载</button>
-          </div>
+      wrap.innerHTML = `
+        <div style="background:var(--bg-primary);border:1px dashed var(--border-color);border-radius:var(--radius-md);padding:32px;text-align:center;">
+          <div style="font-size:28px;margin-bottom:8px;">📦</div>
+          <div style="color:var(--text-main);font-size:13.5px;font-weight:600;margin-bottom:4px;">当前暂未安装任何插件</div>
+          <div style="color:var(--text-dim);font-size:12px;margin-bottom:14px;">您可以前往【推荐市场】一键挑选安装，或从 Claude/Gemini 生态一键导入。</div>
+          <button class="btn btn-primary" style="font-size:12px;" onclick="switchPluginTab('market')">
+            <i data-lucide="compass" style="width:13px;height:13px;"></i> 探索推荐市场
+          </button>
         </div>
-      `).join("");
+      `;
+    } else {
+      wrap.innerHTML = list.map((p) => {
+        const isEnabled = !/disabled|inactive/i.test(p.line || "");
+        return `
+          <div class="plugin-card">
+            <div class="plugin-info">
+              <strong>
+                <span class="plugin-status-dot ${isEnabled ? '' : 'disabled'}"></span>
+                ${escapeHtml(p.name)}
+              </strong>
+              <span>${escapeHtml(p.line || (isEnabled ? "🟢 已激活并运行中" : "⚪ 已停用"))}</span>
+            </div>
+            <div style="display:flex;gap:6px;">
+              ${isEnabled ? `
+                <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="handlePluginOp('disable','${escapeHtml(p.name)}')">禁用</button>
+              ` : `
+                <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="handlePluginOp('enable','${escapeHtml(p.name)}')">启用</button>
+              `}
+              <button class="btn btn-danger" style="padding:4px 8px;font-size:12px;" onclick="handlePluginOp('uninstall','${escapeHtml(p.name)}')">卸载</button>
+            </div>
+          </div>
+        `;
+      }).join("");
     }
   } catch (e) {
-    wrap.innerHTML = `<div style="color:var(--danger);padding:10px;">加载插件失败: ${escapeHtml(e.message)}</div>`;
+    wrap.innerHTML = `<div style="color:var(--danger);padding:14px;background:rgba(239,68,68,0.1);border-radius:var(--radius-md);">加载插件失败: ${escapeHtml(e.message)}</div>`;
   }
 
-  $("#btn-install-plugin").onclick = async () => {
-    const name = $("#new-plugin-name").value.trim();
-    if (!name) return toast("请输入插件名");
-    await handlePluginOp("install", name);
-  };
-}
+  refreshIcons();
+  renderMarketPlugins($("#market-search-input")?.value || "");
+};
 
 window.handlePluginOp = async function(op, name) {
-  toast(`正在执行插件 ${op}...`);
+  const opLabels = {
+    install: "安装插件",
+    uninstall: "卸载插件",
+    enable: "启用插件",
+    disable: "禁用插件",
+    import: "导入插件生态",
+    validate: "校验插件"
+  };
+  const label = opLabels[op] || op;
+  toast(`正在执行 ${label} [${name || ''}]...`);
+
   try {
     const res = await fetch("/api/plugins/" + op, {
       method: "POST",
@@ -1431,10 +1766,10 @@ window.handlePluginOp = async function(op, name) {
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || "操作失败");
-    toast(d.message || "执行成功");
-    showPlugins();
+    toast(d.message || `${label} 执行成功`);
+    await loadInstalledPlugins();
   } catch (e) {
-    toast("失败: " + e.message);
+    toast(`执行失败: ${e.message}`);
   }
 };
 
@@ -1795,8 +2130,34 @@ $("#btn-theme").addEventListener("click", () => {
   applyTheme(cur === "dark" ? "light" : "dark");
 });
 $("#btn-send").addEventListener("click", handleSend);
-$("#btn-plugins").addEventListener("click", showPlugins);
+$("#btn-plugins").addEventListener("click", () => showPlugins("market"));
 $("#btn-about").addEventListener("click", showAbout);
+
+// ── 快速回到底部悬浮按钮 ──
+const chatFeedEl = $("#chat-feed");
+const btnScrollBottomEl = $("#btn-scroll-bottom");
+
+function checkScrollBottom() {
+  if (!chatFeedEl || !btnScrollBottomEl) return;
+  const distFromBottom = chatFeedEl.scrollHeight - chatFeedEl.scrollTop - chatFeedEl.clientHeight;
+  if (distFromBottom > 120) {
+    btnScrollBottomEl.classList.remove("hidden");
+  } else {
+    btnScrollBottomEl.classList.add("hidden");
+  }
+}
+
+if (chatFeedEl) {
+  chatFeedEl.addEventListener("scroll", checkScrollBottom, { passive: true });
+}
+if (btnScrollBottomEl) {
+  btnScrollBottomEl.addEventListener("click", () => {
+    if (chatFeedEl) {
+      chatFeedEl.scrollTo({ top: chatFeedEl.scrollHeight, behavior: "smooth" });
+      setTimeout(() => btnScrollBottomEl.classList.add("hidden"), 300);
+    }
+  });
+}
 
 // ── 浏览器切后台/回前台处理（借鉴 CloudCLI 的自动重连策略）──
 // 浏览器切到后台会杀 WebSocket 省电，但后端 Run Registry 一直在跑。
@@ -2079,6 +2440,21 @@ if (btnAttach) {
   composer.addEventListener("dragover", (e) => { e.preventDefault(); composer.style.border = "1px solid var(--accent)"; });
   composer.addEventListener("dragleave", () => { composer.style.border = ""; });
   composer.addEventListener("drop", (e) => { e.preventDefault(); composer.style.border = ""; handleFiles(e.dataTransfer.files); });
+  // 剪贴板截图粘贴支持 (Ctrl+V / Command+V)
+  composer.addEventListener("paste", (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const pastedFiles = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file') {
+        const file = items[i].getAsFile();
+        if (file) pastedFiles.push(file);
+      }
+    }
+    if (pastedFiles.length) {
+      handleFiles(pastedFiles);
+    }
+  });
 }
 
 async function handleFiles(files) {
@@ -2126,3 +2502,124 @@ function renderAttachmentPreview() {
     });
   });
 }
+
+// ── 网页终端（xterm.js + WebSocket /ws/terminal）──
+let term = null;
+let termFit = null;
+let termWs = null;
+
+function openTerminal() {
+  const panel = $("#terminal-panel");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  // 如果已创建，只 focus
+  if (term) { setTimeout(() => { term.focus(); termFit.fit(); }, 50); return; }
+  // 等待 xterm 库加载
+  if (typeof Terminal === 'undefined') { setTimeout(openTerminal, 200); return; }
+  term = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#0b0f17' } });
+  termFit = new FitAddon.FitAddon();
+  term.loadAddon(termFit);
+  term.open($("#terminal-container"));
+  termFit.fit();
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  termWs = new WebSocket(`${proto}//${location.host}/ws/terminal`);
+
+  termWs.onopen = () => {
+    termWs.send(JSON.stringify({ type: 'start', cols: term.cols, rows: term.rows, cwd: "/vol5/@apphome/claude code/workspace/google-antigravity-webui" }));
+    term.write('\r\n\x1b[32m连接成功，终端已启动\x1b[0m\r\n');
+  };
+  termWs.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'data') term.write(msg.data);
+    if (msg.type === 'exit') term.write(`\r\n\x1b[31m进程退出 (code=${msg.exitCode})\x1b[0m\r\n`);
+  };
+  termWs.onclose = () => term.write('\r\n\x1b[31m连接已断开\x1b[0m\r\n');
+  termWs.onerror = () => term.write('\r\n\x1b[31m连接错误\x1b[0m\r\n');
+
+  term.onData((data) => { if (termWs && termWs.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'input', data })); });
+  term.onResize((cols, rows) => { if (termWs && termWs.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'resize', cols, rows })); });
+
+  // 响应面板大小变化
+  new ResizeObserver(() => { if (termFit) termFit.fit(); }).observe($("#terminal-container"));
+}
+
+function closeTerminal() { $("#terminal-panel").classList.add("hidden"); }
+
+// ── 文件管理 ──
+async function openFilePanel() {
+  $("#file-panel").classList.remove("hidden");
+  await loadFileTree("");
+}
+
+async function loadFileTree(dir) {
+  const container = $("#file-tree-container");
+  if (!container) return;
+  container.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;">加载中…</div>';
+  try {
+    const res = await fetch("/api/workspace/tree");
+    const data = await res.json();
+    if (!data.tree) { container.innerHTML = '<div style="padding:12px;color:var(--text-muted);">无法加载</div>'; return; }
+    container.innerHTML = "";
+    renderFileTree(data.tree, container, 0);
+    refreshIcons();
+  } catch (e) { container.innerHTML = '<div style="padding:12px;color:var(--danger);">加载失败</div>'; }
+}
+
+function renderFileTree(nodes, container, depth) {
+  const ul = el("div", "file-tree-list");
+  for (const node of nodes) {
+    const item = el("div", "file-tree-item" + (node.type === 'dir' ? ' dir' : ' file'));
+    item.style.paddingLeft = (depth * 16 + 8) + "px";
+    const icon = node.type === 'dir' ? '📁' : '📄';
+    const name = el('span', 'file-tree-name', icon + ' ' + node.name);
+    item.append(name);
+    if (node.type === 'dir' && node.children) {
+      item.classList.add('expanded');
+      name.style.cursor = 'pointer';
+      name.onclick = () => { item.classList.toggle('expanded'); };
+      const childContainer = el('div', 'file-tree-children');
+      renderFileTree(node.children, childContainer, depth + 1);
+      item.append(childContainer);
+    }
+    if (node.type === 'file') {
+      item.style.cursor = 'pointer';
+      item.onclick = () => openFile(node.path);
+    }
+    ul.append(item);
+  }
+  container.append(ul);
+}
+
+async function openFile(filePath) {
+  const editorWrap = $("#file-editor-wrap");
+  const pathEl = $("#file-editor-path");
+  const editor = $("#file-editor");
+  if (!editorWrap) return;
+  try {
+    const res = await fetch("/api/workspace/file?path=" + encodeURIComponent(filePath));
+    const data = await res.json();
+    if (data.error) return toast(data.error);
+    pathEl.textContent = filePath;
+    editor.value = data.content || '';
+    editorWrap.classList.remove("hidden");
+  } catch (e) { toast("打开失败：" + e.message); }
+}
+
+// 绑定按钮
+const btnTerminal = $("#btn-terminal");
+const btnFiles = $("#btn-files");
+if (btnTerminal) btnTerminal.addEventListener("click", openTerminal);
+if ($("#terminal-close")) $("#terminal-close").addEventListener("click", closeTerminal);
+if (btnFiles) btnFiles.addEventListener("click", openFilePanel);
+if ($("#file-close")) $("#file-close").addEventListener("click", () => $("#file-panel").classList.add("hidden"));
+if ($("#file-save")) $("#file-save").addEventListener("click", async () => {
+  const filePath = $("#file-editor-path").textContent;
+  const content = $("#file-editor").value;
+  try {
+    const res = await fetch("/api/workspace/file", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ path: filePath, content }) });
+    const d = await res.json();
+    if (d.error) return toast(d.error);
+    toast("已保存 " + filePath);
+  } catch (e) { toast("保存失败：" + e.message); }
+});

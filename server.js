@@ -1283,3 +1283,104 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => debugLog('[ws/chat] client disconnected'));
   ws.on('error', () => debugLog('[ws/chat] socket error'));
 });
+
+// ── 网页终端（借鉴 CloudCLI：node-pty + WebSocket 双向传输）──
+const { spawn: ptySpawn } = createRequire(import.meta.url)('node-pty');
+const terminalSessions = new Map();
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname !== '/ws/terminal') return; // 只处理 /ws/terminal，/ws/chat 已上面处理
+
+  debugLog('[ws/terminal] client connected');
+  let ptyProcess = null;
+
+  ws.on('message', (rawData) => {
+    let msg;
+    try { msg = JSON.parse(rawData.toString()); } catch { return; }
+
+    if (msg.type === 'start') {
+      const cols = msg.cols || 80;
+      const rows = msg.rows || 24;
+      const cwd = msg.cwd || process.cwd();
+      const shell = process.env.SHELL || '/bin/bash';
+      ptyProcess = ptySpawn(shell, [], {
+        name: 'xterm-color',
+        cols, rows, cwd,
+        env: { ...process.env, TERM: 'xterm-256color' }
+      });
+      debugLog('[ws/terminal] started pid=' + ptyProcess.pid);
+
+      ptyProcess.onData((data) => {
+        try { ws.send(JSON.stringify({ type: 'data', data })); } catch (_) {}
+      });
+      ptyProcess.onExit((e) => {
+        try { ws.send(JSON.stringify({ type: 'exit', exitCode: e.exitCode })); } catch (_) {}
+        debugLog('[ws/terminal] exited code=' + e.exitCode);
+      });
+      ws.send(JSON.stringify({ type: 'ready' }));
+    }
+
+    if (msg.type === 'input' && ptyProcess) {
+      ptyProcess.write(msg.data);
+    }
+    if (msg.type === 'resize' && ptyProcess) {
+      try { ptyProcess.resize(msg.cols || 80, msg.rows || 24); } catch (_) {}
+    }
+  });
+
+  ws.on('close', () => {
+    if (ptyProcess) { try { ptyProcess.kill(); } catch (_) {} }
+    debugLog('[ws/terminal] client disconnected');
+  });
+  ws.on('error', () => debugLog('[ws/terminal] socket error'));
+});
+
+// ── 文件管理接口（补充：创建/删除/重命名/保存）──
+app.post('/api/workspace/file', async (req, res) => {
+  const filePath = String(req.body?.path || '');
+  const content = String(req.body?.content || '');
+  if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
+  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
+  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  try {
+    await writeFile(safePath, content, 'utf-8');
+    send(res, 200, { ok: true });
+  } catch (e) { send(res, 500, { error: e.message }); }
+});
+
+app.delete('/api/workspace/file', async (req, res) => {
+  const filePath = String(req.query.path || '');
+  if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
+  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
+  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  try {
+    fs.rmSync(safePath, { recursive: true });
+    send(res, 200, { ok: true });
+  } catch (e) { send(res, 500, { error: e.message }); }
+});
+
+app.post('/api/workspace/create', async (req, res) => {
+  const { path: relPath, type } = req.body || {};
+  if (!relPath) return send(res, 400, { error: '缺少 path' });
+  const safePath = path.resolve(WORKSPACE_ROOT, relPath);
+  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  try {
+    if (type === 'dir') fs.mkdirSync(safePath, { recursive: true });
+    else fs.writeFileSync(safePath, '', 'utf-8');
+    send(res, 200, { ok: true });
+  } catch (e) { send(res, 500, { error: e.message }); }
+});
+
+app.put('/api/workspace/rename', async (req, res) => {
+  const { oldPath, newPath } = req.body || {};
+  if (!oldPath || !newPath) return send(res, 400, { error: '缺少路径' });
+  const safeOld = path.resolve(WORKSPACE_ROOT, oldPath);
+  const safeNew = path.resolve(WORKSPACE_ROOT, newPath);
+  if (!safeOld.startsWith(WORKSPACE_ROOT) || !safeNew.startsWith(WORKSPACE_ROOT))
+    return send(res, 403, { error: '非法路径' });
+  try {
+    fs.renameSync(safeOld, safeNew);
+    send(res, 200, { ok: true });
+  } catch (e) { send(res, 500, { error: e.message }); }
+});
