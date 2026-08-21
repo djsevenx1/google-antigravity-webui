@@ -1,14 +1,17 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Google Antigravity Web UI</title>
   <link rel="stylesheet" href="/vendor/github-dark.min.css" id="hljs-theme" />
-  <link rel="stylesheet" href="/style.css?v=4.0" />
+  <link rel="stylesheet" href="/style.css?v=4.8" />
   <script defer src="/vendor/marked.min.js"></script>
   <script defer src="/vendor/highlight.min.js"></script>
   <script defer src="/vendor/lucide.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 </head>
 <body>
   <!-- Header / Topbar -->
@@ -131,6 +134,14 @@
           <i data-lucide="download" style="width: 15px; height: 15px;"></i>
           <span>导出对话 (.md)</span>
         </button>
+        <button id="btn-terminal" class="sidebar-nav-btn" title="网页终端">
+          <i data-lucide="terminal" style="width: 15px; height: 15px;"></i>
+          <span>终端</span>
+        </button>
+        <button id="btn-files" class="sidebar-nav-btn" title="文件管理">
+          <i data-lucide="folder-tree" style="width: 15px; height: 15px;"></i>
+          <span>文件</span>
+        </button>
         <button id="btn-plugins" class="sidebar-nav-btn">
           <i data-lucide="blocks" style="width: 15px; height: 15px;"></i>
           <span>插件中心</span>
@@ -170,17 +181,13 @@
       <!-- Active Chat Feed -->
       <div id="chat-feed" class="chat-feed hidden"></div>
 
+      <!-- Quick Scroll to Bottom Floating Button -->
+      <button id="btn-scroll-bottom" class="scroll-bottom-btn hidden" title="快速回到底部">
+        <i data-lucide="arrow-down" style="width: 17px; height: 17px;"></i>
+      </button>
+
       <!-- Composer / Input Box -->
       <div class="composer-wrap">
-        <!-- Quick Prompts Bar -->
-        <div class="quick-prompts-bar">
-          <button class="quick-pill" data-insert="请帮我重构并优化以下代码的结构与可读性：\n\n">⚡ 代码重构</button>
-          <button class="quick-pill" data-insert="请为以下代码编写详细的单元测试用例：\n\n">🧪 编写单测</button>
-          <button class="quick-pill" data-insert="请帮我分析排查以下报错与异常的根本原因：\n\n">🐞 报错排查</button>
-          <button class="quick-pill" data-insert="请为以下代码生成标准的注释与 Markdown 文档说明：\n\n">📑 编写文档</button>
-          <button class="quick-pill" data-insert="请帮我设计一个高可用、可扩展的架构方案：\n\n">💡 架构设计</button>
-        </div>
-
         <div class="composer-box">
           <!-- Controls Bar (Compact) -->
           <div class="composer-controls">
@@ -232,6 +239,31 @@
     </main>
   </div>
 
+  <!-- 网页终端面板 -->
+  <div id="terminal-panel" class="terminal-panel hidden">
+    <div class="terminal-header">
+      <span>终端</span>
+      <button id="terminal-close" class="btn btn-ghost btn-icon" title="关闭终端">✕</button>
+    </div>
+    <div id="terminal-container" class="terminal-container"></div>
+  </div>
+
+  <!-- 文件管理面板 -->
+  <div id="file-panel" class="file-panel hidden">
+    <div class="file-header">
+      <span>文件管理</span>
+      <button id="file-close" class="btn btn-ghost btn-icon" title="关闭">✕</button>
+    </div>
+    <div id="file-tree-container" class="file-tree-container"></div>
+    <div id="file-editor-wrap" class="file-editor-wrap hidden">
+      <div class="file-editor-bar">
+        <span id="file-editor-path"></span>
+        <button id="file-save" class="btn btn-primary btn-sm">保存</button>
+      </div>
+      <textarea id="file-editor" class="file-editor" spellcheck="false"></textarea>
+    </div>
+  </div>
+
   <!-- Dynamic Modal Overlay -->
   <div id="modal-root" class="modal-overlay hidden">
     <div class="modal-dialog" id="modal-dialog" role="dialog" aria-modal="true">
@@ -248,6 +280,6 @@
   <!-- Toast Notification -->
   <div id="toast" class="toast-msg hidden"></div>
 
-  <script src="/app.js?v=4.0"></script>
+  <script src="/app.js?v=4.8"></script>
 </body>
 </html>
