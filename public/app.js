@@ -293,6 +293,7 @@ function renderLoginArea() {
       userWrap.append(proPill);
     }
 
+
     area.append(userWrap);
 
     const sidebarUserCard = $("#sidebar-user-card");
@@ -965,6 +966,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
         ws.onmessage = (event) => {
           let data;
           try { data = JSON.parse(event.data); } catch (_) { return; }
+          if (data.idle) { receivedDone = true; done(() => resolve()); return; } // 后台没在跑，当 done 处理
           if (data.meta && data.meta.needsPermission) { needsPerm = true; permMsg = data.error || "CLI 需要授权"; return; }
           if (data.meta && data.meta.quotaExceeded) { streamError = Object.assign(new Error(data.error || "模型配额已用尽"), { quotaExceeded: true }); done(() => reject(streamError)); return; }
           if (data.error) { streamError = new Error(data.error); done(() => reject(streamError)); return; }
