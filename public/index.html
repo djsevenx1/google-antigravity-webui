@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Google Antigravity Web UI</title>
   <link rel="stylesheet" href="/vendor/github-dark.min.css" id="hljs-theme" />
-  <link rel="stylesheet" href="/style.css?v=5.3" />
+  <link rel="stylesheet" href="/style.css?v=5.6" />
   <script defer src="/vendor/marked.min.js"></script>
   <script defer src="/vendor/highlight.min.js"></script>
   <script defer src="/vendor/lucide.min.js"></script>
@@ -203,11 +203,8 @@
             <div class="pill-select-wrap" title="CLI 命令执行权限策略">
               <i data-lucide="shield-check" style="width: 12px; height: 12px; color: #10b981;"></i>
               <select id="permissions">
-                <option value="approve" selected>自动批准</option>
-                <option value="sandbox">沙箱隔离</option>
-                <option value="accept-edits">接受修改</option>
-                <option value="plan">只读计划</option>
-                <option value="default">严格询问</option>
+                <option value="approve" selected>🟢 自动批准</option>
+                <option value="ask">🟡 询问模式</option>
               </select>
             </div>
           </div>
@@ -253,6 +250,6 @@
   <!-- Toast Notification -->
   <div id="toast" class="toast-msg hidden"></div>
 
-  <script src="/app.js?v=5.3"></script>
+  <script src="/app.js?v=5.6"></script>
 </body>
 </html>

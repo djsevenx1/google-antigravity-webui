@@ -705,7 +705,7 @@ app.post('/api/chat', async (req, res) => {
   }
   debugLog('[api/chat] authOK: cliAuthenticated=true');
 
-  if (permRaw !== 'strict') applyAutoAllow();
+  if (permRaw === 'approve' || permRaw === '') applyAutoAllow();
 
   const convKey = conversationKey || clientConvId || 'default-chat';
   let conversationId = clientConvId || null;
@@ -862,7 +862,7 @@ app.post('/api/chat', async (req, res) => {
         meta: {
           needsPermission: true,
           description: '模型申请了权限操作，请选择权限策略后重试',
-          options: ['plan', 'sandbox', 'approve']
+          options: ["approve"]
         },
         error: e.message
       })}\n\n`);
@@ -1094,7 +1094,7 @@ wss.on('connection', (ws, req) => {
     }
     debugLog('[ws/chat] authOK');
 
-    if (permRaw !== 'strict') applyAutoAllow();
+    if (permRaw === 'approve' || permRaw === '') applyAutoAllow();
 
     const convKey = conversationKey || clientConvId || 'default-chat';
     let conversationId = clientConvId || null;
@@ -1264,7 +1264,7 @@ wss.on('connection', (ws, req) => {
       run.error = e;
       const errMsg = (e && e.message) || 'CLI 未返回内容';
       if (e && e.needsPermission) {
-        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ['plan', 'sandbox', 'approve'] }, error: errMsg });
+        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"] }, error: errMsg });
       } else if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
         broadcast({ meta: { quotaExceeded: true, description: '配额已用尽' }, error: errMsg });
       } else {
