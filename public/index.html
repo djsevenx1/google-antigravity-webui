@@ -111,15 +111,25 @@
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <button id="btn-new" class="new-chat-btn">
-          <span style="display: flex; align-items: center; gap: 6px;">
+          <span style="display: flex; align-items: center; gap: 7px;">
             <i data-lucide="plus" style="width: 15px; height: 15px;"></i>
-            新建对话
+            <span>新建对话</span>
           </span>
-          <kbd style="font-size: 10px; opacity: 0.6; padding: 2px 4px; border: 1px solid var(--border-color); border-radius: 4px;">Ctrl+K</kbd>
+          <kbd class="shortcut-kbd">Ctrl+K</kbd>
         </button>
-        <div class="search-input-wrap">
+        <div class="search-input-wrap" id="search-wrap">
           <i data-lucide="search" class="search-icon"></i>
-          <input type="text" id="session-search" class="search-input" placeholder="搜索历史会话..." />
+          <input type="text" id="session-search" class="search-input" placeholder="搜索历史会话..." autocomplete="off" spellcheck="false" />
+          <div class="search-trailing">
+            <button id="btn-clear-search" class="search-clear-btn" title="清空搜索 (Esc)" style="display: none;">
+              <i data-lucide="x" style="width: 12px; height: 12px;"></i>
+            </button>
+            <kbd class="search-kbd-hint" id="search-kbd-hint">Ctrl+F</kbd>
+          </div>
+        </div>
+        <div id="search-stats" class="search-stats" style="display: none;">
+          <span id="search-count-text">共 0 条匹配</span>
+          <button id="btn-cancel-search" class="search-cancel-link">清空</button>
         </div>
       </div>
 
@@ -127,6 +137,18 @@
 
       <div class="sidebar-footer">
         <div id="sidebar-user-card" class="sidebar-user-card" style="display:none;"></div>
+
+        <div class="sidebar-toggle-row" id="toggle-thinking-row" title="开启后在聊天中显示深度思考过程与工具调用详情">
+          <div class="sidebar-toggle-label">
+            <i data-lucide="brain-circuit" style="width: 15px; height: 15px;"></i>
+            <span>显示思考与工具</span>
+          </div>
+          <label class="toggle-switch" onclick="event.stopPropagation()">
+            <input type="checkbox" id="toggle-thinking" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
         <button id="btn-export" class="sidebar-nav-btn" title="导出当前对话为 Markdown">
           <i data-lucide="download" style="width: 15px; height: 15px;"></i>
           <span>导出对话 (.md)</span>
@@ -139,6 +161,10 @@
         <button id="btn-plugins" class="sidebar-nav-btn">
           <i data-lucide="blocks" style="width: 15px; height: 15px;"></i>
           <span>插件中心</span>
+        </button>
+        <button id="btn-web-logout" class="sidebar-nav-btn" title="退出 Web 访问登录" onclick="handleWebLogout()">
+          <i data-lucide="log-out" style="width: 15px; height: 15px; color: var(--danger);"></i>
+          <span style="color: var(--danger);">退出管理登录</span>
         </button>
       </div>
     </aside>
@@ -234,6 +260,65 @@
 
 
 
+  <!-- WebUI Login Gate Overlay (Private Access Control) -->
+  <div id="login-gate-overlay" class="login-gate-overlay">
+    <div class="login-gate-bg-glow"></div>
+    <div class="login-card" id="login-card">
+      <div class="login-header">
+        <div class="login-brand-badge">
+          <svg viewBox="0 0 113 113" height="36" width="36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M89.6992 93.695C94.3659 97.195 101.366 94.8617 94.9492 88.445C75.6992 69.7783 79.7825 18.445 55.8659 18.445C31.9492 18.445 36.0325 69.7783 16.7825 88.445C9.78251 95.445 17.3658 97.195 22.0325 93.695C40.1159 81.445 38.9492 59.8617 55.8659 59.8617C72.7825 59.8617 71.6159 81.445 89.6992 93.695Z" fill="#3186FF"/>
+          </svg>
+        </div>
+        <h2 class="login-title">Google Antigravity</h2>
+        <p class="login-subtitle">私有访问控制系统 · 身份鉴权</p>
+        <div class="login-security-tag">
+          <i data-lucide="shield-check" style="width:13px;height:13px;"></i>
+          <span>系统受密码访问保护</span>
+        </div>
+      </div>
+
+      <form id="login-form" class="login-form" onsubmit="handleWebLogin(event)">
+        <div id="login-error-alert" class="login-error-alert" style="display: none;"></div>
+
+        <div class="login-field-group">
+          <label for="login-username" class="login-label">管理员账号</label>
+          <div class="login-input-wrap">
+            <i data-lucide="user" class="login-field-icon"></i>
+            <input type="text" id="login-username" class="login-input" placeholder="请输入管理账号 (DJSeven)" autocomplete="username" required autofocus />
+          </div>
+        </div>
+
+        <div class="login-field-group">
+          <label for="login-password" class="login-label">访问密码</label>
+          <div class="login-input-wrap">
+            <i data-lucide="lock" class="login-field-icon"></i>
+            <input type="password" id="login-password" class="login-input" placeholder="请输入访问密码" autocomplete="current-password" required />
+            <button type="button" id="btn-toggle-pwd" class="login-pwd-toggle" title="显示/隐藏密码" onclick="togglePasswordVisibility()">
+              <i data-lucide="eye" id="icon-pwd-eye" style="width:15px;height:15px;"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="login-options-row">
+          <label class="login-remember-label">
+            <input type="checkbox" id="login-remember" checked />
+            <span>记住登录凭证</span>
+          </label>
+        </div>
+
+        <button type="submit" id="btn-submit-login" class="login-submit-btn">
+          <span id="login-btn-text">安全登入系统</span>
+          <i data-lucide="arrow-right" style="width:16px;height:16px;"></i>
+        </button>
+      </form>
+
+      <div class="login-footer-info">
+        <span>Google Antigravity Enterprise Engine v2.0</span>
+      </div>
+    </div>
+  </div>
+
   <!-- Dynamic Modal Overlay -->
   <div id="modal-root" class="modal-overlay hidden">
     <div class="modal-dialog" id="modal-dialog" role="dialog" aria-modal="true">
@@ -250,6 +335,6 @@
   <!-- Toast Notification -->
   <div id="toast" class="toast-msg hidden"></div>
 
-  <script src="/app.js?v=5.9"></script>
+  <script src="/app.js?v=6.2"></script>
 </body>
 </html>
