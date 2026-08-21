@@ -955,7 +955,8 @@ async function handleSend() {
     return;
   }
   const text = inputArea.value.trim();
-  if (!text) return;
+  // 没文本也没附件 → 不发
+  if (!text && (!pendingAttachments || !pendingAttachments.length)) return;
   if (!state.selectedModel) return toast("请先选择模型");
 
   inputArea.value = "";
