@@ -1651,7 +1651,7 @@ initApp();
 // 服务端 Run Registry 一直在跑（不因前端断开而 kill），重连后回放所有错过的事件并继续接收实时流。
 function tryReconnectToOngoingRun() {
   const conv = activeConv();
-  if (!conv || !conv.convId) return; // 没有官方会话 ID，无法续接
+  if (!conv) return;
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/ws/chat`;
@@ -1661,17 +1661,16 @@ function tryReconnectToOngoingRun() {
     // 发送 subscribe 请求：不创建新任务，只要求挂接到正在跑的 run（如有）
     ws.send(JSON.stringify({
       action: 'subscribe',
-      model: state.selectedModel || 'gemini-3.7-flash-low',
-      messages: [{ role: 'user', content: '' }], // 占位，server 对 subscribe 不启动新 run
+      model: state.selectedModel || 'gemini-3.7-flash-high',
+      messages: conv.messages || [{ role: 'user', content: '' }],
       conversationKey: conv.id,
-      conversationId: conv.convId
+      conversationId: conv.convId || undefined
     }));
   };
 
   let reconnected = false;
   let acc = '';
   const feed = $("#chat-feed");
-  // 在当前对话末尾插入一个"重连中"气泡
   let asstNode = null;
   let toolEvents = [];
 
@@ -1679,53 +1678,89 @@ function tryReconnectToOngoingRun() {
     let data;
     try { data = JSON.parse(event.data); } catch (_) { return; }
 
-    // 第一次收到任何事件 = 后台有正在跑的任务
-    if (!reconnected) {
+    if (data.idle) {
+      try { ws.close(); } catch (_) {}
+      return;
+    }
+
+    // 第一次收到非 idle 事件 = 后台确实有任务在跑或刚完成
+    if (!reconnected && (data.progress || data.delta || data.error)) {
       reconnected = true;
       state.streaming = true;
       updateSendButton();
-      // 移除可能的旧错误行
-      const oldErr = feed?.lastElementChild;
-      if (oldErr && oldErr.classList.contains('error')) oldErr.remove();
-      asstNode = appendMsgRow('assistant', '', true);
+
+      // 确保切出空状态
+      $("#chat-empty")?.classList.add("hidden");
+      $("#chat-feed")?.classList.remove("hidden");
+
+      // 检查当前最后一条是否已经是 assistant；若不是，追加一个流式气泡
+      const lastMsg = conv.messages[conv.messages.length - 1];
+      if (lastMsg && lastMsg.role === 'user') {
+        asstNode = appendMsgRow('assistant', '', true);
+      }
     }
 
-    if (data.error) { if (asstNode) asstNode.bubble.innerHTML = formatMarkdown(data.error, false); asstNode.row.className = 'message-row error'; return; }
+    if (data.error) {
+      if (asstNode) {
+        asstNode.bubble.innerHTML = formatMarkdown(data.error, false);
+        asstNode.row.className = 'message-row error';
+      }
+      state.streaming = false;
+      updateSendButton();
+      return;
+    }
+
     if (data.progress) {
-      if (data.toolName) toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
+      if (data.toolName) {
+        toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
+      }
       if (asstNode && !acc.replace(/​/g, '').trim()) {
         const tip = data.tip || '正在思考…';
-        asstNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span></div>`;
+        const wait = data.waited ? ` (${data.waited}s)` : '';
+        asstNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span></div>`;
       }
       return;
     }
+
     if (data.delta != null && data.delta !== '​') {
       acc += data.delta;
-      if (asstNode) { asstNode.bubble.innerHTML = formatMarkdown(acc, true); refreshIcons(); feed.scrollTop = feed.scrollHeight; }
-    }
-    if (data.conversationId) { conv.convId = data.conversationId; saveConversations(); }
-    if (data.done) {
-      if (asstNode) asstNode.bubble.innerHTML = formatMarkdown(acc, false);
-      asstNode.row.classList.remove('streaming');
-      state.streaming = false;
-      updateSendButton();
-      if (acc.replace(/​/g, '').trim()) {
-        conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined });
+      if (asstNode) {
+        asstNode.bubble.innerHTML = formatMarkdown(acc, true);
+        refreshIcons();
+        if (feed) feed.scrollTop = feed.scrollHeight;
       }
+    }
+
+    if (data.conversationId) {
+      conv.convId = data.conversationId;
       saveConversations();
-      ws.close();
+    }
+
+    if (data.done) {
+      if (asstNode) {
+        asstNode.bubble.innerHTML = formatMarkdown(acc, false);
+        asstNode.row.classList.remove('streaming');
+        state.streaming = false;
+        updateSendButton();
+        const cleanAcc = acc.replace(/​/g, '').trim();
+        if (cleanAcc || toolEvents.length) {
+          // 避免重复追加
+          const lastMsg = conv.messages[conv.messages.length - 1];
+          if (!lastMsg || lastMsg.role !== 'assistant') {
+            conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined });
+          }
+        }
+        saveConversations(true);
+      }
+      try { ws.close(); } catch (_) {}
     }
   };
 
   ws.onclose = () => {
     if (reconnected && state.streaming) {
-      // 后台任务还在跑但连接断了 → 1秒后自动重连
       setTimeout(() => { if (state.streaming) tryReconnectToOngoingRun(); }, 1000);
     }
   };
 
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
-
-  // 3秒内没收到任何事件 = 后台没有正在跑的任务，正常关闭
-  setTimeout(() => { if (!reconnected) { try { ws.close(); } catch (_) {} } }, 3000);
 }

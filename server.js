@@ -875,12 +875,19 @@ wss.on('connection', (ws, req) => {
     }
 
     // 新建后台 Run
+    const t0 = Date.now();
     const runAbortController = new AbortController();
     const run = {
+      convKey,
       abortController: runAbortController,
       listeners: new Set(),
       events: [],
       isRunning: true,
+      initialMessages: Array.isArray(messages) ? [...messages] : [],
+      accumulated: '',
+      toolEvents: [],
+      model: model,
+      startTime: t0,
       conversationId: conversationId || null,
       done: false,
       error: null
@@ -903,7 +910,6 @@ wss.on('connection', (ws, req) => {
     run.listeners.add(wsListener);
     ws.on('close', () => run.listeners.delete(wsListener));
 
-    const t0 = Date.now();
     let lastDataAt = Date.now();
 
     const heartbeat = setInterval(() => {
@@ -929,13 +935,19 @@ wss.on('connection', (ws, req) => {
           out = await cliProvider({
             model, messages, effort, permissions, conversationId,
             onDelta: (txt) => {
-              if (txt && txt !== '​') deliveredAnything = true;
+              if (txt && txt !== '​') {
+                deliveredAnything = true;
+                run.accumulated += txt;
+              }
               lastDataAt = Date.now();
               broadcast({ delta: txt });
             },
             onProgress: (p) => {
               lastDataAt = Date.now();
               const waited = Math.round((Date.now() - t0) / 1000);
+              if (p && p.toolName) {
+                run.toolEvents.push({ tool: p.toolName, stepType: p.stepType || '', tip: p.tip || '', waited });
+              }
               broadcast({ progress: true, waited, ...p });
             },
             signal: runAbortController.signal,
@@ -960,6 +972,43 @@ wss.on('connection', (ws, req) => {
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
       broadcast({ done: true, conversationId: out ? out.conversationId : null });
       run.done = true;
+
+      // ── 无论前端浏览器是否关闭/刷新，服务端必须将生成结果强制安全落盘 ──
+      try {
+        const filePath = getSessionFilePath(convKey);
+        let sessionData = {
+          id: convKey,
+          title: '新对话',
+          messages: [],
+          convId: out ? out.conversationId : (run.conversationId || null),
+          createdAt: run.startTime,
+          updatedAt: Date.now()
+        };
+        if (fs.existsSync(filePath)) {
+          try { sessionData = JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch (_) {}
+        }
+        sessionData.messages = [...(run.initialMessages || [])];
+        const cleanAcc = (run.accumulated || '').replace(/[\u200b]/g, '').trim();
+        if (cleanAcc || run.toolEvents?.length) {
+          sessionData.messages.push({
+            role: 'assistant',
+            content: run.accumulated,
+            tools: run.toolEvents?.length ? run.toolEvents : undefined,
+            meta: {
+              duration: Math.round((Date.now() - t0) / 100) / 10,
+              model: model
+            }
+          });
+        }
+        if (out && out.conversationId) sessionData.convId = out.conversationId;
+        sessionData.updatedAt = Date.now();
+        const tmpPath = `${filePath}.tmp.${Date.now()}`;
+        fs.writeFileSync(tmpPath, JSON.stringify(sessionData, null, 2), 'utf-8');
+        fs.renameSync(tmpPath, filePath);
+        debugLog(`[ws/chat] auto-saved session to ${filePath} (${sessionData.messages.length} msgs)`);
+      } catch (err) {
+        debugLog('[ws/chat] auto-save session error:', err && err.message);
+      }
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
