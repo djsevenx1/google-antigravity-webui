@@ -231,15 +231,16 @@ function updateUsageSummary(quotaData = null) {
   if (!badgeEl) return;
   if (quotaData && quotaData.windows && quotaData.windows.fiveHour) {
     const w = quotaData.windows.fiveHour;
-    badgeEl.textContent = `5h: ${w.percent}%`;
-    badgeEl.title = `5小时配额: ${w.percent}% (${w.resetsIn}后重置)`;
+    const tierBadge = quotaData.tierBadge || 'AI Pro';
+    badgeEl.textContent = `${tierBadge} ${w.percent}%`;
+    badgeEl.title = `${quotaData.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
   } else {
-    // 异步拉取最新 5小时配额更新侧边栏胶囊
     fetch("/api/usage").then((r) => r.json()).then((d) => {
       if (d && d.windows && d.windows.fiveHour) {
         const w = d.windows.fiveHour;
-        badgeEl.textContent = `5h: ${w.percent}%`;
-        badgeEl.title = `5小时配额: ${w.percent}% (${w.resetsIn}后重置)`;
+        const tierBadge = d.tierBadge || 'AI Pro';
+        badgeEl.textContent = `${tierBadge} ${w.percent}%`;
+        badgeEl.title = `${d.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
       }
     }).catch(() => {});
   }
@@ -256,19 +257,64 @@ function renderLoginArea() {
   const googleAcc = st && st.googleAccount;
   if (googleAcc) {
     const userWrap = el("div", "flex items-center gap-2");
-    userWrap.style.cssText = "cursor:pointer;padding:2px 8px 2px 3px;border-radius:18px;background:var(--bg-secondary);border:1px solid var(--border-color);display:inline-flex;align-items:center;";
-    userWrap.title = `Google 授权账号: ${googleAcc.name || ''} (${googleAcc.email})\n点击打开模型用量与配额中心`;
+    userWrap.style.cssText = "cursor:pointer;padding:2px 8px 2px 4px;border-radius:18px;background:var(--bg-secondary);border:1px solid var(--border-color);display:inline-flex;align-items:center;";
+    userWrap.title = `Google 授权账号: ${googleAcc.name || ''} (${googleAcc.email})\n[${googleAcc.tier || 'Google AI Pro'}]\n点击打开模型用量与配额中心`;
     userWrap.onclick = () => showUsageModal();
-    if (googleAcc.picture) {
-      const img = el("img", "avatar");
-      img.src = googleAcc.picture;
-      img.style.cssText = "width:22px;height:22px;border-radius:50%;object-fit:cover;";
-      userWrap.append(img);
+
+    const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
+    const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
+
+    const frame = el("div", `header-avatar-frame ${tierType}`);
+    if (tierType === 'pro') {
+      const crown = el("span", "header-avatar-crown", "👑");
+      frame.append(crown);
     }
+    if (googleAcc.picture) {
+      const img = el("img", "");
+      img.src = googleAcc.picture;
+      frame.append(img);
+    } else {
+      const initial = (googleAcc.name || googleAcc.email || "G").charAt(0).toUpperCase();
+      const textAvatar = el("div", "", initial);
+      textAvatar.style.cssText = "width:100%;height:100%;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;";
+      frame.append(textAvatar);
+    }
+    const badge = el("span", `header-avatar-badge ${tierType}`, badgeText);
+    frame.append(badge);
+    userWrap.append(frame);
+
     const nameSpan = el("span", "", googleAcc.name || googleAcc.email);
-    nameSpan.style.cssText = "font-size:12px;color:var(--text-primary);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;";
+    nameSpan.style.cssText = "font-size:12px;color:var(--text-primary);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;";
     userWrap.append(nameSpan);
+
+    if (tierType === 'pro') {
+      const proPill = el("span", "", "PRO");
+      proPill.style.cssText = "font-size:9.5px;font-weight:800;background:linear-gradient(135deg,#f59e0b,#8b5cf6);color:white;padding:1px 5px;border-radius:10px;line-height:1.2;box-shadow:0 1px 3px rgba(139,92,246,0.4);";
+      userWrap.append(proPill);
+    }
+
     area.append(userWrap);
+
+    const sidebarUserCard = $("#sidebar-user-card");
+    if (sidebarUserCard) {
+      sidebarUserCard.style.display = "flex";
+      sidebarUserCard.className = `sidebar-user-card ${tierType}`;
+      sidebarUserCard.onclick = () => showUsageModal();
+      sidebarUserCard.title = "点击查看 Google AI Pro 配额与用量详情";
+      sidebarUserCard.innerHTML = `
+        <div class="header-avatar-frame ${tierType}" style="width:28px;height:28px;">
+          ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+          <img src="${escapeHtml(googleAcc.picture)}" />
+          <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(googleAcc.name || 'Google 用户')}</div>
+          <div style="font-size:10.5px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(googleAcc.tier || 'Google AI Pro')}</div>
+        </div>
+        <i data-lucide="chevron-right" style="width:14px;height:14px;color:var(--text-dim);"></i>
+      `;
+    }
+
     refreshIcons();
     return;
   }
@@ -550,11 +596,33 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
   
   const avatar = el("div", "message-avatar");
   if (role === "user") {
-    avatar.innerHTML = `<i data-lucide="user" style="width:16px;height:16px;"></i>`;
+    const googleAcc = state.status?.googleAccount;
+    const tierType = googleAcc?.tierType || (googleAcc?.tier?.includes('Pro') ? 'pro' : googleAcc?.tier?.includes('Enterprise') ? 'enterprise' : 'free');
+    const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
+
+    avatar.className = `message-avatar user-chat-avatar-frame ${tierType}`;
+    if (googleAcc && googleAcc.picture) {
+      avatar.innerHTML = `
+        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+        <img src="${escapeHtml(googleAcc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
+        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+      `;
+    } else {
+      const initial = (googleAcc?.name || googleAcc?.email || "U").charAt(0).toUpperCase();
+      avatar.innerHTML = `
+        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+        <div style="width:100%;height:100%;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;">${initial}</div>
+        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+      `;
+    }
   } else if (role === "error") {
     avatar.innerHTML = `<i data-lucide="alert-triangle" style="width:16px;height:16px;"></i>`;
   } else {
-    avatar.innerHTML = `◇`;
+    avatar.className = "message-avatar assistant-chat-avatar-frame";
+    avatar.innerHTML = `
+      <div style="width:100%;height:100%;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:white;font-weight:700;font-size:13px;box-shadow:0 0 8px rgba(59,130,246,0.4);">◇</div>
+      <span class="header-avatar-badge pro" style="bottom:-2px;right:-3px;font-size:7px;background:linear-gradient(135deg,#8b5cf6,#ec4899);">AI</span>
+    `;
   }
 
   const contentCol = el("div", "message-content");
@@ -838,6 +906,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
     conv.messages.push({ role: "user", content: text });
     saveConversations();
   }
+  let userMsgPushed = appendUserMsg; // 重试时不再重复 push 用户消息
 
   paintActiveConv();
   const asstNode = appendMsgRow("assistant", "", true);
@@ -949,15 +1018,56 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
       if (isNetErr && !isAbort && netRetryCount < MAX_NET_RETRIES) {
         netRetryCount++;
-        const cleanAcc = (acc || "").replace(/​/g, "").trim();
-        const tip = `网络连接抖动，正在自动续接 (第 ${netRetryCount}/${MAX_NET_RETRIES} 次)...`;
-        if (cleanAcc) {
-          asstNode.bubble.innerHTML = formatMarkdown(acc, true) + `<div style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:var(--accent);"><span class="thinking-dots"><i></i><i></i><i></i></span> <span>${tip}</span></div>`;
-        } else {
-          asstNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${tip}</span></div>`;
+        // 重试时不再追加用户消息（已 push 过），防止 msgs 滚雪球增长
+        userMsgPushed = true;
+        // 重试时用 subscribe 模式挂接到正在跑的 run，不创建新任务、不重复发 messages
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsRetry = new WebSocket(`${proto}//${location.host}/ws/chat`);
+        currentWs = wsRetry;
+        try {
+          await new Promise((resolve, reject) => {
+            let settled2 = false;
+            const done2 = (fn) => { if (!settled2) { settled2 = true; fn(); } };
+            wsRetry.onopen = () => {
+              wsRetry.send(JSON.stringify({
+                action: 'subscribe',
+                model: state.selectedModel || 'gemini-3.7-flash-high',
+                messages: conv.messages,
+                conversationKey: conv.id,
+                conversationId: conv.convId || newConvId || undefined
+              }));
+            };
+            wsRetry.onmessage = (event) => {
+              let data;
+              try { data = JSON.parse(event.data); } catch (_) { return; }
+              if (data.idle) { done2(() => resolve()); return; } // 后台没在跑
+              if (data.error) { streamError = new Error(data.error); done2(() => reject(streamError)); return; }
+              if (data.progress) {
+                if (data.toolName) toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
+                if (asstNode && !acc.replace(/​/g, '').trim()) {
+                  asstNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(data.tip || '正在续接…')}</span></div>`;
+                }
+                return;
+              }
+              if (data.delta != null && data.delta !== '​') {
+                acc += data.delta;
+                if (asstNode) { asstNode.bubble.innerHTML = formatMarkdown(acc, true); refreshIcons(); $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight; }
+              }
+              if (data.conversationId) { newConvId = data.conversationId; conv.convId = data.conversationId; saveConversations(); }
+              if (data.done) { receivedDone = true; done2(() => resolve()); }
+            };
+            wsRetry.onerror = () => { done2(() => reject(new Error('network error'))); };
+            wsRetry.onclose = () => {
+              if (receivedDone) { done2(() => resolve()); return; }
+              done2(() => reject(new Error('network error')));
+            };
+          });
+        } catch (e2) {
+          // subscribe 也失败了，继续外层 while 循环
         }
-        refreshIcons();
-        await new Promise((r) => setTimeout(r, 1200));
+        currentWs = null;
+        if (streamError) throw streamError;
+        if (receivedDone) break;
         continue;
       }
 
@@ -1234,20 +1344,24 @@ window.handlePluginOp = async function(op, name) {
 
 // Google Antigravity Model Usage & Quota Modal
 async function showUsageModal() {
-  openModal("📊 Google Antigravity 模型用量与配额中心", `
+  openModal("📊 Google AI Pro 模型用量与配额中心", `
     <div class="usage-modal-wrap">
       <!-- 账号信息卡片 -->
       <div id="usage-account-card" class="usage-account-card">
-        <div style="display:flex;align-items:center;gap:12px;">
-          <div id="usage-avatar-box" class="usage-avatar-box">
-            <span class="usage-default-avatar">◇</span>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <div id="usage-avatar-frame-wrap" class="usage-avatar-frame pro">
+            <span id="usage-avatar-crown" class="modal-avatar-crown">👑</span>
+            <div id="usage-avatar-box" class="usage-avatar-box">
+              <span class="usage-default-avatar">◇</span>
+            </div>
+            <span id="usage-avatar-corner-badge" class="usage-avatar-corner-badge pro">PRO</span>
           </div>
           <div>
             <div id="usage-user-name" style="font-weight:600;font-size:14.5px;color:var(--text-primary);">加载中...</div>
-            <div id="usage-user-email" style="font-size:12px;color:var(--text-muted);">正在获取 Google OAuth 认证状态...</div>
+            <div id="usage-user-email" style="font-size:12px;color:var(--text-muted);">正在连接 Google AI Pro 云端服务...</div>
           </div>
         </div>
-        <div id="usage-tier-badge" class="usage-tier-pill">Gemini Code Assist (无限额度)</div>
+        <div id="usage-tier-badge" class="usage-tier-pill" style="background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(147,51,234,0.15));border:1px solid rgba(147,51,234,0.3);color:#818cf8;font-weight:600;">Google AI Pro (Gemini Advanced)</div>
       </div>
 
       <!-- 5小时与每周配额周期 -->
@@ -1255,8 +1369,8 @@ async function showUsageModal() {
         <div class="window-card">
           <div class="window-card-header">
             <div class="window-title">
-              <i data-lucide="clock" style="width:14px;height:14px;color:var(--accent);"></i>
-              <span>5 小时滚动使用窗口</span>
+              <i data-lucide="zap" style="width:14px;height:14px;color:var(--accent);"></i>
+              <span>Google AI Pro 5 小时滚动算力</span>
             </div>
             <div class="window-percent" id="win-percent-5h">--</div>
           </div>
@@ -1264,7 +1378,7 @@ async function showUsageModal() {
             <div class="window-bar-fill" id="win-bar-5h" style="width:0%;"></div>
           </div>
           <div class="window-subtext">
-            <span>速率限制周期</span>
+            <span>速率限制重置</span>
             <span id="win-reset-5h">计算中...</span>
           </div>
         </div>
@@ -1272,8 +1386,8 @@ async function showUsageModal() {
         <div class="window-card">
           <div class="window-card-header">
             <div class="window-title">
-              <i data-lucide="calendar" style="width:14px;height:14px;color:var(--accent);"></i>
-              <span>每周高级算力配额</span>
+              <i data-lucide="shield-check" style="width:14px;height:14px;color:var(--accent);"></i>
+              <span>每周 Pro 旗舰算力配额</span>
             </div>
             <div class="window-percent" id="win-percent-weekly">--</div>
           </div>
@@ -1295,14 +1409,14 @@ async function showUsageModal() {
           <div class="metric-sub">历史总会话</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">预估消耗 Tokens</div>
+          <div class="metric-label">累计消耗 Tokens</div>
           <div class="metric-val" id="metric-token-count">--</div>
           <div class="metric-sub">双向文本吞吐</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">平均生成速度</div>
-          <div class="metric-val" id="metric-speed">~120 <small style="font-size:11px;">tok/s</small></div>
-          <div class="metric-sub">Flash 系列极速</div>
+          <div class="metric-label">G1 Credits 状态</div>
+          <div class="metric-val" style="color:#10b981;font-size:16px;">已激活</div>
+          <div class="metric-sub">自动抵扣保障</div>
         </div>
       </div>
 
@@ -1310,13 +1424,16 @@ async function showUsageModal() {
       <div style="margin-top:8px;">
         <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text-primary);display:flex;align-items:center;justify-content:space-between;">
           <div style="display:flex;align-items:center;gap:6px;">
-            <i data-lucide="cpu" style="width:15px;height:15px;color:var(--accent);"></i>
-            <span>各系列模型配额与健康度 (Gemini · Claude · GPT)</span>
+            <i data-lucide="sparkles" style="width:15px;height:15px;color:var(--accent);"></i>
+            <span>Google AI Pro 云端模型额度 (实时同步)</span>
           </div>
-          <span style="font-size:11px;color:var(--text-dim);">实时计算</span>
+          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:2px 8px;font-size:11px;display:flex;align-items:center;gap:4px;color:var(--accent);cursor:pointer;" onclick="showUsageModal()">
+            <i data-lucide="refresh-cw" style="width:11px;height:11px;"></i>
+            <span>实时刷新</span>
+          </button>
         </div>
         <div id="usage-models-list" class="usage-models-list">
-          <div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">正在获取模型配额数据...</div>
+          <div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">正在实时获取 Google AI Pro 额度数据...</div>
         </div>
       </div>
 
@@ -1324,11 +1441,11 @@ async function showUsageModal() {
       <div class="quota-policy-note">
         <div style="font-weight:600;font-size:12px;margin-bottom:4px;color:var(--text-primary);display:flex;align-items:center;gap:5px;">
           <i data-lucide="info" style="width:13px;height:13px;color:var(--accent);"></i>
-          <span>谷歌反重力模型配额与重置机制说明</span>
+          <span>Google AI Pro 模型配额与权益说明</span>
         </div>
         <div id="quota-policy-text" style="font-size:11.5px;color:var(--text-muted);line-height:1.5;">
-          • <strong>Gemini 3.7 / 3.6 / 3.5 Flash</strong>：享有全额度高频保障（<strong>100% 无限额度</strong>），适合所有日常高并发编程与长文本推理。<br/>
-          • <strong>Claude / GPT 系列</strong>：遵循 5 小时滚动与每周算力刷新机制。若高阶模型触达限额，系统会自动保障或一键切回 Gemini 3.7 Flash 继续生成。
+          • <strong>Gemini 3.7 / 3.6 / 3.5 Flash</strong>：享有 Google AI Pro 全额度高频保障（<strong>100% 无限额度</strong>），适合所有日常极速高并发代码编写与长文本分析。<br/>
+          • <strong>Claude / GPT 系列</strong>：享有 Pro 优先通道与 5 小时滚动配额，若高阶模型触达限额，系统将自动使用 G1 Credits 算力点数无缝补充。
         </div>
       </div>
     </div>
@@ -1342,17 +1459,45 @@ async function showUsageModal() {
     
     // Fill Account
     const acc = d.account;
+    const isPro = d.tierType === 'pro' || d.tierType === 'enterprise';
+    const isFree = d.tierType === 'free';
+    const tierType = d.tierType || (isPro ? 'pro' : isFree ? 'free' : 'unauthed');
+    const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : tierType === 'free' ? 'FREE' : '';
+
+    const frameEl = $("#usage-avatar-frame-wrap");
+    const cornerBadgeEl = $("#usage-avatar-corner-badge");
+    if (frameEl) frameEl.className = `usage-avatar-frame ${tierType}`;
+    if (cornerBadgeEl) {
+      cornerBadgeEl.className = `usage-avatar-corner-badge ${tierType}`;
+      cornerBadgeEl.textContent = badgeText;
+      cornerBadgeEl.style.display = badgeText ? "block" : "none";
+    }
+    const crownEl = $("#usage-avatar-crown");
+    if (crownEl) crownEl.style.display = tierType === 'pro' ? 'block' : 'none';
+
     if (acc) {
       $("#usage-user-name").textContent = acc.name || "Google 用户";
       $("#usage-user-email").textContent = acc.email || "已认证";
       if (acc.picture) {
         $("#usage-avatar-box").innerHTML = `<img src="${escapeHtml(acc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />`;
       }
-      $("#usage-tier-badge").textContent = acc.tier || "Standard Tier (无限额度)";
+      const badgeStyle = isPro 
+        ? "background:linear-gradient(135deg,rgba(59,130,246,0.18),rgba(147,51,234,0.18));border:1px solid rgba(147,51,234,0.4);color:#a78bfa;font-weight:600;"
+        : isFree 
+        ? "background:rgba(245,158,11,0.15);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;font-weight:600;"
+        : "background:var(--bg-secondary);border:1px solid var(--border-color);color:var(--text-muted);";
+      
+      const badgeEl = $("#usage-tier-badge");
+      badgeEl.textContent = d.tier || acc.tier || "Google AI 账号";
+      badgeEl.style.cssText = badgeStyle;
     } else {
-      $("#usage-user-name").textContent = "Google Antigravity CLI";
-      $("#usage-user-email").textContent = "已连接本机 Antigravity 环境";
-      $("#usage-tier-badge").textContent = "CLI Standard Mode";
+      $("#usage-user-name").textContent = "未登录 Google 账号";
+      $("#usage-user-email").textContent = "请点击右上角登录以激活云端配额";
+      $("#usage-tier-badge").textContent = "未连接";
+    }
+
+    if (d.quotaResetPolicy && $("#quota-policy-text")) {
+      $("#quota-policy-text").innerHTML = escapeHtml(d.quotaResetPolicy);
     }
 
     // Render 5h & Weekly Windows
@@ -1378,19 +1523,23 @@ async function showUsageModal() {
     updateUsageSummary(d);
 
     // Fill Metrics
+    const stats = d.stats || {};
     const convs = state.conversations || [];
     let totalMsgs = 0;
-    let totalChars = 0;
     convs.forEach((c) => {
-      if (Array.isArray(c.messages)) {
-        totalMsgs += c.messages.length;
-        c.messages.forEach((m) => { totalChars += (m.content || "").length; });
-      }
+      if (Array.isArray(c.messages)) totalMsgs += c.messages.length;
     });
-    const estTokens = Math.round(totalChars / 3.2);
+    const convCount = stats.conversations || convs.length;
+    const turnCount = stats.turns || Math.floor(totalMsgs / 2);
+    const totalTokens = stats.tokens || 0;
+    const tokenDisplay = totalTokens > 1000000 
+      ? `${(totalTokens / 1000000).toFixed(2)}M` 
+      : totalTokens > 1000 
+      ? `${(totalTokens / 1000).toFixed(1)}k` 
+      : totalTokens;
 
-    $("#metric-conv-count").textContent = `${convs.length} 组 (${totalMsgs} 轮)`;
-    $("#metric-token-count").textContent = estTokens > 10000 ? `${(estTokens / 1000).toFixed(1)}k` : estTokens;
+    $("#metric-conv-count").textContent = `${convCount} 组 (${turnCount} 轮)`;
+    $("#metric-token-count").textContent = tokenDisplay;
 
     // Fill Models Quota List with Progress Bars
     const models = d.modelsQuota || [];
@@ -1398,9 +1547,32 @@ async function showUsageModal() {
     listEl.innerHTML = "";
 
     models.forEach((m) => {
-      const isCurrent = (state.selectedModel || "").startsWith(m.id.split("-")[0]);
+      const baseId = m.id.replace(/-(low|medium|high)$/i, "");
+      const isCurrent = state.selectedModel === m.id || state.selectedModel === baseId || (state.selectedModel || "").startsWith(m.id.split("-")[0]);
       const card = el("div", "quota-model-row" + (isCurrent ? " is-current" : ""));
-      const isUnlimited = m.quota.includes("无限");
+      card.style.cursor = "pointer";
+      card.title = `点击切换为此模型: ${m.name}`;
+      card.onclick = () => {
+        const sel = $("#model-select");
+        if (sel) {
+          // 匹配下拉框中的基础模型
+          const option = Array.from(sel.options).find(o => o.value === baseId || o.value === m.id);
+          if (option) {
+            sel.value = option.value;
+            state.selectedModel = option.value;
+            try { localStorage.setItem("agy-model", state.selectedModel); } catch (_) {}
+          }
+        }
+        const effMatch = m.id.match(/-(low|medium|high)$/i);
+        if (effMatch && $("#effort")) {
+          $("#effort").value = effMatch[1].toLowerCase();
+        }
+        toast(`已选择模型: ${m.name}`);
+        showUsageModal();
+      };
+
+      const isUnlimited = (m.quota || "").includes("无限");
+      const isPro = (m.quota || "").includes("Pro");
       const isLimited = m.status === "limited";
       const pct = m.percent != null ? m.percent : 100;
       const barColor = pct > 80 ? "#10b981" : pct > 40 ? "#3b82f6" : "#f59e0b";
@@ -1408,15 +1580,17 @@ async function showUsageModal() {
       const statusBadge = isLimited 
         ? `<span class="quota-tag limited">${pct}% · 受限/按需</span>`
         : isUnlimited 
-        ? `<span class="quota-tag unlimited">100% · 无限额度</span>`
+        ? `<span class="quota-tag unlimited">100% · Pro 无限额度</span>`
+        : isPro
+        ? `<span class="quota-tag pro">${pct}% · Pro 尊享</span>`
         : `<span class="quota-tag standard">${pct}% · 标准配额</span>`;
 
       card.innerHTML = `
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
           <div style="display:flex;align-items:center;gap:8px;">
-            <span class="series-pill ${m.series.toLowerCase()}">${escapeHtml(m.series)}</span>
+            <span class="series-pill ${escapeHtml((m.series || 'other').toLowerCase())}">${escapeHtml(m.series || 'Other')}</span>
             <strong style="font-size:13px;">${escapeHtml(m.name)}</strong>
-            ${isCurrent ? '<span class="current-pill">当前模型</span>' : ''}
+            ${isCurrent ? '<span class="current-pill">当前生效</span>' : ''}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
             ${statusBadge}
@@ -1426,8 +1600,8 @@ async function showUsageModal() {
           <div class="quota-bar-fill" style="width:${pct}%;background:${barColor};"></div>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px;font-size:11.5px;color:var(--text-dim);">
-          <span>窗口：${escapeHtml(m.context)} · 速度：${escapeHtml(m.speed)}</span>
-          <span style="color:var(--text-muted);">${escapeHtml(m.statusText)}</span>
+          <span>窗口：${escapeHtml(m.context || '1M tokens')} · 速度：${escapeHtml(m.speed || '~100 tok/s')}</span>
+          <span style="color:var(--text-muted);">${escapeHtml(m.statusText || '')}</span>
         </div>
       `;
       listEl.append(card);

@@ -367,11 +367,32 @@ html, body {
 }
 
 .sidebar-footer {
-  padding: 10px;
+  padding: 8px;
   border-top: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.sidebar-user-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: all 0.2s ease;
+}
+.sidebar-user-card:hover {
+  background: var(--bg-secondary);
+  border-color: var(--accent);
+}
+.sidebar-user-card.pro {
+  border-color: rgba(147, 51, 234, 0.35);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(147, 51, 234, 0.08));
 }
 
 .sidebar-nav-btn {
@@ -543,10 +564,32 @@ html, body {
   background: var(--bg-tertiary);
   color: var(--text-muted);
 }
+.message-avatar.user-chat-avatar-frame {
+  position: relative;
+  border-radius: 50%;
+  padding: 1.5px;
+}
+.message-avatar.user-chat-avatar-frame.pro {
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6, #ec4899);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.4);
+}
+.message-avatar.user-chat-avatar-frame.enterprise {
+  background: linear-gradient(135deg, #06b6d4, #3b82f6);
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.4);
+}
+.message-avatar.user-chat-avatar-frame.free {
+  background: #64748b;
+}
+.message-avatar.assistant-chat-avatar-frame {
+  position: relative;
+  border-radius: 50%;
+  padding: 1.5px;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6, #ec4899);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.4);
+}
 .message-row.assistant .message-avatar {
-  background: var(--accent-gradient);
+  background: transparent;
   color: white;
-  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.25);
 }
 .message-row.error .message-avatar {
   background: var(--danger);
@@ -1179,19 +1222,160 @@ html[data-theme="light"] .markdown-body code {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
 }
-.usage-avatar-box {
-  width: 38px;
-  height: 38px;
+/* Exclusive Avatar Frames & Badges */
+.avatar-frame-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header-avatar-frame {
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  padding: 1.5px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  position: relative;
+  transition: all 0.2s ease;
+}
+.header-avatar-frame.pro {
+  background: linear-gradient(135deg, #f59e0b, #8b5cf6, #3b82f6, #ec4899);
+  background-size: 200% 200%;
+  animation: borderRotate 4s ease infinite;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
+}
+.header-avatar-frame.enterprise {
+  background: linear-gradient(135deg, #06b6d4, #3b82f6);
+  box-shadow: 0 0 6px rgba(6, 182, 212, 0.4);
+}
+.header-avatar-frame.free {
+  background: #64748b;
+}
+
+.header-avatar-frame img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--bg-primary);
+}
+
+.header-avatar-crown {
+  position: absolute;
+  top: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));
+  pointer-events: none;
+}
+
+.header-avatar-badge {
+  position: absolute;
+  bottom: -2px;
+  right: -4px;
+  font-size: 7.5px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 4px;
+  color: white;
+  letter-spacing: -0.2px;
+  border: 1px solid var(--bg-secondary);
+}
+.header-avatar-badge.pro {
+  background: linear-gradient(135deg, #f59e0b, #8b5cf6);
+}
+.header-avatar-badge.enterprise {
+  background: linear-gradient(135deg, #06b6d4, #3b82f6);
+}
+.header-avatar-badge.free {
+  background: #64748b;
+}
+
+/* Modal Avatar Frame */
+.usage-avatar-frame {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  padding: 2.5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+}
+.usage-avatar-frame.pro {
+  background: linear-gradient(135deg, #f59e0b, #8b5cf6, #3b82f6, #ec4899);
+  background-size: 200% 200%;
+  animation: borderRotate 4s ease infinite;
+  box-shadow: 0 0 16px rgba(139, 92, 246, 0.5);
+}
+.usage-avatar-frame.enterprise {
+  background: linear-gradient(135deg, #06b6d4, #3b82f6);
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.45);
+}
+.usage-avatar-frame.free {
+  background: rgba(100, 116, 139, 0.4);
+}
+
+@keyframes borderRotate {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.usage-avatar-box {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
   color: var(--accent);
   overflow: hidden;
 }
+
+.modal-avatar-crown {
+  position: absolute;
+  top: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 15px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+  pointer-events: none;
+}
+
+.usage-avatar-corner-badge {
+  position: absolute;
+  bottom: -2px;
+  right: -5px;
+  font-size: 9.5px;
+  font-weight: 800;
+  padding: 1.5px 5px;
+  border-radius: 6px;
+  color: white;
+  border: 1.5px solid var(--bg-primary);
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  text-transform: uppercase;
+}
+.usage-avatar-corner-badge.pro {
+  background: linear-gradient(135deg, #f59e0b, #8b5cf6);
+}
+.usage-avatar-corner-badge.enterprise {
+  background: linear-gradient(135deg, #06b6d4, #3b82f6);
+}
+.usage-avatar-corner-badge.free {
+  background: #64748b;
+}
+
 .usage-tier-pill {
   font-size: 11px;
   padding: 4px 10px;
@@ -1283,6 +1467,11 @@ html[data-theme="light"] .markdown-body code {
   background: rgba(59, 130, 246, 0.12);
   color: #60a5fa;
   border: 1px solid rgba(59, 130, 246, 0.3);
+}
+.quota-tag.pro {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(147, 51, 234, 0.18));
+  color: #a78bfa;
+  border: 1px solid rgba(147, 51, 234, 0.4);
 }
 .quota-tag.limited {
   background: rgba(245, 158, 11, 0.12);
