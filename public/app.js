@@ -543,12 +543,50 @@ function formatMarkdown(text, isStreaming = false) {
         }
 
         let rawHtml = marked.parse(textToParse);
-        // Wrap code blocks
+        // Wrap code blocks with modern collapsible details structure (默认收纳折叠)
         rawHtml = rawHtml.replace(/<pre><code class="language-([^">]+)">([\s\S]*?)<\/code><\/pre>/gi, (match, lang, code) => {
-          return `<div class="code-block-wrapper"><div class="code-block-header"><span>${escapeHtml(lang)}</span><button class="copy-code-btn" onclick="copyCodeFromBlock(this)"><i data-lucide="copy" style="width:12px;height:12px;"></i> 复制</button></div><pre><code class="language-${lang}">${code}</code></pre></div>`;
+          const lineCount = code.split(/\r\n|\r|\n/).length;
+          return `
+            <details class="code-block-wrapper">
+              <summary class="code-block-header">
+                <div class="code-header-left">
+                  <span class="code-toggle-arrow">▾</span>
+                  <span class="code-tag-badge">${escapeHtml(lang)}</span>
+                  <span class="code-line-info">${lineCount} 行代码</span>
+                </div>
+                <div class="code-header-right" onclick="event.stopPropagation()">
+                  <button class="copy-code-btn" onclick="copyCodeFromBlock(this)" title="复制全部代码">
+                    <i data-lucide="copy" style="width:12px;height:12px;"></i> 复制
+                  </button>
+                </div>
+              </summary>
+              <div class="code-content-body">
+                <pre><code class="language-${lang}">${code}</code></pre>
+              </div>
+            </details>
+          `;
         });
         rawHtml = rawHtml.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/gi, (match, code) => {
-          return `<div class="code-block-wrapper"><div class="code-block-header"><span>CODE</span><button class="copy-code-btn" onclick="copyCodeFromBlock(this)"><i data-lucide="copy" style="width:12px;height:12px;"></i> 复制</button></div><pre><code>${code}</code></pre></div>`;
+          const lineCount = code.split(/\r\n|\r|\n/).length;
+          return `
+            <details class="code-block-wrapper">
+              <summary class="code-block-header">
+                <div class="code-header-left">
+                  <span class="code-toggle-arrow">▾</span>
+                  <span class="code-tag-badge">CODE</span>
+                  <span class="code-line-info">${lineCount} 行代码</span>
+                </div>
+                <div class="code-header-right" onclick="event.stopPropagation()">
+                  <button class="copy-code-btn" onclick="copyCodeFromBlock(this)" title="复制全部代码">
+                    <i data-lucide="copy" style="width:12px;height:12px;"></i> 复制
+                  </button>
+                </div>
+              </summary>
+              <div class="code-content-body">
+                <pre><code>${code}</code></pre>
+              </div>
+            </details>
+          `;
         });
         finalHtml = rawHtml;
       } catch (_) {
@@ -2333,6 +2371,7 @@ initApp();
 function tryReconnectToOngoingRun() {
   const conv = activeConv();
   if (!conv) return;
+  if (state.streaming) return; // 正在发消息时不要干扰
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/ws/chat`;
