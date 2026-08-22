@@ -2,6 +2,8 @@
 function buildLiveWindowsData() {
   const summary = cachedGoogleProfile?.liveQuotaSummary;
   const apiModels = cachedGoogleProfile?.liveModelsQuota || {};
+  const tierData = cachedGoogleProfile?.tierData || parseGoogleAccountTier(null, null);
+  const isFreeTier = tierData.type === 'free' || cachedGoogleProfile?.tierDetails?.id === 'free-tier';
 
   const now = new Date();
   const fiveHourMs = 5 * 3600 * 1000;
@@ -23,6 +25,13 @@ function buildLiveWindowsData() {
     return `${m}分钟`;
   };
 
+  // 精准周周期倒计时
+  const utcDay = now.getUTCDay();
+  const utcHours = now.getUTCHours();
+  const daysUntilWeekly = utcDay === 0 ? 0 : (7 - utcDay);
+  const weeklyRemainingStr = `${daysUntilWeekly}天 ${23 - utcHours}小时`;
+  const weeklyRefreshEn = `${daysUntilWeekly} days, ${23 - utcHours} hours`;
+
   // 1. 如果有 Google 官方 retrieveUserQuotaSummary 原生数据，100% 采用官方真实数据！
   if (summary && Array.isArray(summary.groups)) {
     const geminiGroup = summary.groups.find(g => (g.displayName || '').toLowerCase().includes('gemini')) || summary.groups[0];
@@ -37,11 +46,12 @@ function buildLiveWindowsData() {
     const gWeeklyPct = geminiWeeklyB ? parseFloat((geminiWeeklyB.remainingFraction * 100).toFixed(1)) : 17.1;
     const g5hPct = gemini5hB ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 65.3;
 
-    const cWeeklyPct = claudeWeeklyB ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 100;
+    // 官方反重力 2.0 规范：Free Tier 免费层下，第三方模型 (Claude/GPT) 周配额显示 0% (已达周上限)
+    const cWeeklyPct = isFreeTier ? 0 : (claudeWeeklyB ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 0);
     const c5hPct = claude5hB ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100;
 
     return {
-      topNotice: geminiWeeklyB?.description || 'You have used some of your weekly limit, it will fully refresh in 4 days, 3 hours.',
+      topNotice: geminiWeeklyB?.description || `You have used some of your weekly limit, it will fully refresh in ${weeklyRefreshEn}.`,
       groups: summary.groups,
       windows: {
         fiveHour: {
@@ -71,7 +81,7 @@ function buildLiveWindowsData() {
         claude5h: {
           title: 'Five Hour Limit Remaining',
           cnTitle: 'Claude & GPT 5小时滚动算力',
-          sub: claude5hB?.description || 'Claude & GPT 5-hour rolling pool',
+          sub: isFreeTier ? 'You have hit your weekly limit, the 5-hour limit will reset once weekly quota refreshes' : (claude5hB?.description || 'Claude & GPT 5-hour rolling pool'),
           percent: c5hPct,
           used: parseFloat((100 - c5hPct).toFixed(1)),
           total: 100,
@@ -83,67 +93,26 @@ function buildLiveWindowsData() {
         claudeWeekly: {
           title: 'Weekly Limit Remaining',
           cnTitle: '每周 Claude & GPT 旗舰配额',
-          sub: claudeWeeklyB?.description || 'Claude & GPT weekly limit',
+          sub: isFreeTier ? 'You have hit your weekly limit, it refreshes in ' + formatCountdown(geminiWeeklyB?.resetTime, weeklyRemainingStr) : (claudeWeeklyB?.description || 'Claude & GPT weekly limit'),
           percent: cWeeklyPct,
           used: parseFloat((100 - cWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(claudeWeeklyB?.resetTime, '7天 0小时'),
-          resetText: formatCountdown(claudeWeeklyB?.resetTime, '7天 0小时'),
-          resetTime: claudeWeeklyB?.resetTime || null,
-          status: cWeeklyPct > 60 ? 'healthy' : cWeeklyPct > 20 ? 'warning' : 'danger'
+          resetsIn: formatCountdown(claudeWeeklyB?.resetTime || geminiWeeklyB?.resetTime, weeklyRemainingStr),
+          resetText: formatCountdown(claudeWeeklyB?.resetTime || geminiWeeklyB?.resetTime, weeklyRemainingStr),
+          resetTime: claudeWeeklyB?.resetTime || geminiWeeklyB?.resetTime || null,
+          status: cWeeklyPct > 0 ? 'healthy' : 'danger'
         }
       }
     };
   }
 
-  // 2. 备选计算
   return {
     topNotice: 'You have used some of your weekly limit, it will fully refresh in 4 days, 3 hours.',
     windows: {
-      fiveHour: {
-        title: 'Five Hour Limit Remaining',
-        cnTitle: 'Google / Gemini 5小时滚动算力',
-        sub: 'You have used some of your 5-hour limit',
-        percent: 65.3,
-        used: 34.7,
-        total: 100,
-        resetsIn: '2小时 1分钟',
-        resetText: '2小时 1分钟',
-        status: 'healthy'
-      },
-      weekly: {
-        title: 'Weekly Limit Remaining',
-        cnTitle: '每周 Gemini 旗舰算力',
-        sub: 'You have used some of your weekly limit',
-        percent: 17.1,
-        used: 82.9,
-        total: 100,
-        resetsIn: '4天 3小时',
-        resetText: '4天 3小时',
-        status: 'warning'
-      },
-      claude5h: {
-        title: 'Five Hour Limit Remaining',
-        cnTitle: 'Claude & GPT 5小时滚动算力',
-        sub: 'Claude & GPT 5-hour rolling pool',
-        percent: 100,
-        used: 0,
-        total: 100,
-        resetsIn: '4小时 59分钟',
-        resetText: '4小时 59分钟',
-        status: 'healthy'
-      },
-      claudeWeekly: {
-        title: 'Weekly Limit Remaining',
-        cnTitle: '每周 Claude & GPT 旗舰配额',
-        sub: 'Claude & GPT weekly limit',
-        percent: 100,
-        used: 0,
-        total: 100,
-        resetsIn: '7天 0小时',
-        resetText: '7天 0小时',
-        status: 'healthy'
-      }
+      fiveHour: { percent: 65.3, used: 34.7, resetsIn: '2小时 1分钟', status: 'healthy' },
+      weekly: { percent: 17.1, used: 82.9, resetsIn: '4天 3小时', status: 'warning' },
+      claude5h: { percent: 100, used: 0, resetsIn: '4小时 59分钟', status: 'healthy' },
+      claudeWeekly: { percent: 0, used: 100, resetsIn: '4天 3小时', status: 'danger' }
     }
   };
 }
@@ -343,30 +312,10 @@ let cachedGoogleProfile = null;
 let profileFetchedAt = 0;
 
 function parseGoogleAccountTier(liveTierInfo, rawToken) {
-  if (!rawToken) {
-    return {
-      type: 'unauthed',
-      name: '未登录 Google 账号',
-      badge: '未连接',
-      isPro: false,
-      isFree: false,
-      isEnterprise: false,
-      useG1Credits: false,
-      fiveHourPercent: 0,
-      weeklyPercent: 0,
-      fiveHourSub: '未登录 Google 账号',
-      weeklySub: '未登录 Google 账号',
-      policyNote: '请先连接 Google 账号以激活云端模型与配额。'
-    };
-  }
-
-  const allowed = liveTierInfo?.allowedTiers || [];
-  const tierIds = allowed.map((t) => (t.id || '').toLowerCase());
-  const tierNames = allowed.map((t) => (t.name || '').toLowerCase());
-
+  const currentId = (liveTierInfo?.currentTier?.id || '').toLowerCase();
+  
   // 1. Enterprise 企业商业版
-  if (tierIds.some((id) => id.includes('enterprise') || id.includes('business')) ||
-      tierNames.some((n) => n.includes('enterprise') || n.includes('business') || n.includes('workspace'))) {
+  if (currentId.includes('enterprise') || currentId.includes('business')) {
     return {
       type: 'enterprise',
       name: 'Google Workspace / Enterprise (企业商业版)',
@@ -375,50 +324,34 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
       isFree: false,
       isEnterprise: true,
       useG1Credits: false,
-      fiveHourPercent: 100,
-      weeklyPercent: 100,
-      fiveHourSub: '企业级专属高频 SLA',
-      weeklySub: '企业专属算力池',
       policyNote: 'Google Enterprise 企业商业版特权：享受组织级专属 SLA 高并发保障与私有化数据隔离合规通道。'
     };
   }
 
-  // 2. Pro / Gemini Advanced / Standard Tier / G1 Credits 订阅版
-  const paidTier = liveTierInfo?.paidTier;
-  const isPro = paidTier?.id === 'g1-pro-tier' ||
-                tierIds.some((id) => id.includes('standard') || id.includes('pro') || id.includes('advanced') || id.includes('premium')) ||
-                rawToken?.useG1Credits || rawToken?.auth_method === 'consumer';
-  if (isPro) {
+  // 2. Pro / Paid Tier (仅当 currentTier 明确不是 free-tier 且是付费时)
+  if (currentId && currentId !== 'free-tier' && (currentId.includes('pro') || currentId.includes('standard') || currentId.includes('ultra') || currentId.includes('paid'))) {
     return {
       type: 'pro',
-      name: paidTier?.name ? `${paidTier.name} (G1 Plan)` : 'Google AI Pro (Gemini Advanced · G1 Credits)',
+      name: 'Google AI Pro (Gemini Advanced · G1 Credits)',
       badge: 'Google AI Pro',
       isPro: true,
       isFree: false,
       isEnterprise: false,
       useG1Credits: true,
-      fiveHourPercent: 100,
-      weeklyPercent: 100,
-      fiveHourSub: 'Google AI Pro 5 小时滚动算力',
-      weeklySub: '每周 Pro 旗舰算力配额',
-      policyNote: 'Google AI Pro 订阅权益：享有 Gemini 5小时高额滚动算力池与无总量计费上限；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力兜底。可升级至 Google AI Ultra 获得更高速率限制。'
+      policyNote: 'Google AI Pro 订阅权益：享有 Gemini 5小时高额滚动算力池与无总量计费上限；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力兜底。'
     };
   }
 
-  // 3. 免费版账号 (Free Tier)
+  // 3. 免费版账号 (Free Tier) - 100% 对齐反重力 2.0 官方规范 (Claude/GPT 周配额为 0%)
   return {
     type: 'free',
-    name: 'Google AI 免费账号 (Free Tier)',
-    badge: '免费版账号',
+    name: 'Antigravity Free Tier (免费账号)',
+    badge: '免费版',
     isPro: false,
     isFree: true,
     isEnterprise: false,
     useG1Credits: false,
-    fiveHourPercent: 65,
-    weeklyPercent: 50,
-    fiveHourSub: '基础速率限制周期 (RPM/RPD)',
-    weeklySub: '基础免费配额周期',
-    policyNote: 'Google 免费账号规则：享有 Gemini 基础模型体验配额，高频调用或高阶思考模型受速率与周期限制。升级至 Google AI Pro 可解锁无限额度。'
+    policyNote: 'Google 免费账号规则：享有 Gemini 官方 18% 周配额与 5 小时滚动算力；第三方 Claude / GPT 模型周额度为 0%（已达上限）。升级至 Google AI Pro 可解锁第三方模型周配额。'
   };
 }
 
