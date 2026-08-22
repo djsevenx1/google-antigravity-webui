@@ -77,7 +77,7 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
         <span>${tokens} tokens</span>
         ${durText ? '<span>·</span><span>' + escapeHtml(durText) + '</span>' : ''}
       </div>
-      <div class="msg-quota-bars-group" onclick="showUsageModal()" style="cursor:pointer;" title="点击查看完整 4 大算力池配额详情">
+      <div class="msg-quota-bars-group" onclick="showUsageModal(true)" style="cursor:pointer;" title="点击查看完整 4 大算力池配额详情">
         <div class="msg-mini-bar-item" title="${poolLabel} 滚动算力: 剩余 ${h5Pct}% (${h5Reset} 后重置)">
           <span style="font-size:10.5px;color:var(--text-dim);">${poolLabel}</span>
           <div class="msg-bar-track">
@@ -2683,7 +2683,7 @@ window.handlePluginOp = async function(op, name) {
 };
 
 // Google Antigravity Model Usage & Quota Modal
-async function showUsageModal() {
+async function showUsageModal(manualRefresh = false) {
   const googleAcc = state.status?.googleAccount || {};
   const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
   const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
@@ -2827,7 +2827,7 @@ async function showUsageModal() {
   refreshIcons();
 
   try {
-    const res = await fetch("/api/usage?refresh=1");
+    const res = await fetch(manualRefresh ? "/api/usage?refresh=1" : "/api/usage");
     const d = await res.json();
     
     // Fill Account

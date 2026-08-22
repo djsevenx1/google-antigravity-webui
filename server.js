@@ -309,6 +309,17 @@ app.use('/api', (req, res, next) => {
 
 // ---------- 缓存与读取 Google Antigravity OAuth 账号资料 ----------
 let cachedGoogleProfile = null;
+// 持久化 Google Profile 缓存，避免重复拉取与头像闪烁
+const PROFILE_CACHE_FILE = path.join(__dirname, 'data', 'google_profile_cache.json');
+try {
+  if (fs.existsSync(PROFILE_CACHE_FILE)) {
+    const rawCache = JSON.parse(fs.readFileSync(PROFILE_CACHE_FILE, 'utf8'));
+    if (rawCache && rawCache.email) {
+      cachedGoogleProfile = rawCache;
+      profileFetchedAt = Date.now() - 60000; // 初始化为可用状态
+    }
+  }
+} catch (_) {}
 let profileFetchedAt = 0;
 
 function parseGoogleAccountTier(liveTierInfo, rawToken) {
@@ -356,7 +367,7 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
 }
 
 async function refreshGoogleProfileInBackground() {
-  if (Date.now() - profileFetchedAt < 20000) return cachedGoogleProfile;
+  if (Date.now() - profileFetchedAt < 300000 && cachedGoogleProfile) return cachedGoogleProfile;
   const tokenPaths = [
     path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
     '/vol5/@apphome/claude code/.gemini/antigravity-cli/antigravity-oauth-token'
@@ -458,6 +469,9 @@ async function refreshGoogleProfileInBackground() {
             useG1Credits: tierData.useG1Credits
           };
           profileFetchedAt = Date.now();
+          try {
+            fs.writeFileSync(PROFILE_CACHE_FILE, JSON.stringify(cachedGoogleProfile, null, 2));
+          } catch (_) {}
           return cachedGoogleProfile;
         }
       }
@@ -469,13 +483,11 @@ async function refreshGoogleProfileInBackground() {
 
 
 // ---------- API ----------
-app.get('/api/status', async (req, res) => { console.log('HIT API STATUS');
+app.get('/api/status', async (req, res) => {
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
-  if (!cachedGoogleProfile || cachedGoogleProfile.isMock) {
+  if (!cachedGoogleProfile || cachedGoogleProfile.isMock || (Date.now() - profileFetchedAt > 300000)) {
     await refreshGoogleProfileInBackground().catch(() => {});
-  } else {
-    refreshGoogleProfileInBackground().catch(() => {});
   }
   send(res, 200, {
     oauthConfigured: config.oauthConfigured,
@@ -610,7 +622,9 @@ app.get('/api/usage', async (req, res) => {
   }
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
-  await refreshGoogleProfileInBackground().catch(() => {});
+  if (!cachedGoogleProfile || req.query.refresh || (Date.now() - profileFetchedAt > 300000)) {
+    await refreshGoogleProfileInBackground().catch(() => {});
+  }
   const googleAccount = cliAuthed ? cachedGoogleProfile : null;
   const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
 
