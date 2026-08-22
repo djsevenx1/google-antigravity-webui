@@ -249,8 +249,8 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
       isFree: false,
       isEnterprise: false,
       useG1Credits: true,
-      fiveHourPercent: 96,
-      weeklyPercent: 92,
+      fiveHourPercent: 100,
+      weeklyPercent: 100,
       fiveHourSub: 'Google AI Pro 5 小时滚动算力',
       weeklySub: '每周 Pro 旗舰算力配额',
       policyNote: 'Google AI Pro 尊享特权：所有 Gemini 系列模型享 100% 无限高额度；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力池兜底。'
@@ -495,8 +495,10 @@ app.get('/api/usage', async (req, res) => {
   const fiveHourH = Math.floor(fiveHourRemainingMs / (3600 * 1000));
   const fiveHourM = Math.floor((fiveHourRemainingMs % (3600 * 1000)) / (60 * 1000));
 
-  const daysUntilWeekly = (7 - now.getDay()) % 7 || 7;
-  const weeklyRemainingStr = `${daysUntilWeekly}天 ${23 - now.getHours()}小时`;
+  const utcDay = now.getUTCDay(); // 0(Sunday) - 6(Saturday)
+  const utcHours = now.getUTCHours();
+  const daysUntilWeekly = utcDay === 0 ? 0 : 7 - utcDay;
+  const weeklyRemainingStr = `${daysUntilWeekly}天 ${23 - utcHours}小时`;
 
   const thirtyHourMs = 30 * 3600 * 1000;
   const currentBlock30hMs = now.getTime() % thirtyHourMs;
@@ -576,8 +578,16 @@ app.get('/api/usage', async (req, res) => {
           if (Array.isArray(sess.messages)) {
             totalTurns += Math.floor(sess.messages.length / 2);
             for (const m of sess.messages) {
-              if (m.usage && m.usage.total_tokens) {
-                totalTokens += m.usage.total_tokens;
+              if (m.usage) {
+                if (m.usage.total_tokens) {
+                  totalTokens += m.usage.total_tokens;
+                } else if (m.usage.input_tokens || m.usage.output_tokens) {
+                  totalTokens += (m.usage.input_tokens || 0) + (m.usage.output_tokens || 0);
+                } else if (m.usage.prompt_tokens || m.usage.completion_tokens) {
+                  totalTokens += (m.usage.prompt_tokens || 0) + (m.usage.completion_tokens || 0);
+                } else if (typeof m.content === 'string') {
+                  totalTokens += Math.round(m.content.length / 3.2);
+                }
               } else if (typeof m.content === 'string') {
                 totalTokens += Math.round(m.content.length / 3.2);
               }
