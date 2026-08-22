@@ -1989,39 +1989,65 @@ html[data-theme="dark"] .code-content-body {
 
 /* Chat Error Cards & Recovery Actions */
 .chat-error-card {
-  margin-top: 8px;
-  padding: 12px 14px;
-  border-radius: var(--radius-md);
+  margin-top: 10px;
+  padding: 14px 16px;
+  border-radius: 12px;
   font-size: 13px;
   line-height: 1.5;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  animation: fadeIn 0.2s ease-out;
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  backdrop-filter: blur(8px);
 }
 .chat-error-card.quota-error {
-  background: rgba(245, 158, 11, 0.1);
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  color: #f59e0b;
+  background: var(--bg-quota, rgba(245, 158, 11, 0.08));
+  border: 1px solid var(--border-quota, rgba(245, 158, 11, 0.3));
+  color: var(--text-quota, #d97706);
 }
 .chat-error-card.network-error {
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(59, 130, 246, 0.35);
-  color: #60a5fa;
+  background: var(--bg-net, rgba(59, 130, 246, 0.08));
+  border: 1px solid var(--border-net, rgba(59, 130, 246, 0.3));
+  color: var(--text-net, #2563eb);
 }
 .chat-error-card.general-error {
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: var(--bg-err, rgba(239, 68, 68, 0.06));
+  border: 1px solid var(--border-err, rgba(239, 68, 68, 0.25));
+  color: var(--text-err, #dc2626);
+}
+[data-theme="dark"] .chat-error-card.quota-error {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+}
+[data-theme="dark"] .chat-error-card.network-error {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #60a5fa;
+}
+[data-theme="dark"] .chat-error-card.general-error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.4);
   color: #f87171;
 }
 .chat-error-title {
   font-weight: 600;
   font-size: 13.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .chat-error-desc {
   font-size: 12.5px;
-  opacity: 0.9;
+  opacity: 0.92;
   word-break: break-word;
+  color: var(--text-main);
+  background: var(--bg-input);
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  font-family: var(--font-mono, monospace);
 }
 .chat-error-actions {
   display: flex;
@@ -2031,7 +2057,9 @@ html[data-theme="dark"] .code-content-body {
 }
 .chat-error-actions .btn {
   font-size: 12px;
-  padding: 5px 12px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-weight: 500;
 }
 
 /* Model Usage & Quota Modal Styles */
