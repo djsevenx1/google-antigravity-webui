@@ -705,12 +705,12 @@ app.get('/api/usage', async (req, res) => {
     weekly: {
       title: '每周 Gemini 旗舰算力',
       sub: '每周累计总可用算力上限',
-      percent: tierData.isPro ? 90 : 30,
-      used: tierData.isPro ? 10 : 70,
+      percent: gemini5hPct,
+      used: parseFloat((100 - gemini5hPct).toFixed(1)),
       total: 100,
       resetsIn: weeklyRemainingStr,
       resetText: weeklyRemainingStr,
-      status: 'healthy'
+      status: gemini5hPct > 60 ? 'healthy' : gemini5hPct > 20 ? 'warning' : 'danger'
     },
     claude5h: {
       title: 'Claude & GPT 5小时滚动算力',
@@ -726,12 +726,12 @@ app.get('/api/usage', async (req, res) => {
     claudeWeekly: {
       title: '每周 Claude & GPT 旗舰配额',
       sub: '深度思考周周期算力基准',
-      percent: tierData.isPro ? 85 : 20,
-      used: tierData.isPro ? 15 : 80,
+      percent: claude5hPct,
+      used: parseFloat((100 - claude5hPct).toFixed(1)),
       total: 100,
       resetsIn: weeklyRemainingStr,
       resetText: weeklyRemainingStr,
-      status: 'healthy'
+      status: claude5hPct > 60 ? 'healthy' : claude5hPct > 20 ? 'warning' : 'danger'
     }
   };
 
