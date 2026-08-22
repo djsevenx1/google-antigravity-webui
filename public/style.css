@@ -3208,3 +3208,19 @@ html:not([data-theme="light"]) .slash-desc {
 .msg-bar-fill.danger {
   background: #ef4444;
 }
+
+/* Background Running Session Indicator */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.session-icon.spin-icon {
+  animation: spin 1.2s linear infinite;
+  color: var(--accent) !important;
+}
+
+.session-item.running .session-title {
+  color: var(--accent);
+}
+
