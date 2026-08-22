@@ -1000,16 +1000,20 @@ function formatMarkdown(text, isStreaming = false) {
     return `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
   });
 
-  // 2. Handle ACTIVE / UNCLOSED <thought> or <thinking> during streaming (正在思考中时实时展开打印)
+  // 2. Handle ACTIVE / UNCLOSED <thought> or <thinking> (流式中展开打印，非流式安全闭合折叠)
   let activeThinkingHtml = "";
   const thoughtMatch = processed.match(/<(?:thought|thinking)>([\s\S]*)$/i);
   if (thoughtMatch) {
     const idx = thoughtMatch.index;
     const beforeThought = processed.substring(0, idx);
     const currentThought = thoughtMatch[1];
-    
-    activeThinkingHtml = `<details class="thinking-block active" open><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="color:var(--accent);font-weight:600;">正在实时深度思考中...</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought)}<span class="streaming-cursor"></span></div></details>`;
-    processed = beforeThought;
+    if (isStreaming) {
+      activeThinkingHtml = `<details class="thinking-block active" open><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="color:var(--accent);font-weight:600;">正在实时深度思考中...</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought)}<span class="streaming-cursor"></span></div></details>`;
+      processed = beforeThought;
+    } else {
+      const closedThought = `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought.trim())}</div></details>`;
+      processed = beforeThought + closedThought;
+    }
   }
 
   let finalHtml = "";
@@ -1860,6 +1864,16 @@ async function runConversationTurn(text, appendUserMsg = true) {
             const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
             if (currentClean.length > 5 && !settled) {
               receivedDone = true;
+              const targetNode = clientRun.asstNode || asstNode;
+              if (targetNode) {
+                if (targetNode.row) targetNode.row.classList.remove("streaming");
+                if (state.activeId === conv.id && targetNode.bubble) {
+                  const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
+                  const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
+                  targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+                  refreshIcons();
+                }
+              }
               done(() => resolve());
             }
           }, 1200);
@@ -1940,6 +1954,16 @@ async function runConversationTurn(text, appendUserMsg = true) {
               updateUsageSummary(data.liveQuota);
             }
             receivedDone = true;
+            const targetNode = clientRun.asstNode || asstNode;
+            if (targetNode) {
+              if (targetNode.row) targetNode.row.classList.remove("streaming");
+              if (state.activeId === conv.id && targetNode.bubble) {
+                const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
+                const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
+                targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+                refreshIcons();
+              }
+            }
             done(() => resolve());
           }
         };
@@ -3387,16 +3411,18 @@ function tryReconnectToOngoingRun() {
 
     if (data.done) {
       if (asstNode) {
-        asstNode.bubble.innerHTML = formatMarkdown(acc, false);
+        const cleanAcc = acc.replace(/​/g, '').trim();
+        const metaSnapshot = { model: state.selectedModel };
+        asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
         asstNode.row.classList.remove('streaming');
         state.streaming = false;
         updateSendButton();
-        const cleanAcc = acc.replace(/​/g, '').trim();
+        refreshIcons();
         if (cleanAcc || toolEvents.length) {
           // 避免重复追加
           const lastMsg = conv.messages[conv.messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
-            conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined });
+            conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined, meta: { model: state.selectedModel } });
           }
         }
         saveConversations(true);
