@@ -103,10 +103,10 @@ http://localhost:3100
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| 用户名 | `DJSeven` | 登录用户名 |
+| 用户名 | `admin` | 登录用户名 |
 | 密码 | `admin` | 登录密码 |
 
-> ⚠️ 生产环境请务必修改 `config.json` 里的 `auth.password`，不要使用默认密码。
+> ⚠️ 生产环境请务必修改 `config.json` 里的 `auth.username` 和 `auth.password`，不要使用默认密码。
 
 ### 5. 如需外网访问
 
