@@ -239,12 +239,14 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
   }
 
   // 2. Pro / Gemini Advanced / Standard Tier / G1 Credits 订阅版
-  const isPro = tierIds.some((id) => id.includes('standard') || id.includes('pro') || id.includes('advanced') || id.includes('premium')) ||
+  const paidTier = liveTierInfo?.paidTier;
+  const isPro = paidTier?.id === 'g1-pro-tier' ||
+                tierIds.some((id) => id.includes('standard') || id.includes('pro') || id.includes('advanced') || id.includes('premium')) ||
                 rawToken?.useG1Credits || rawToken?.auth_method === 'consumer';
   if (isPro) {
     return {
       type: 'pro',
-      name: 'Google AI Pro (Gemini Advanced · G1 Credits)',
+      name: paidTier?.name ? `${paidTier.name} (G1 Plan)` : 'Google AI Pro (Gemini Advanced · G1 Credits)',
       badge: 'Google AI Pro',
       isPro: true,
       isFree: false,
@@ -254,7 +256,7 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
       weeklyPercent: 100,
       fiveHourSub: 'Google AI Pro 5 小时滚动算力',
       weeklySub: '每周 Pro 旗舰算力配额',
-      policyNote: 'Google AI Pro 尊享特权：所有 Gemini 系列模型享 100% 无限高额度；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力池兜底。'
+      policyNote: 'Google AI Pro 订阅权益：享有 Gemini 5小时高额滚动算力池与无总量计费上限；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力兜底。可升级至 Google AI Ultra 获得更高速率限制。'
     };
   }
 
@@ -400,7 +402,7 @@ function getModelMetadata(modelId, tierData = {}) {
       name: `Gemini 3.7 Flash (${level})`,
       series: 'Gemini',
       percent: isPro ? 100 : 75,
-      quota: isPro ? `${tierPrefix} 无限额度 (Unlimited)` : '免费基础配额',
+      quota: isPro ? `${tierPrefix} 5h 滚动算力池` : '免费基础配额',
       status: 'active',
       statusText: isPro ? `${tierPrefix} 全天极速高频 · 深度思考` : '免费基础速率约束',
       speed: level === 'High' ? '~120 tok/s' : level === 'Medium' ? '~130 tok/s' : '~140 tok/s',
@@ -414,7 +416,7 @@ function getModelMetadata(modelId, tierData = {}) {
       name: `Gemini 3.6 Flash (${level})`,
       series: 'Gemini',
       percent: isPro ? 100 : 80,
-      quota: isPro ? `${tierPrefix} 无限额度 (Unlimited)` : '免费基础配额',
+      quota: isPro ? `${tierPrefix} 5h 滚动算力池` : '免费基础配额',
       status: 'active',
       statusText: isPro ? `${tierPrefix} 极速稳定推理` : '免费日常对话',
       speed: '~130 tok/s',
@@ -428,7 +430,7 @@ function getModelMetadata(modelId, tierData = {}) {
       name: `Gemini 3.5 Flash (${level})`,
       series: 'Gemini',
       percent: isPro ? 100 : 85,
-      quota: isPro ? `${tierPrefix} 无限额度 (Unlimited)` : '免费基础配额',
+      quota: isPro ? `${tierPrefix} 5h 滚动算力池` : '免费基础配额',
       status: 'active',
       statusText: isPro ? `${tierPrefix} 快速轻量响应` : '免费快速响应',
       speed: '~140 tok/s',
@@ -1043,15 +1045,15 @@ app.post('/api/permissions/allow', (req, res) => {
 });
 
 // ---------- 多账号管理 ----------
-app.get('/api/accounts', (req, res) => {
+app.get('/api/accounts', async (req, res) => {
   const accounts = listAccounts();
-  const activeEmail = getActiveAccountEmail();
+  const activeEmail = await getActiveAccountEmail();
   send(res, 200, { accounts, activeEmail });
 });
 
-app.post('/api/accounts/add', (req, res) => {
+app.post('/api/accounts/add', async (req, res) => {
   const { label } = req.body || {};
-  const r = addAccount(label);
+  const r = await addAccount(label);
   if (!r.ok) return send(res, 400, { error: r.error });
   debugLog('[accounts] added:', r.account.label);
   send(res, 200, r);

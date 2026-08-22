@@ -2400,8 +2400,8 @@ async function showUsageModal() {
           <span>Google AI Pro 模型配额与权益说明</span>
         </div>
         <div id="quota-policy-text" style="font-size:11.5px;color:var(--text-muted);line-height:1.5;">
-          • <strong>Gemini 3.7 / 3.6 / 3.5 Flash</strong>：享有 Google AI Pro 全额度高频保障（<strong>100% 无限额度</strong>），适合所有日常极速高并发代码编写与长文本分析。<br/>
-          • <strong>Claude / GPT 系列</strong>：享有 Pro 优先通道与 5 小时滚动配额，若高阶模型触达限额，系统将自动使用 G1 Credits 算力点数无缝补充。
+          • <strong>Gemini 3.7 / 3.6 / 3.5 Flash</strong>：享有 Google AI Pro 5 小时高额滚动算力池（无总 Token 计费上限），适合日常高并发代码编写与长文本分析。<br/>
+          • <strong>Claude / GPT 系列</strong>：享有 Pro 优先通道与 5 小时滚动配额，若高阶模型触达速率限制，系统将自动使用 G1 Credits 算力点数无缝补充。
         </div>
       </div>
     </div>
