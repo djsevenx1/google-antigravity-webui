@@ -1411,7 +1411,6 @@ wss.on('connection', (ws, req) => {
     let lastDataAt = Date.now();
 
     const heartbeat = setInterval(() => {
-      if (ws.readyState !== ws.OPEN) return;
       if (Date.now() - lastDataAt >= 1500) {
         const waited = Math.round((Date.now() - t0) / 1000);
         broadcast({ progress: true, waited, tip: '正在思考…' });
