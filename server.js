@@ -1850,7 +1850,7 @@ wss.on('connection', (ws, req) => {
           break;
         } catch (err) {
           if (runAbortController.signal.aborted) throw err;
-          const isTransient = /terminated due to error|Agent execution terminated|stream ended|unexpected EOF|context canceled|connection reset/i.test(err && err.message || '');
+          const isTransient = /terminated due to error|Agent execution terminated|stream ended|unexpected EOF|context canceled|connection reset|Eligibility check failed|profile picture|i\/o timeout|timeout|dial tcp|connection refused|network is unreachable/i.test(err && err.message || '');
           if (attempt < RETRY && isTransient) {
             await new Promise((r) => setTimeout(r, 1500));
             continue;
