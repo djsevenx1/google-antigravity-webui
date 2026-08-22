@@ -1097,7 +1097,8 @@ app.post('/api/chat', async (req, res) => {
           needsPermission: true,
           description: '模型申请了权限操作，请选择权限策略后重试',
           options: ["approve"],
-          toolName: e.toolName || ''
+          toolName: e.toolName || '',
+          toolInput: e.toolInput || ''
         },
         error: e.message
       })}\n\n`);
@@ -1511,7 +1512,7 @@ wss.on('connection', (ws, req) => {
       run.error = e;
       const errMsg = (e && e.message) || 'CLI 未返回内容';
       if (e && e.needsPermission) {
-        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"], toolName: e.toolName || '' }, error: errMsg });
+        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"], toolName: e.toolName || '', toolInput: e.toolInput || '' }, error: errMsg });
       } else if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
         broadcast({ meta: { quotaExceeded: true, description: '配额已用尽' }, error: errMsg });
       } else {
