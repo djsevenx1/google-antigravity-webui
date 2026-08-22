@@ -47,7 +47,8 @@ function buildLiveWindowsData() {
     const g5hPct = gemini5hB ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 65.3;
 
     // 官方反重力 2.0 规范：Free Tier 免费层下，第三方模型 (Claude/GPT) 周配额显示 0% (已达周上限)
-    const cWeeklyPct = isFreeTier ? 0 : (claudeWeeklyB ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 0);
+    // 官方反重力 2.0 规范：三方模型 (Claude/GPT) 周配额显示 0% (已达周上限)，随周周期刷新
+    const cWeeklyPct = 0;
     const c5hPct = claude5hB ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100;
 
     return {
@@ -81,7 +82,7 @@ function buildLiveWindowsData() {
         claude5h: {
           title: 'Five Hour Limit Remaining',
           cnTitle: 'Claude & GPT 5小时滚动算力',
-          sub: isFreeTier ? 'You have hit your weekly limit, the 5-hour limit will reset once weekly quota refreshes' : (claude5hB?.description || 'Claude & GPT 5-hour rolling pool'),
+          sub: 'You have hit your weekly limit, the 5-hour limit will reset once weekly quota refreshes',
           percent: c5hPct,
           used: parseFloat((100 - c5hPct).toFixed(1)),
           total: 100,
@@ -93,7 +94,7 @@ function buildLiveWindowsData() {
         claudeWeekly: {
           title: 'Weekly Limit Remaining',
           cnTitle: '每周 Claude & GPT 旗舰配额',
-          sub: isFreeTier ? 'You have hit your weekly limit, it refreshes in ' + formatCountdown(geminiWeeklyB?.resetTime, weeklyRemainingStr) : (claudeWeeklyB?.description || 'Claude & GPT weekly limit'),
+          sub: 'You have hit your weekly limit, it refreshes in ' + formatCountdown(geminiWeeklyB?.resetTime, weeklyRemainingStr),
           percent: cWeeklyPct,
           used: parseFloat((100 - cWeeklyPct).toFixed(1)),
           total: 100,
