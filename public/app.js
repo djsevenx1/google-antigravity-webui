@@ -2893,58 +2893,39 @@ async function showUsageModal() {
     $("#win-bar-weekly").style.background = colorWeekly;
     $("#win-reset-weekly").textContent = `${winWeekly.resetsIn} 后刷新`;
 
-    // Render Claude 5h & Weekly Windows
-    const winClaude5h = win.claude5h || { percent: 88, resetsIn: win5h.resetsIn };
-    const winClaudeWeekly = win.claudeWeekly || { percent: 75, resetsIn: winWeekly.resetsIn };
+    // Render Claude & GPT 5h & Weekly Windows (100% 像素级对齐反重力 2.0 官方客户端)
+    const winClaude5h = win.claude5h || { percent: 100, resetsIn: "4小时 59分钟" };
+    const winClaudeWeekly = win.claudeWeekly || { percent: 0, resetsIn: winWeekly.resetsIn };
 
-    // 如果后端实时拉取到了有效的 Claude 配额（>0），自动清除本地过期的冷却锁
-    let claudeResetAt = localStorage.getItem('claudeResetAt');
-    if (winClaude5h.percent > 0) {
-      localStorage.removeItem('claudeResetAt');
-      claudeResetAt = null;
+    const isClaudeWeeklyHit = winClaudeWeekly.percent === 0;
+
+    if ($("#win-percent-claude5h")) {
+      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100%" : `${winClaude5h.percent}%`;
+      $("#win-percent-claude5h").style.color = isClaudeWeeklyHit ? "#10b981" : (winClaude5h.percent > 60 ? "#10b981" : "#f59e0b");
     }
-    const isClaudeInCooldown = (claudeResetAt && parseInt(claudeResetAt) > Date.now()) || (winClaude5h.percent === 0);
-    let claudeCooldownH = 0, claudeCooldownM = 0;
-
-    let dynamicClaude5hReset = winClaude5h.resetsIn;
-    let dynamicClaude5hStatus = `${winClaude5h.percent}% 可用`;
-    let dynamicClaude5hBar = `${winClaude5h.percent}%`;
-    let dynamicClaudeWeeklyReset = winClaudeWeekly.resetsIn;
-    let dynamicClaudeWeeklyStatus = `${winClaudeWeekly.percent}% 可用`;
-    let dynamicClaudeWeeklyBar = `${winClaudeWeekly.percent}%`;
-
-    if (isClaudeInCooldown) {
-      if (claudeResetAt && parseInt(claudeResetAt) > Date.now()) {
-        const diffMs = parseInt(claudeResetAt) - Date.now();
-        claudeCooldownH = Math.floor(diffMs / 3600000);
-        claudeCooldownM = Math.floor((diffMs % 3600000) / 60000);
-        dynamicClaude5hReset = `${claudeCooldownH}小时 ${claudeCooldownM}分钟`;
-        dynamicClaudeWeeklyReset = `${claudeCooldownH}小时 ${claudeCooldownM}分钟`;
-      } else {
-        dynamicClaude5hReset = winClaude5h.resetsIn;
-        dynamicClaudeWeeklyReset = winClaudeWeekly.resetsIn;
-      }
-      dynamicClaude5hStatus = `0% · 冷却中`;
-      dynamicClaude5hBar = `0%`;
-      dynamicClaudeWeeklyStatus = `0% · 暂不可用`;
-      dynamicClaudeWeeklyBar = `0%`;
-      if ($("#win-percent-claude5h")) $("#win-percent-claude5h").style.color = "#ef4444";
-      if ($("#win-percent-claudeweekly")) $("#win-percent-claudeweekly").style.color = "#ef4444";
-    }
-
-    if ($("#win-percent-claude5h")) $("#win-percent-claude5h").textContent = dynamicClaude5hStatus;
     if ($("#win-bar-claude5h")) {
-      $("#win-bar-claude5h").style.width = dynamicClaude5hBar;
-      if (isClaudeInCooldown) $("#win-bar-claude5h").style.background = "#ef4444";
+      $("#win-bar-claude5h").style.width = `${winClaude5h.percent}%`;
+      $("#win-bar-claude5h").style.background = "#10b981";
     }
-    if ($("#win-reset-claude5h")) $("#win-reset-claude5h").textContent = `${dynamicClaude5hReset} 后重置`;
+    if ($("#win-reset-claude5h")) {
+      $("#win-reset-claude5h").textContent = isClaudeWeeklyHit 
+        ? "已达周上限 · 暂无可用调用" 
+        : `${winClaude5h.resetsIn} 后重置`;
+    }
 
-    if ($("#win-percent-claudeweekly")) $("#win-percent-claudeweekly").textContent = dynamicClaudeWeeklyStatus;
-    if ($("#win-bar-claudeweekly")) {
-      $("#win-bar-claudeweekly").style.width = dynamicClaudeWeeklyBar;
-      if (isClaudeInCooldown) $("#win-bar-claudeweekly").style.background = "#ef4444";
+    if ($("#win-percent-claudeweekly")) {
+      $("#win-percent-claudeweekly").textContent = `${winClaudeWeekly.percent}%`;
+      $("#win-percent-claudeweekly").style.color = isClaudeWeeklyHit ? "#94a3b8" : "#eab308";
     }
-    if ($("#win-reset-claudeweekly")) $("#win-reset-claudeweekly").textContent = `${dynamicClaudeWeeklyReset} 后刷新`;
+    if ($("#win-bar-claudeweekly")) {
+      $("#win-bar-claudeweekly").style.width = `${winClaudeWeekly.percent}%`;
+      $("#win-bar-claudeweekly").style.background = isClaudeWeeklyHit ? "rgba(148,163,184,0.3)" : "#eab308";
+    }
+    if ($("#win-reset-claudeweekly")) {
+      $("#win-reset-claudeweekly").textContent = isClaudeWeeklyHit 
+        ? `已达周上限 (${winClaudeWeekly.resetsIn}后刷新)` 
+        : `${winClaudeWeekly.resetsIn} 后刷新`;
+    }
 
     updateUsageSummary(d);
 
