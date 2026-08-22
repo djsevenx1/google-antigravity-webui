@@ -838,7 +838,7 @@ body.hide-thinking-tools .tool-event-box {
   max-width: 900px;
   width: 100%;
   margin: 0 auto;
-  scroll-behavior: smooth;
+  /* Instant positioning on load/refresh */
 }
 
 /* Quick Scroll to Bottom Floating Action Button */
