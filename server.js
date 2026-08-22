@@ -431,10 +431,28 @@ async function refreshGoogleProfileInBackground() {
 
           const tierData = parseGoogleAccountTier(liveTierInfo, raw);
 
-          // 3. 获取实时真实配额状态 (fetchAvailableModels)
+          // 3. 直连 Google 官方 retrieveUserQuotaSummary 接口获取与反重力 2.0 100% 一致的原生周周期/5小时配额
+          let liveQuotaSummary = null;
           let liveModelsQuota = null;
+          const projectId = raw.projectId || liveTierInfo?.cloudaicompanionProject || 'corded-weaver-gq6d2';
+
           try {
-            const projectId = raw.projectId || '';
+            const summaryRes = await fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'User-Agent': 'antigravity/0.2.0'
+              },
+              body: JSON.stringify(projectId ? { project: projectId } : {}),
+              signal: AbortSignal.timeout(5000)
+            });
+            if (summaryRes.ok) {
+              liveQuotaSummary = await summaryRes.json();
+            }
+          } catch (_) {}
+
+          try {
             const quotaRes = await fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', {
               method: 'POST',
               headers: {
@@ -462,6 +480,7 @@ async function refreshGoogleProfileInBackground() {
             tierDetails: liveTierInfo?.allowedTiers?.[0] || null,
             liveApiConnected: !!liveTierInfo,
             liveModelsQuota,
+            liveQuotaSummary,
             authMethod: raw.auth_method || 'consumer',
             expiry: raw.token?.expiry || null,
             useG1Credits: tierData.useG1Credits
@@ -623,79 +642,11 @@ app.get('/api/usage', async (req, res) => {
   const googleAccount = cliAuthed ? cachedGoogleProfile : null;
   const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
 
-  // 计算 5 小时滚动窗口与每周配额
-  const now = new Date();
-  const fiveHourMs = 5 * 3600 * 1000;
-  const currentBlockMs = now.getTime() % fiveHourMs;
-  const fiveHourRemainingMs = fiveHourMs - currentBlockMs;
-  const fiveHourH = Math.floor(fiveHourRemainingMs / (3600 * 1000));
-  const fiveHourM = Math.floor((fiveHourRemainingMs % (3600 * 1000)) / (60 * 1000));
-
-  const utcDay = now.getUTCDay(); // 0(Sunday) - 6(Saturday)
-  const utcHours = now.getUTCHours();
-  const daysUntilWeekly = utcDay === 0 ? 0 : 7 - utcDay;
-  const weeklyRemainingStr = `${daysUntilWeekly}天 ${23 - utcHours}小时`;
-
-  const thirtyHourMs = 30 * 3600 * 1000;
-  const currentBlock30hMs = now.getTime() % thirtyHourMs;
-  const thirtyHourRemainingMs = thirtyHourMs - currentBlock30hMs;
-  const thirtyHourH = Math.floor(thirtyHourRemainingMs / (3600 * 1000));
-  const thirtyHourM = Math.floor((thirtyHourRemainingMs % (3600 * 1000)) / (60 * 1000));
-
-  const apiModels = cachedGoogleProfile?.liveModelsQuota || {};
-  
-  // 1. Google / Gemini 实时 5h 算力与真实重置时间
-  let geminiFraction = 1.0;
-  let geminiResetTime = null;
-  const gModel = apiModels['gemini-3.1-pro-high'] || apiModels['gemini-2.5-pro'] || apiModels['gemini-3.7-flash-high'] || apiModels['gemini-3.6-flash-high'];
-  if (gModel?.quotaInfo) {
-    if (gModel.quotaInfo.remainingFraction != null) {
-      geminiFraction = gModel.quotaInfo.remainingFraction;
-    } else if (gModel.quotaInfo.resetTime && new Date(gModel.quotaInfo.resetTime).getTime() > Date.now()) {
-      geminiFraction = 0; // Google API 耗尽时不返回 remainingFraction，仅返回 resetTime
-    }
-    if (gModel.quotaInfo.resetTime) geminiResetTime = gModel.quotaInfo.resetTime;
-  }
-  let gemini5hPct = parseFloat((geminiFraction * 100).toFixed(1));
-  let gemini5hResetStr = `${fiveHourH}小时 ${fiveHourM}分钟`;
-  if (geminiResetTime) {
-    const diff = new Date(geminiResetTime).getTime() - Date.now();
-    if (diff > 0) {
-      const h = Math.floor(diff / 3600000);
-      const m = Math.floor((diff % 3600000) / 60000);
-      gemini5hResetStr = `${h}小时 ${m}分钟`;
-    }
-  }
-
-  // 2. Claude & GPT 实时 5h 算力与真实重置时间 (第三方高算力池共享)
-  let claudeFraction = 1.0;
-  let claudeResetTime = null;
-  const cModel = apiModels['claude-opus-4-6-thinking'] || apiModels['claude-sonnet-4-6'] || apiModels['gpt-oss-120b-medium'];
-  if (cModel?.quotaInfo) {
-    if (cModel.quotaInfo.remainingFraction != null) {
-      claudeFraction = cModel.quotaInfo.remainingFraction;
-    } else if (cModel.quotaInfo.resetTime && new Date(cModel.quotaInfo.resetTime).getTime() > Date.now()) {
-      claudeFraction = 0; // Google API 耗尽时不返回 remainingFraction，仅返回 resetTime
-    }
-    if (cModel.quotaInfo.resetTime) claudeResetTime = cModel.quotaInfo.resetTime;
-  }
-  let claude5hPct = parseFloat((claudeFraction * 100).toFixed(1));
-  let claude5hResetStr = `${fiveHourH}小时 ${fiveHourM}分钟`;
-  if (claudeResetTime) {
-    const diff = new Date(claudeResetTime).getTime() - Date.now();
-    if (diff > 0) {
-      const h = Math.floor(diff / 3600000);
-      const m = Math.floor((diff % 3600000) / 60000);
-      claude5hResetStr = `${h}小时 ${m}分钟`;
-    }
-  }
-
-  const buildData = buildLiveWindowsData();
-  const windows = buildData.windows;
+  const liveBuild = buildLiveWindowsData();
+  const windows = liveBuild.windows;
 
   // 动态读取 CLI 真实模型列表
   const cli = await fetchModels();
-  // 归一化精简：过滤掉冗余的 low/medium 细分变体，按三大算力池展示核心旗舰
   const rawList = cli.ok && Array.isArray(cli.models) && cli.models.length > 0 ? cli.models : [];
   const primaryModels = [
     'gemini-3.1-pro-high',
@@ -709,22 +660,13 @@ app.get('/api/usage', async (req, res) => {
   const modelsQuota = rawModelIds.map((m) => {
     const meta = getModelMetadata(m, tierData);
     if (cachedGoogleProfile?.liveModelsQuota) {
-      let qInfo = null;
-      const baseId = m.replace(/-(low|medium|high)$/i, '');
-      const apiModels = cachedGoogleProfile.liveModelsQuota;
-      
-      if (apiModels[m]?.quotaInfo) qInfo = apiModels[m].quotaInfo;
-      else if (apiModels[baseId]?.quotaInfo) qInfo = apiModels[baseId].quotaInfo;
-      else if (m.includes('gemini') && m.includes('flash')) {
-        qInfo = apiModels['gemini-3.5-flash-low']?.quotaInfo || apiModels['gemini-3.5-flash-extra-low']?.quotaInfo;
-      } else if (m.includes('gemini') && m.includes('pro') && apiModels['gemini-3.1-pro-high']?.quotaInfo) {
-        qInfo = apiModels['gemini-3.1-pro-high'].quotaInfo;
-      } else if (m.includes('claude') && m.includes('sonnet') && apiModels['claude-sonnet-4-6']?.quotaInfo) {
-        qInfo = apiModels['claude-sonnet-4-6'].quotaInfo;
-      } else if (m.includes('claude') && m.includes('opus') && apiModels['claude-opus-4-6-thinking']?.quotaInfo) {
-        qInfo = apiModels['claude-opus-4-6-thinking'].quotaInfo;
+      const q = cachedGoogleProfile.liveModelsQuota;
+      let qInfo = q[m]?.quotaInfo;
+      if (!qInfo) {
+        const prefix = m.split('-')[0];
+        const matchKey = Object.keys(q).find(k => k.startsWith(prefix) && q[k]?.quotaInfo);
+        if (matchKey) qInfo = q[matchKey].quotaInfo;
       }
-      
       if (qInfo) {
         let fraction = 1.0;
         if (qInfo.remainingFraction != null) {
@@ -776,61 +718,28 @@ app.get('/api/usage', async (req, res) => {
     }
   } catch (_) {}
 
-  const geminiProModel = modelsQuota.find(m => m.id === 'gemini-3.1-pro-high') || modelsQuota.find(m => m.id === 'gemini-3.7-flash-high');
-  if (geminiProModel && geminiProModel.percent !== undefined) {
-    windows.fiveHour.percent = geminiProModel.percent;
-    windows.fiveHour.used = parseFloat((100 - geminiProModel.percent).toFixed(2));
-    windows.fiveHour.status = geminiProModel.percent > 70 ? 'healthy' : 'warning';
-    windows.weekly.percent = geminiProModel.percent;
-    windows.weekly.used = parseFloat((100 - geminiProModel.percent).toFixed(2));
-    windows.weekly.status = geminiProModel.percent > 70 ? 'healthy' : 'warning';
-    if (geminiProModel.resetTime) {
-      const resetDiff = new Date(geminiProModel.resetTime).getTime() - Date.now();
-      if (resetDiff > 0) {
-        const rH = Math.floor(resetDiff / (3600 * 1000));
-        const rM = Math.floor((resetDiff % (3600 * 1000)) / (60 * 1000));
-        windows.fiveHour.resetsIn = `${rH}小时 ${rM}分钟`;
-        windows.fiveHour.resetText = `${rH}h ${rM}m`;
-        windows.fiveHour.resetTime = geminiProModel.resetTime;
-      }
-    }
-  }
-
-  const claudeModel = modelsQuota.find(m => m.id === 'claude-sonnet-4-6') || modelsQuota.find(m => m.id === 'claude-opus-4-6-thinking');
-  if (claudeModel && claudeModel.percent !== undefined) {
-    windows.claude5h.percent = claudeModel.percent;
-    windows.claude5h.used = parseFloat((100 - claudeModel.percent).toFixed(2));
-    windows.claudeWeekly.percent = claudeModel.percent;
-    windows.claudeWeekly.used = parseFloat((100 - claudeModel.percent).toFixed(2));
-    if (claudeModel.resetTime) {
-      const resetDiff = new Date(claudeModel.resetTime).getTime() - Date.now();
-      if (resetDiff > 0) {
-        const rH = Math.floor(resetDiff / (3600 * 1000));
-        const rM = Math.floor((resetDiff % (3600 * 1000)) / (60 * 1000));
-        windows.claude5h.resetsIn = `${rH}小时 ${rM}分钟`;
-        windows.claude5h.resetText = `${rH}h ${rM}m`;
-        windows.claudeWeekly.resetsIn = `${rH}小时 ${rM}分钟`;
-        windows.claudeWeekly.resetText = `${rH}h ${rM}m`;
-        windows.claude5h.resetTime = claudeModel.resetTime;
-        windows.claudeWeekly.resetTime = claudeModel.resetTime;
-      }
-    }
-  }
-
   send(res, 200, {
-    account: googleAccount,
+    account: googleAccount ? {
+      name: googleAccount.name,
+      email: googleAccount.email,
+      picture: googleAccount.picture
+    } : { name: '未登录', email: '未检测到认证', picture: '' },
     tier: tierData.name,
     tierType: tierData.type,
     tierBadge: tierData.badge,
-    authenticated: !!cliAuthed,
+    topNotice: liveBuild.topNotice,
+    groups: liveBuild.groups,
     windows,
-    modelsQuota,
-    stats: {
-      conversations: totalConversations,
-      turns: totalTurns,
-      tokens: totalTokens
+    models: modelsQuota,
+    metrics: {
+      totalConversations,
+      totalTurns,
+      totalTokens,
+      tokensFormatted: totalTokens > 1000000 ? (totalTokens / 1000000).toFixed(2) + 'M' : (totalTokens > 1000 ? (totalTokens / 1000).toFixed(1) + 'k' : String(totalTokens))
     },
-    quotaResetPolicy: tierData.policyNote
+    useG1Credits: tierData.useG1Credits,
+    liveApiConnected: googleAccount?.liveApiConnected || false,
+    timestamp: Date.now()
   });
 });
 
