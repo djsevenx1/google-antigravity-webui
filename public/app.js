@@ -270,6 +270,23 @@ async function loadConversations() {
     const res = await fetch("/api/sessions");
     const data = await res.json();
     if (data && data.ok && Array.isArray(data.sessions) && data.sessions.length > 0) {
+      // 保留本地尚未落盘的最新用户消息（防止刷新页面时丢失正在思考中的提问）
+      const localRaw = localStorage.getItem("agy-convs");
+      if (localRaw) {
+        try {
+          const localConvs = JSON.parse(localRaw);
+          data.sessions.forEach(serverConv => {
+            const localConv = localConvs.find(c => c.id === serverConv.id);
+            if (localConv && localConv.messages.length > serverConv.messages.length) {
+              // 如果本地消息比服务端多，且多出来的是 user 消息，则补充进去
+              const diff = localConv.messages.slice(serverConv.messages.length);
+              if (diff.every(m => m.role === 'user')) {
+                serverConv.messages.push(...diff);
+              }
+            }
+          });
+        } catch (_) {}
+      }
       state.conversations = data.sessions;
       if (!state.activeId || !state.conversations.some((c) => c.id === state.activeId)) {
         state.activeId = state.conversations[0].id;
@@ -1465,6 +1482,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
       let streamError = null;
       let needsPerm = false;
       let permMsg = "";
+      let permToolName = "";
+      let permToolInput = "";
       let receivedDone = false;
 
     try {
@@ -1499,7 +1518,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           try { data = JSON.parse(event.data); } catch (_) { return; }
           if (data.unauthenticated) { showLoginGate(); done(() => reject(new Error("请先登录"))); return; }
           if (data.idle) { receivedDone = true; done(() => resolve()); return; } // 后台没在跑，当 done 处理
-          if (data.meta && data.meta.needsPermission) { needsPerm = true; permMsg = data.error || "CLI 需要授权"; return; }
+          if (data.meta && data.meta.needsPermission) { needsPerm = true; permMsg = data.error || "CLI 需要授权"; permToolName = data.meta.toolName || ''; permToolInput = data.meta.toolInput || ''; return; }
           if (data.meta && data.meta.quotaExceeded) { streamError = Object.assign(new Error(data.error || "模型配额已用尽"), { quotaExceeded: true }); done(() => reject(streamError)); return; }
           if (data.error) { streamError = new Error(data.error); done(() => reject(streamError)); return; }
           if (data.progress) {
@@ -1537,7 +1556,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           // 浏览器切后台会杀 WebSocket，但后端 Run Registry 一直在跑——重连后回放所有错过的事件。
           if (receivedDone) { done(() => resolve()); return; }
           if (streamError) { done(() => reject(streamError)); return; }
-          if (needsPerm) { done(() => reject(Object.assign(new Error(permMsg), { needsPermission: true }))); return; }
+          if (needsPerm) { done(() => reject(Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput }))); return; }
           // 没收到 done = 后台还在跑，浏览器把连接杀了 → 当 network error 触发重试
           done(() => reject(new Error('network error')));
         };
@@ -1545,7 +1564,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
       currentWs = null;
       if (streamError) throw streamError;
-      if (needsPerm) throw Object.assign(new Error(permMsg), { needsPermission: true });
+      if (needsPerm) throw Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput });
       break;
     } catch (e) {
       const isAbort = e && e.name === "AbortError";
@@ -1634,7 +1653,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           asstNode.bubble.innerHTML = errorHtml;
         }
         asstNode.row.className = "message-row error";
-        if (e.needsPermission) openPermissionModal(errMsg, text, e.toolName);
+        if (e.needsPermission) openPermissionModal(errMsg, text, e.toolName, e.toolInput);
       }
       break;
     }
@@ -1687,13 +1706,21 @@ window.switchModelAndRetry = function(modelName) {
   window.retryLastConversationTurn();
 };
 
-function openPermissionModal(message, retryPrompt, toolName) {
+function openPermissionModal(message, retryPrompt, toolName, toolInput) {
   const toolLabel = toolName ? `<div style="margin-bottom:8px;font-size:13px;color:var(--text-primary);">工具: <code style="background:var(--bg-secondary);padding:2px 6px;border-radius:4px;font-size:12px;">${escapeHtml(toolName)}</code></div>` : '';
+  const inputSection = toolInput ? `
+    <div style="margin-bottom:8px;">
+      <details style="margin-bottom:4px;">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">查看工具输入</summary>
+        <pre style="margin-top:6px;background:var(--bg-primary);border:1px solid var(--border-color);padding:8px 10px;border-radius:4px;font-family:monospace;font-size:11.5px;max-height:200px;overflow-y:auto;white-space:pre-wrap;color:var(--text-primary);">${escapeHtml(toolInput)}</pre>
+      </details>
+    </div>` : '';
   openModal("🛡️ CLI 权限确认", `
     <div style="margin-bottom:12px;color:var(--text-muted);font-size:13px;">
       模型在执行操作时触发了权限保护策略，请选择处理方式：
     </div>
     ${toolLabel}
+    ${inputSection}
     <div style="background:var(--bg-primary);border:1px solid var(--border-color);padding:10px 12px;border-radius:var(--radius-sm);font-family:monospace;font-size:12.5px;max-height:180px;overflow-y:auto;white-space:pre-wrap;color:#f87171;margin-bottom:16px;">
       ${escapeHtml(message)}
     </div>
