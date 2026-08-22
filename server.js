@@ -690,50 +690,8 @@ app.get('/api/usage', async (req, res) => {
     }
   }
 
-  const windows = {
-    fiveHour: {
-      title: 'Google / Gemini 5小时滚动算力',
-      sub: 'Gemini 3.1 Pro & 3.7 Flash 共享算力池',
-      percent: gemini5hPct,
-      used: parseFloat((100 - gemini5hPct).toFixed(1)),
-      total: 100,
-      resetsIn: gemini5hResetStr,
-      resetText: gemini5hResetStr,
-      resetTime: geminiResetTime,
-      status: gemini5hPct > 60 ? 'healthy' : gemini5hPct > 20 ? 'warning' : 'danger'
-    },
-    weekly: {
-      title: '每周 Gemini 旗舰算力',
-      sub: 'Antigravity 2.0 周周期总算力池',
-      percent: tierData.isPro ? Math.min(gemini5hPct, 85) : 18,
-      used: tierData.isPro ? parseFloat((100 - Math.min(gemini5hPct, 85)).toFixed(1)) : 82,
-      total: 100,
-      resetsIn: weeklyRemainingStr,
-      resetText: weeklyRemainingStr,
-      status: (tierData.isPro ? gemini5hPct : 18) > 20 ? 'healthy' : 'warning'
-    },
-    claude5h: {
-      title: 'Claude & GPT 5小时滚动算力',
-      sub: 'Opus 4.6 / Sonnet 4.6 / GPT-OSS 共享算力池',
-      percent: claude5hPct,
-      used: parseFloat((100 - claude5hPct).toFixed(1)),
-      total: 100,
-      resetsIn: claude5hResetStr,
-      resetText: claude5hResetStr,
-      resetTime: claudeResetTime,
-      status: claude5hPct > 60 ? 'healthy' : claude5hPct > 20 ? 'warning' : 'danger'
-    },
-    claudeWeekly: {
-      title: '每周 Claude & GPT 旗舰配额',
-      sub: '深度思考周周期算力基准',
-      percent: claude5hPct,
-      used: parseFloat((100 - claude5hPct).toFixed(1)),
-      total: 100,
-      resetsIn: weeklyRemainingStr,
-      resetText: weeklyRemainingStr,
-      status: claude5hPct > 60 ? 'healthy' : claude5hPct > 20 ? 'warning' : 'danger'
-    }
-  };
+  const buildData = buildLiveWindowsData();
+  const windows = buildData.windows;
 
   // 动态读取 CLI 真实模型列表
   const cli = await fetchModels();
