@@ -510,7 +510,7 @@ function renderLoginArea() {
     const userWrap = el("div", "flex items-center gap-2");
     userWrap.style.cssText = "cursor:pointer;padding:2px 8px 2px 4px;border-radius:18px;background:var(--bg-secondary);border:1px solid var(--border-color);display:inline-flex;align-items:center;";
     userWrap.title = `Google 授权账号: ${googleAcc.name || ''} (${googleAcc.email})\n[${googleAcc.tier || 'Google AI Pro'}]\n点击打开模型用量与配额中心`;
-    userWrap.onclick = () => showUsageModal();
+    userWrap.onclick = () => showAccountSwitcher();
 
     const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
     const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
@@ -2481,6 +2481,9 @@ async function showUsageModal() {
     const winClaudeWeekly = win.claudeWeekly || { percent: 75, resetsIn: winWeekly.resetsIn };
 
     const claudeResetAt = localStorage.getItem('claudeResetAt');
+    const isClaudeInCooldown = (claudeResetAt && parseInt(claudeResetAt) > Date.now()) || (winClaude5h.percent === 0);
+    let claudeCooldownH = 0, claudeCooldownM = 0;
+
     let dynamicClaude5hReset = winClaude5h.resetsIn;
     let dynamicClaude5hStatus = `${winClaude5h.percent}% 可用`;
     let dynamicClaude5hBar = `${winClaude5h.percent}%`;
@@ -2488,14 +2491,17 @@ async function showUsageModal() {
     let dynamicClaudeWeeklyStatus = `${winClaudeWeekly.percent}% 可用`;
     let dynamicClaudeWeeklyBar = `${winClaudeWeekly.percent}%`;
 
-    const isClaudeInCooldown = claudeResetAt && parseInt(claudeResetAt) > Date.now();
-    let claudeCooldownH = 0, claudeCooldownM = 0;
-
     if (isClaudeInCooldown) {
-      const diffMs = parseInt(claudeResetAt) - Date.now();
-      claudeCooldownH = Math.floor(diffMs / 3600000);
-      claudeCooldownM = Math.floor((diffMs % 3600000) / 60000);
-      dynamicClaude5hReset = `${claudeCooldownH}小时 ${claudeCooldownM}分钟`;
+      if (claudeResetAt && parseInt(claudeResetAt) > Date.now()) {
+        const diffMs = parseInt(claudeResetAt) - Date.now();
+        claudeCooldownH = Math.floor(diffMs / 3600000);
+        claudeCooldownM = Math.floor((diffMs % 3600000) / 60000);
+        dynamicClaude5hReset = `${claudeCooldownH}小时 ${claudeCooldownM}分钟`;
+        dynamicClaudeWeeklyReset = `${claudeCooldownH}小时 ${claudeCooldownM}分钟`;
+      } else {
+        dynamicClaude5hReset = winClaude5h.resetsIn;
+        dynamicClaudeWeeklyReset = winClaudeWeekly.resetsIn;
+      }
       dynamicClaude5hStatus = `0% · 冷却中`;
       dynamicClaude5hBar = `0%`;
       dynamicClaudeWeeklyStatus = `0% · 暂不可用`;
@@ -2574,24 +2580,42 @@ async function showUsageModal() {
       const isLimited = m.status === "limited";
       let pct = m.percent != null ? m.percent : 100;
       let isModelCooldown = false;
+      let modelResetCountdown = "";
+
+      if (m.resetTime) {
+        const rDiff = new Date(m.resetTime).getTime() - Date.now();
+        if (rDiff > 0) {
+          const rH = Math.floor(rDiff / 3600000);
+          const rM = Math.floor((rDiff % 3600000) / 60000);
+          modelResetCountdown = `${rH}h ${rM}m`;
+        }
+      }
 
       let resetBadge = "";
       let resetInfoText = "";
       if (m.series === "Claude" || m.id.includes("claude")) {
-        if (isClaudeInCooldown) {
+        if (pct === 0 || isClaudeInCooldown) {
           isModelCooldown = true;
           pct = 0; // 冷却中配额强制归零！
-          resetBadge = `<span class="quota-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);font-weight:600;">⏳ ${claudeCooldownH}h ${claudeCooldownM}m 重置</span>`;
-          resetInfoText = `<span style="color:#ef4444;font-weight:600;">⚠️ 配额已耗尽 · ${claudeCooldownH}小时${claudeCooldownM}分后解封</span>`;
+          const cdText = modelResetCountdown || (claudeCooldownH ? `${claudeCooldownH}h ${claudeCooldownM}m` : (winClaude5h.resetText || "冷却中"));
+          resetBadge = `<span class="quota-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);font-weight:600;">⏳ ${cdText} 重置</span>`;
+          resetInfoText = `<span style="color:#ef4444;font-weight:600;">⚠️ 配额已耗尽 · ${cdText}后解封</span>`;
         } else {
-          resetBadge = `<span class="quota-tag" style="background:rgba(168,85,247,0.12);color:#c084fc;border:1px solid rgba(168,85,247,0.25);">⚡ 5h 滚动 + 每周旗舰</span>`;
+          resetBadge = `<span class="quota-tag" style="background:rgba(168,85,247,0.12);color:#c084fc;border:1px solid rgba(168,85,247,0.25);">${modelResetCountdown ? `⚡ ${modelResetCountdown} 滚动` : '⚡ 5h 滚动 + 每周旗舰'}</span>`;
           resetInfoText = `<span style="color:var(--text-dim);">双重机制：5h 交互频次 · 每周旗舰算力池</span>`;
         }
       } else if (m.series === "GPT" || m.id.includes("gpt") || m.id.includes("oss")) {
-        resetBadge = `<span class="quota-tag" style="background:rgba(59,130,246,0.12);color:#3b82f6;border:1px solid rgba(59,130,246,0.25);">⚡ 5h 滚动重置</span>`;
-        resetInfoText = `<span style="color:var(--text-dim);">重置周期：5小时滚动 · 开源算力池</span>`;
+        if (pct === 0) {
+          isModelCooldown = true;
+          const cdText = modelResetCountdown || "冷却中";
+          resetBadge = `<span class="quota-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);font-weight:600;">⏳ ${cdText} 重置</span>`;
+          resetInfoText = `<span style="color:#ef4444;font-weight:600;">⚠️ 配额已耗尽 · ${cdText}后解封</span>`;
+        } else {
+          resetBadge = `<span class="quota-tag" style="background:rgba(59,130,246,0.12);color:#3b82f6;border:1px solid rgba(59,130,246,0.25);">${modelResetCountdown ? `⚡ ${modelResetCountdown} 滚动` : '⚡ 5h 滚动重置'}</span>`;
+          resetInfoText = `<span style="color:var(--text-dim);">重置周期：5小时滚动 · 开源算力池</span>`;
+        }
       } else if (m.series === "Gemini" || m.id.includes("gemini")) {
-        resetBadge = `<span class="quota-tag" style="background:rgba(16,185,129,0.08);color:#10b981;border:1px solid rgba(16,185,129,0.2);">⚡ 5h 滚动重置</span>`;
+        resetBadge = `<span class="quota-tag" style="background:rgba(16,185,129,0.08);color:#10b981;border:1px solid rgba(16,185,129,0.2);">${modelResetCountdown ? `⚡ ${modelResetCountdown} 滚动` : '⚡ 5h 滚动重置'}</span>`;
         resetInfoText = `<span style="color:var(--text-dim);">重置周期：5小时滚动 · 原生算力池</span>`;
       }
 
@@ -2602,7 +2626,7 @@ async function showUsageModal() {
         : isLimited 
         ? `<span class="quota-tag limited">${pct}% · 受限/按需</span>`
         : isUnlimited 
-        ? `<span class="quota-tag unlimited">100% · Pro 无限额度</span>`
+        ? `<span class="quota-tag unlimited">${pct}% · Pro 无限额度</span>`
         : isPro
         ? `<span class="quota-tag pro">${pct}% · Pro 尊享</span>`
         : `<span class="quota-tag standard">${pct}% · 标准配额</span>`;
@@ -3456,4 +3480,70 @@ function updateExplorerEditorStats() {
 const btnFiles = $("#btn-files");
 if (btnFiles) {
   btnFiles.addEventListener("click", showWorkspaceExplorer);
+}
+
+async function showAccountSwitcher() {
+  var accounts = [];
+  var activeEmail = "";
+  try {
+    var r = await fetch("/api/accounts");
+    var d = await r.json();
+    accounts = d.accounts || [];
+    activeEmail = d.activeEmail || "";
+  } catch (_) {}
+  var rows = "";
+  for (var i = 0; i < accounts.length; i++) {
+    var a = accounts[i];
+    var isActive = a.email === activeEmail;
+    var initial = (a.name || a.email || "?").charAt(0).toUpperCase();
+    rows += '<div class="acct-row" data-email="' + escapeHtml(a.email) + '" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;cursor:pointer;' + (isActive ? 'background:var(--bg-tertiary);' : '') + '">';
+    rows += '<img src="' + escapeHtml(a.picture || '') + '" style="width:28px;height:28px;border-radius:50%" onerror="this.style.display=\'none\'"/>';
+    rows += '<div style="flex:1"><div style="font-size:13px;font-weight:600">' + escapeHtml(a.label || a.name || a.email) + '</div>';
+    rows += '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(a.email) + '</div></div>';
+    rows += isActive ? '<span style="color:#10b981;font-size:12px">当前</span>' : '<span style="color:var(--text-muted);font-size:11px">点击切换</span>';
+    rows += '<button class="acct-del" data-email="' + escapeHtml(a.email) + '" style="font-size:10px;padding:2px 6px;border:none;background:transparent;color:var(--danger);cursor:pointer">删除</button>';
+    rows += '</div>';
+  }
+  if (!rows) rows = '<div style="padding:20px;text-align:center;color:var(--text-muted)">还没有添加多个账号</div>';
+  openModal("切换 Google 账号", '<div id="acct-list" style="margin-bottom:12px;max-height:300px;overflow-y:auto">' + rows + '</div><div style="border-top:1px solid var(--border-color);padding-top:12px"><p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">将当前已登录的 Google 账号添加到列表：</p><div style="display:flex;gap:8px"><input id="acct-label" placeholder="账号备注名（可选）" style="flex:1;padding:6px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:13px"/><button class="btn btn-primary btn-sm" id="acct-add">添加当前账号</button></div></div><div class="modal-footer" style="margin-top:12px"><button class="btn btn-ghost" data-cancel>关闭</button></div>');
+  var modal = document.getElementById("modal-root");
+  modal.querySelector("[data-cancel]").onclick = closeModal;
+  document.querySelectorAll(".acct-row").forEach(function(item) {
+    item.onclick = async function(e) {
+      if (e.target.classList.contains("acct-del")) return;
+      var email = item.getAttribute("data-email");
+      closeModal();
+      toast("正在切换到 " + email + "...");
+      try {
+        var r2 = await fetch("/api/accounts/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) });
+        var d2 = await r2.json();
+        if (d2.error) { toast(d2.error); return; }
+        toast("已切换到 " + (d2.account.label || d2.account.email));
+        await refreshSystemStatus();
+        await refreshModels();
+        renderLoginArea();
+        renderConvList();
+      } catch (e2) { toast("切换失败: " + e2.message); }
+    };
+  });
+  document.querySelectorAll(".acct-del").forEach(function(btn) {
+    btn.onclick = async function(e) {
+      e.stopPropagation();
+      var email = btn.getAttribute("data-email");
+      await fetch("/api/accounts/" + encodeURIComponent(email), { method: "DELETE" });
+      toast("已删除账号");
+      showAccountSwitcher();
+    };
+  });
+  var addBtn = document.getElementById("acct-add");
+  if (addBtn) {
+    addBtn.onclick = async function() {
+      var label = document.getElementById("acct-label").value.trim();
+      var r3 = await fetch("/api/accounts/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: label }) });
+      var d3 = await r3.json();
+      if (d3.error) { toast(d3.error); return; }
+      toast("已添加: " + (d3.account.label || d3.account.email));
+      showAccountSwitcher();
+    };
+  }
 }
