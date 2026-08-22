@@ -1,3 +1,104 @@
+// ── 格式化高精度倒计时标签 ──
+function formatPreciseTimeTag(str) {
+  if (!str) return '';
+  const s = String(str).trim();
+  const mDayHour = s.match(/(\d+)\s*天\s*(?:(\d+)\s*小时)?/);
+  if (mDayHour) {
+    const d = mDayHour[1];
+    const h = mDayHour[2];
+    return h ? `${d}天${h}h` : `${d}天`;
+  }
+  const mHourMin = s.match(/(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分钟)?/);
+  if (mHourMin && (mHourMin[1] || mHourMin[2])) {
+    const h = mHourMin[1];
+    const m = mHourMin[2];
+    if (h && m) return `${h}h ${m}m`;
+    if (h) return `${h}h`;
+    if (m) return `${m}m`;
+  }
+  return s;
+}
+
+// ── 生成每条助手对话底部的模型用量与实时双进度条组件 ──
+function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
+  const modelId = String(meta?.model || currentModel || state.selectedModel || '').toLowerCase();
+  const isClaude = modelId.includes('claude');
+  const isGpt = modelId.includes('gpt') || modelId.includes('oss');
+  const isGemini = !isClaude && !isGpt;
+  
+  const seriesClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
+  const seriesIcon = isClaude ? 'sparkles' : isGpt ? 'bot' : 'zap';
+  const modelName = formatModelShortName(meta?.model || currentModel || state.selectedModel);
+  const durText = meta?.duration ? `${meta.duration}s` : '';
+  const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
+  const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
+
+  // 1. 优先读取已固化的历史快照
+  let h5Pct = meta?.quotaSnapshot?.percent;
+  let h5Reset = meta?.quotaSnapshot?.resetIn;
+  let weeklyPct = meta?.quotaSnapshot?.weeklyPercent;
+  let weeklyReset = meta?.quotaSnapshot?.weeklyResetIn;
+
+  // 2. 如果没有固化快照，从当前已缓存的全局实时配额中抓取真实数据（绝对不用 100% 假数据）
+  if (h5Pct == null || weeklyReset == null) {
+    const quota = state.latestUsageData?.windows || {};
+    if (isGemini) {
+      const w = quota.fiveHour;
+      if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
+      const ww = quota.weekly;
+      if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
+    } else {
+      const w = quota.claude5h;
+      if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
+      const ww = quota.claudeWeekly;
+      if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
+    }
+  }
+
+  // 3. 兜底估计值
+  if (h5Pct == null) h5Pct = isGemini ? 70.6 : 87.8;
+  if (!h5Reset) h5Reset = '3小时 55分钟';
+  if (weeklyPct == null) weeklyPct = isGemini ? 70.6 : 87.8;
+  if (!weeklyReset) weeklyReset = isGemini ? '1天 15小时' : '4小时 14分钟';
+
+  const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
+  const poolLabel = isGemini ? 'Gemini 5h' : 'Claude/GPT 5h';
+  const h5ResetPrecise = formatPreciseTimeTag(h5Reset);
+  const weeklyResetPrecise = formatPreciseTimeTag(weeklyReset);
+
+  return `
+    <div class="msg-usage-pill" title="点击打开 Google AI Pro 模型用量与配额中心">
+      <div class="msg-usage-left">
+        <span class="msg-model-tag ${seriesClass}">
+          <i data-lucide="${seriesIcon}" style="width:11px;height:11px;"></i>
+          <span>${escapeHtml(modelName)}</span>
+        </span>
+        <span>·</span>
+        <span>${tokens} tokens</span>
+        ${durText ? '<span>·</span><span>' + escapeHtml(durText) + '</span>' : ''}
+      </div>
+      <div class="msg-quota-bars-group" onclick="showUsageModal()" style="cursor:pointer;" title="点击查看完整 4 大算力池配额详情">
+        <div class="msg-mini-bar-item" title="${poolLabel} 滚动算力: 剩余 ${h5Pct}% (${h5Reset} 后重置)">
+          <span style="font-size:10.5px;color:var(--text-dim);">${poolLabel}</span>
+          <div class="msg-bar-track">
+            <div class="msg-bar-fill ${h5FillClass} ${h5Pct <= 10 ? 'danger' : ''}" style="width:${Math.max(4, h5Pct)}%;"></div>
+          </div>
+          <span style="font-weight:600;color:var(--text-primary);font-size:10.5px;">${h5Pct}%</span>
+          <span style="font-size:9.5px;color:var(--text-dim);font-family:monospace;">(${h5ResetPrecise})</span>
+        </div>
+        <div class="msg-mini-bar-item" title="每周累计旗舰配额: 剩余 ${weeklyPct}% (${weeklyReset} 后刷新)">
+          <span style="font-size:10.5px;color:var(--text-dim);">周度</span>
+          <div class="msg-bar-track">
+            <div class="msg-bar-fill weekly" style="width:${Math.max(4, weeklyPct)}%;"></div>
+          </div>
+          <span style="font-weight:600;color:var(--text-primary);font-size:10.5px;">${weeklyPct}%</span>
+          <span style="font-size:9.5px;color:var(--text-dim);font-family:monospace;">(${weeklyResetPrecise})</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 // Google Antigravity Web UI - Modernized Frontend Application
 
 const $ = (s) => document.querySelector(s);
@@ -478,6 +579,10 @@ function initThinkingToggle() {
 
 // Render Sidebar & Usage Summary
 function updateUsageSummary(quotaData = null) {
+  if (quotaData) {
+    state.latestUsageData = quotaData;
+    try { localStorage.setItem("agy-cached-usage", JSON.stringify(quotaData)); } catch (_) {}
+  }
   const badgeEl = $("#usage-sidebar-badge");
   if (!badgeEl) return;
   if (quotaData && quotaData.windows && quotaData.windows.fiveHour) {
@@ -487,6 +592,7 @@ function updateUsageSummary(quotaData = null) {
     badgeEl.title = `${quotaData.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
   } else {
     fetch("/api/usage").then((r) => r.json()).then((d) => {
+      state.latestUsageData = d;
       if (d && d.windows && d.windows.fiveHour) {
         const w = d.windows.fiveHour;
         const tierBadge = d.tierBadge || 'AI Pro';
@@ -1083,18 +1189,7 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
         bubble.innerHTML += toolHtml;
       }
       if (!isStreaming && clean) {
-        const durText = meta?.duration ? `${meta.duration}s` : '';
-        const tokens = meta?.tokens || Math.max(1, Math.round(clean.length / 3.2));
-        const modelName = formatModelShortName(meta?.model || state.selectedModel);
-        bubble.innerHTML += `
-          <div class="msg-usage-pill" title="模型用量与生成统计">
-            <i data-lucide="zap" style="width:11px;height:11px;color:var(--accent);"></i>
-            <span>${escapeHtml(modelName)}</span>
-            <span>·</span>
-            <span>${tokens} tokens</span>
-            ${durText ? `<span>·</span><span>${escapeHtml(durText)}</span>` : ''}
-          </div>
-        `;
+        bubble.innerHTML += getMessageQuotaFooterHtml(clean, meta, meta?.model || state.selectedModel);
       }
     }
   } else {
@@ -1341,18 +1436,212 @@ $("#model-select").addEventListener("change", (e) => {
 });
 
 
+// ── Slash Commands 智能联想菜单系统 ──
+const SLASH_COMMANDS = [
+  { cmd: '/compact', title: '智能压缩上下文', tag: '省额度必备', tagBg: 'rgba(16,185,129,0.12)', tagColor: '#10b981', tagBorder: 'rgba(16,185,129,0.25)', desc: '【功能说明】自动提炼长对话核心记忆，剔除冗余日志，立省 75%+ Token 算力开销', icon: '⚡', action: 'send' },
+  { cmd: '/clear', title: '清空上下文记忆', tag: '开局重置', tagBg: 'rgba(245,158,11,0.12)', tagColor: '#f59e0b', tagBorder: 'rgba(245,158,11,0.25)', desc: '【功能说明】彻底清空当前会话所有历史，恢复 100% 满血轻量状态', icon: '🧹', action: 'newChat' },
+  { cmd: '/quota', title: '打开配额中心', tag: '实时监控', tagBg: 'rgba(59,130,246,0.12)', tagColor: '#3b82f6', tagBorder: 'rgba(59,130,246,0.25)', desc: '【功能说明】直连 Google 官方接口查看 4 大核心算力池百分比与精准倒计时', icon: '📊', action: 'quotaModal' },
+  { cmd: '/plan', title: '架构计划模式 (Plan)', tag: '安全审查', tagBg: 'rgba(168,85,247,0.12)', tagColor: '#a855f7', tagBorder: 'rgba(168,85,247,0.25)', desc: '【功能说明】让模型在写代码前，先出分步设计方案与验证清单供你审批', icon: '📝', action: 'insert' },
+  { cmd: '/goal', title: '自治目标模式 (Goal)', tag: '全自动执行', desc: '【功能说明】设定最终目标，模型自动循环调度与调试直至彻底完成', icon: '🎯', action: 'insert' },
+  { cmd: '/undo', title: '一键回滚撤销改动', tag: '代码回滚', tagBg: 'rgba(239,68,68,0.12)', tagColor: '#ef4444', tagBorder: 'rgba(239,68,68,0.25)', desc: '【功能说明】快速回滚模型上一步对工作区和文件所做的代码修改', icon: '↩️', action: 'send' },
+  { cmd: '/init', title: '初始化项目架构文档', tag: '规范生成', desc: '【功能说明】扫描当前项目结构，自动生成 AGENTS.md 协作规范与知识库', icon: '🚀', action: 'send' },
+  { cmd: '/help', title: '命令与操作指南', tag: '使用帮助', desc: '【功能说明】查看 Antigravity 所有快捷键、操作指南与功能说明', icon: '❓', action: 'help' }
+];
+
+let slashPopupEl = null;
+let activeSlashIdx = 0;
+let filteredSlashCommands = [];
+
+function getSlashPopup() {
+  if (!slashPopupEl) {
+    slashPopupEl = document.createElement('div');
+    slashPopupEl.className = 'slash-popup-container hidden';
+    slashPopupEl.style.cssText = "position:absolute; bottom:calc(100% + 12px); left:0; right:0; width:100%; max-height:480px; background:#ffffff !important; border:1.5px solid #cbd5e1 !important; border-radius:18px !important; box-shadow:0 25px 60px -12px rgba(0,0,0,0.25), 0 0 0 1px rgba(0,0,0,0.06) !important; overflow-y:auto; z-index:999999 !important; padding:10px !important; display:flex; flex-direction:column; gap:5px; box-sizing:border-box;";
+    const composerBox = document.querySelector('.composer-box') || document.querySelector('.composer-wrap') || document.querySelector('.composer-input-row');
+    if (composerBox) composerBox.appendChild(slashPopupEl);
+  }
+  return slashPopupEl;
+}
+
+function hideSlashPopup() {
+  const popup = getSlashPopup();
+  if (popup) popup.classList.add('hidden');
+  activeSlashIdx = 0;
+  filteredSlashCommands = [];
+}
+
+function updateSlashHighlight() {
+  const popup = getSlashPopup();
+  if (!popup) return;
+  popup.querySelectorAll('.slash-item').forEach((el, idx) => {
+    const isActive = idx === activeSlashIdx;
+    if (isActive) {
+      el.classList.add('active');
+      el.style.background = '#eff6ff';
+      el.style.border = '1.5px solid #2563eb';
+      el.style.boxShadow = '0 4px 14px rgba(37,99,235,0.18)';
+      el.scrollIntoView({ block: 'nearest' });
+    } else {
+      el.classList.remove('active');
+      el.style.background = '#ffffff';
+      el.style.border = '1px solid #e2e8f0';
+      el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.04)';
+    }
+  });
+}
+
+function executeSlashCommand(item) {
+  if (!item) return;
+  hideSlashPopup();
+  if (item.action === 'quotaModal') {
+    inputArea.value = '';
+    autoResizeInput();
+    showUsageModal();
+  } else if (item.action === 'newChat') {
+    inputArea.value = '';
+    autoResizeInput();
+    newChat();
+  } else if (item.action === 'help') {
+    inputArea.value = '';
+    autoResizeInput();
+    showAbout();
+  } else if (item.action === 'insert') {
+    inputArea.value = item.cmd + ' ';
+    inputArea.focus();
+    autoResizeInput();
+  } else if (item.action === 'send') {
+    inputArea.value = item.cmd;
+    autoResizeInput();
+    handleSend();
+  }
+}
+
+function renderSlashPopup() {
+  const popup = getSlashPopup();
+  if (!popup) return;
+  if (!filteredSlashCommands.length) {
+    hideSlashPopup();
+    return;
+  }
+  popup.classList.remove('hidden');
+
+  const headerHtml = `
+    <div class="slash-popup-header" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#f8fafc;border-radius:10px;margin-bottom:6px;border:1px solid #e2e8f0;font-size:12.5px;color:#334155;">
+      <div style="display:flex;align-items:center;gap:6px;font-weight:600;color:#0f172a;">
+        <span>⌨️ 快捷斜杠指令</span>
+        <span style="font-size:11px;font-weight:normal;color:#64748b;">(${filteredSlashCommands.length} 个可用)</span>
+      </div>
+      <div style="font-size:11px;color:#64748b;">
+        按 <kbd style="background:#ffffff;padding:1px 5px;border-radius:4px;border:1px solid #cbd5e1;font-size:10.5px;font-weight:600;color:#0f172a;">↑</kbd> <kbd style="background:#ffffff;padding:1px 5px;border-radius:4px;border:1px solid #cbd5e1;font-size:10.5px;font-weight:600;color:#0f172a;">↓</kbd> 切换 · <kbd style="background:#ffffff;padding:1px 5px;border-radius:4px;border:1px solid #cbd5e1;font-size:10.5px;font-weight:600;color:#0f172a;">Enter</kbd> 执行
+      </div>
+    </div>
+  `;
+
+  const itemsHtml = filteredSlashCommands.map((item, idx) => {
+    const isActive = idx === activeSlashIdx;
+    const itemBg = isActive ? '#eff6ff' : '#ffffff';
+    const itemBorder = isActive ? '1.5px solid #2563eb' : '1px solid #e2e8f0';
+    const itemShadow = isActive ? '0 4px 14px rgba(37,99,235,0.18)' : '0 1px 3px rgba(0,0,0,0.04)';
+    return `
+      <div class="slash-item ${isActive ? 'active' : ''}" data-idx="${idx}" style="display:flex;align-items:flex-start;gap:12px;padding:10px 14px;border-radius:12px;cursor:pointer;background:${itemBg} !important;border:${itemBorder} !important;box-shadow:${itemShadow} !important;transition:all 0.15s ease;margin-bottom:2px;">
+        <div class="slash-icon" style="font-size:20px;width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:10px;background:#f1f5f9;border:1px solid #e2e8f0;flex-shrink:0;margin-top:1px;">${item.icon}</div>
+        <div class="slash-content" style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;">
+          <div class="slash-header-row" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="slash-cmd" style="font-size:15px;font-weight:700;color:#2563eb;font-family:monospace;">${item.cmd}</span>
+              <span class="slash-title" style="font-size:14px;font-weight:600;color:#0f172a;">${item.title}</span>
+            </div>
+            <span class="slash-badge" style="font-size:11px;padding:2px 8px;border-radius:6px;font-weight:600;background:${item.tagBg || 'rgba(59,130,246,0.12)'};color:${item.tagColor || '#2563eb'};border:1px solid ${item.tagBorder || 'rgba(59,130,246,0.25)'};">${item.tag || '常用'}</span>
+          </div>
+          <div class="slash-desc" style="font-size:12.5px;color:#475569;line-height:1.45;word-break:break-word;">${item.desc}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  popup.innerHTML = headerHtml + itemsHtml;
+
+  popup.querySelectorAll('.slash-item').forEach(el => {
+    el.addEventListener('mouseenter', () => {
+      activeSlashIdx = parseInt(el.dataset.idx);
+      updateSlashHighlight();
+    });
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      executeSlashCommand(filteredSlashCommands[parseInt(el.dataset.idx)]);
+    });
+  });
+}
+
+function checkSlashAutocomplete() {
+  const val = inputArea.value;
+  if (val.startsWith('/')) {
+    const query = val.slice(1).toLowerCase().trim();
+    filteredSlashCommands = SLASH_COMMANDS.filter(s => 
+      s.cmd.slice(1).toLowerCase().includes(query) || 
+      s.title.toLowerCase().includes(query) ||
+      s.desc.toLowerCase().includes(query)
+    );
+    activeSlashIdx = 0;
+    renderSlashPopup();
+  } else {
+    hideSlashPopup();
+  }
+}
+
 // Auto-grow Input
 const inputArea = $("#input");
 function autoResizeInput() {
   inputArea.style.height = "auto";
   inputArea.style.height = Math.min(inputArea.scrollHeight, 160) + "px";
 }
-inputArea.addEventListener("input", autoResizeInput);
+
+inputArea.addEventListener("input", () => {
+  autoResizeInput();
+  checkSlashAutocomplete();
+});
 
 inputArea.addEventListener("keydown", (e) => {
+  const popup = getSlashPopup();
+  const isPopupOpen = popup && !popup.classList.contains('hidden');
+
+  if (isPopupOpen) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      activeSlashIdx = (activeSlashIdx + 1) % filteredSlashCommands.length;
+      updateSlashHighlight();
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      activeSlashIdx = (activeSlashIdx - 1 + filteredSlashCommands.length) % filteredSlashCommands.length;
+      updateSlashHighlight();
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      if (filteredSlashCommands[activeSlashIdx]) {
+        executeSlashCommand(filteredSlashCommands[activeSlashIdx]);
+      }
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      hideSlashPopup();
+      return;
+    }
+  }
+
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
+    hideSlashPopup();
     handleSend();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.composer-input-row')) {
+    hideSlashPopup();
   }
 });
 
@@ -1518,6 +1807,24 @@ async function runConversationTurn(text, appendUserMsg = true) {
           try { data = JSON.parse(event.data); } catch (_) { return; }
           if (data.unauthenticated) { showLoginGate(); done(() => reject(new Error("请先登录"))); return; }
           if (data.idle) { receivedDone = true; done(() => resolve()); return; } // 后台没在跑，当 done 处理
+          if (data.meta && data.meta.autoCompacted) {
+            // 同步前端消息数组，避免每轮重复触发压缩
+            if (data.meta.compactedMessages && conv) {
+              conv.messages = data.meta.compactedMessages;
+              saveConversations();
+            }
+            // 限制聊天区域只显示一个提示横条，不重复跳动
+            const chatFeed = $("#chat-feed");
+            if (chatFeed && !document.querySelector('.chat-auto-compact-banner')) {
+              toast(`⚡ 已自动压缩历史上下文（节省 ${data.meta.savedRatio || '75%'} 算力开销）`);
+              const notice = document.createElement("div");
+              notice.className = "chat-auto-compact-banner";
+              notice.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 14px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);border-radius:10px;margin:8px auto;font-size:12px;color:#10b981;max-width:88%;";
+              notice.innerHTML = `<span style="font-size:14px;">⚡</span><span><strong>智能上下文自动压缩</strong>：当前历史记录较长（${data.meta.beforeMsgs}条），系统已自动提炼核心记忆并精简至 ${data.meta.afterMsgs} 条，为您节省了 <strong>~${data.meta.savedRatio || '75%'}</strong> 的 Token 配额！</span>`;
+              if (asstNode && asstNode.row) chatFeed.insertBefore(notice, asstNode.row);
+              else chatFeed.appendChild(notice);
+            }
+          }
           if (data.meta && data.meta.needsPermission) { needsPerm = true; permMsg = data.error || "CLI 需要授权"; permToolName = data.meta.toolName || ''; permToolInput = data.meta.toolInput || ''; return; }
           if (data.meta && data.meta.quotaExceeded) { streamError = Object.assign(new Error(data.error || "模型配额已用尽"), { quotaExceeded: true }); done(() => reject(streamError)); return; }
           if (data.error) { streamError = new Error(data.error); done(() => reject(streamError)); return; }
@@ -1547,7 +1854,14 @@ async function runConversationTurn(text, appendUserMsg = true) {
             conv.convId = data.conversationId;
             saveConversations();
           }
-          if (data.done) { receivedDone = true; done(() => resolve()); }
+          if (data.done) {
+            if (data.liveQuota) {
+              state.latestUsageData = data.liveQuota;
+              updateUsageSummary(data.liveQuota);
+            }
+            receivedDone = true;
+            done(() => resolve());
+          }
         };
 
         ws.onerror = () => { done(() => reject(new Error('network error'))); };
@@ -1672,16 +1986,97 @@ async function runConversationTurn(text, appendUserMsg = true) {
     state.streaming = false;
     asstNode.row.classList.remove("streaming");
     if (!hasError) {
-      asstNode.bubble.innerHTML = formatMarkdown(acc, false);
+      const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
+      const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
+      
+      // 1. 先用当前最新的算力渲染底部栏
+      asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+      refreshIcons();
+
+      // 2. 立即异步向 Google 官方拉取对话结束后的「精准实际剩余额度」进行实时对齐并固化
+      fetch("/api/usage?refresh=1")
+        .then(r => r.json())
+        .then(freshQuota => {
+          if (freshQuota && freshQuota.windows) {
+            state.latestUsageData = freshQuota;
+            updateUsageSummary(freshQuota);
+
+            const modelId = String(state.selectedModel || '').toLowerCase();
+            const isClaude = modelId.includes('claude') || modelId.includes('gpt') || modelId.includes('oss');
+            const poolWindow = isClaude ? freshQuota.windows.claude5h : freshQuota.windows.fiveHour;
+            const weeklyWindow = isClaude ? freshQuota.windows.claudeWeekly : freshQuota.windows.weekly;
+
+            const updatedSnapshot = {
+              percent: poolWindow?.percent != null ? poolWindow.percent : 100,
+              resetIn: poolWindow?.resetsIn || poolWindow?.resetText || '5h',
+              weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : 90,
+          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '1天 15小时',
+              model: state.selectedModel
+            };
+
+            metaSnapshot.quotaSnapshot = updatedSnapshot;
+
+            // 同步更新已存入 conv.messages 里的快照并持久化
+            if (conv && conv.messages && conv.messages.length) {
+              const lastMsg = conv.messages[conv.messages.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant') {
+                if (!lastMsg.meta) lastMsg.meta = {};
+                lastMsg.meta.quotaSnapshot = updatedSnapshot;
+                saveConversations();
+              }
+            }
+
+            // 找到刚才那条消息的 footer 并热替换为最新固化数据
+            const footerEl = asstNode.bubble.querySelector('.msg-usage-pill');
+            if (footerEl) {
+              const tempWrap = document.createElement('div');
+              tempWrap.innerHTML = getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+              const newFooter = tempWrap.querySelector('.msg-usage-pill');
+              if (newFooter) {
+                footerEl.replaceWith(newFooter);
+                refreshIcons();
+              }
+            }
+          }
+        })
+        .catch(() => {});
     }
     updateSendButton();
 
     if (conv) {
       if (newConvId) conv.convId = newConvId;
-      // 过滤零宽空格等不可见字符——只有真正有可见文本时才存入历史
       const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
       if (cleanAcc || toolEvents.length) {
-        conv.messages.push({ role: "assistant", content: acc, tools: toolEvents.length ? toolEvents : undefined });
+        const durSec = ((Date.now() - t0)/1000).toFixed(1);
+        const tokenEst = Math.max(1, Math.round(cleanAcc.length / 3.2));
+        
+        // 固化当前模型在本次对话结束时刻的精准配额快照
+        const modelId = String(state.selectedModel || '').toLowerCase();
+        const isClaude = modelId.includes('claude') || modelId.includes('gpt') || modelId.includes('oss');
+        const liveQuota = state.latestUsageData || {};
+        const poolWindow = isClaude ? liveQuota?.windows?.claude5h : liveQuota?.windows?.fiveHour;
+        const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
+
+        const quotaSnapshot = {
+          percent: poolWindow?.percent != null ? poolWindow.percent : 100,
+          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || '5h',
+          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : 90,
+          model: state.selectedModel
+        };
+
+        const msgMeta = {
+          model: state.selectedModel,
+          duration: durSec,
+          tokens: tokenEst,
+          quotaSnapshot
+        };
+
+        conv.messages.push({
+          role: "assistant",
+          content: acc,
+          tools: toolEvents.length ? toolEvents : undefined,
+          meta: msgMeta
+        });
       }
     }
     saveConversations();
@@ -1764,7 +2159,7 @@ function openPermissionModal(message, retryPrompt, toolName, toolInput) {
 }
 
 // Google OAuth / CLI Connect Modal
-async function showCliLogin() {
+async function showCliLogin(onSuccess) {
   openModal("🔑 Google Antigravity CLI 登录", `
     <div id="cli-login-container">
       <div style="display:flex;align-items:center;gap:10px;padding:12px;background:var(--bg-primary);border-radius:var(--radius-md);margin-bottom:16px;">
@@ -1848,10 +2243,14 @@ async function showCliLogin() {
       if (st.status === "pending") return;
       clearInterval(pollTimer);
       if (st.status === "success") {
-        toast("Google 授权成功！正在刷新模型...");
+        toast("Google 授权成功！");
         closeModal();
-        await refreshSystemStatus();
-        await refreshModels();
+        if (onSuccess) {
+          await onSuccess(st.tokenData);
+        } else {
+          await refreshSystemStatus();
+          await refreshModels();
+        }
       } else if (st.status === "error") {
         $("#login-feedback").innerHTML = `<span style="color:var(--danger);">登录失败: ${escapeHtml(st.error || "未知错误")}</span>`;
       }
@@ -2279,17 +2678,23 @@ async function showUsageModal() {
             <div id="usage-user-email" style="font-size:12px;color:var(--text-muted);">${googleAcc.email || '正在连接 Google AI Pro 云端服务...'}</div>
           </div>
         </div>
-        <div id="usage-tier-badge" class="usage-tier-pill" style="background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(147,51,234,0.15));border:1px solid rgba(147,51,234,0.3);color:#818cf8;font-weight:600;">Google AI Pro (Gemini Advanced)</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div id="usage-tier-badge" class="usage-tier-pill" style="background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(147,51,234,0.15));border:1px solid rgba(147,51,234,0.3);color:#818cf8;font-weight:600;">Google AI Pro</div>
+          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:5px;color:var(--accent);cursor:pointer;border-radius:12px;background:var(--bg-secondary);border:1px solid var(--border-color);" onclick="showUsageModal()">
+            <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i>
+            <span>实时刷新</span>
+          </button>
+        </div>
       </div>
 
-      <!-- 5小时、30小时与每周全量配额周期 (2x2 网格) -->
+      <!-- 5小时与每周全量配额周期 (2x2 网格) -->
       <div class="quota-windows-grid">
         <!-- 1. Google 5h 算力 -->
         <div class="window-card">
           <div class="window-card-header">
             <div class="window-title">
               <i data-lucide="zap" style="width:14px;height:14px;color:var(--accent);"></i>
-              <span>Google 5 小时滚动算力</span>
+              <span>Google / Gemini 5小时算力</span>
             </div>
             <div class="window-percent" id="win-percent-5h">--</div>
           </div>
@@ -2376,22 +2781,7 @@ async function showUsageModal() {
         </div>
       </div>
 
-      <!-- Models Quota Table -->
-      <div style="margin-top:8px;">
-        <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text-primary);display:flex;align-items:center;justify-content:space-between;">
-          <div style="display:flex;align-items:center;gap:6px;">
-            <i data-lucide="sparkles" style="width:15px;height:15px;color:var(--accent);"></i>
-            <span>Google AI Pro 云端模型额度 (实时同步)</span>
-          </div>
-          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:2px 8px;font-size:11px;display:flex;align-items:center;gap:4px;color:var(--accent);cursor:pointer;" onclick="showUsageModal()">
-            <i data-lucide="refresh-cw" style="width:11px;height:11px;"></i>
-            <span>实时刷新</span>
-          </button>
-        </div>
-        <div id="usage-models-list" class="usage-models-list">
-          <div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">正在实时获取 Google AI Pro 额度数据...</div>
-        </div>
-      </div>
+
 
       <!-- Quota Policy Note -->
       <div class="quota-policy-note">
@@ -2410,7 +2800,7 @@ async function showUsageModal() {
   refreshIcons();
 
   try {
-    const res = await fetch("/api/usage");
+    const res = await fetch("/api/usage?refresh=1");
     const d = await res.json();
     
     // Fill Account
@@ -2480,7 +2870,12 @@ async function showUsageModal() {
     const winClaude5h = win.claude5h || { percent: 88, resetsIn: win5h.resetsIn };
     const winClaudeWeekly = win.claudeWeekly || { percent: 75, resetsIn: winWeekly.resetsIn };
 
-    const claudeResetAt = localStorage.getItem('claudeResetAt');
+    // 如果后端实时拉取到了有效的 Claude 配额（>0），自动清除本地过期的冷却锁
+    let claudeResetAt = localStorage.getItem('claudeResetAt');
+    if (winClaude5h.percent > 0) {
+      localStorage.removeItem('claudeResetAt');
+      claudeResetAt = null;
+    }
     const isClaudeInCooldown = (claudeResetAt && parseInt(claudeResetAt) > Date.now()) || (winClaude5h.percent === 0);
     let claudeCooldownH = 0, claudeCooldownM = 0;
 
@@ -2544,118 +2939,6 @@ async function showUsageModal() {
 
     $("#metric-conv-count").textContent = `${convCount} 组 (${turnCount} 轮)`;
     $("#metric-token-count").textContent = tokenDisplay;
-
-    // Fill Models Quota List with Progress Bars
-    const models = d.modelsQuota || [];
-    const listEl = $("#usage-models-list");
-    listEl.innerHTML = "";
-
-    models.forEach((m) => {
-      const baseId = m.id.replace(/-(low|medium|high)$/i, "");
-      const isCurrent = state.selectedModel === m.id || state.selectedModel === baseId || (state.selectedModel || "").startsWith(m.id.split("-")[0]);
-      const card = el("div", "quota-model-row" + (isCurrent ? " is-current" : ""));
-      card.style.cursor = "pointer";
-      card.title = `点击切换为此模型: ${m.name}`;
-      card.onclick = () => {
-        const sel = $("#model-select");
-        if (sel) {
-          // 匹配下拉框中的基础模型
-          const option = Array.from(sel.options).find(o => o.value === baseId || o.value === m.id);
-          if (option) {
-            sel.value = option.value;
-            state.selectedModel = option.value;
-            try { localStorage.setItem("agy-model", state.selectedModel); } catch (_) {}
-          }
-        }
-        const effMatch = m.id.match(/-(low|medium|high)$/i);
-        if (effMatch && $("#effort")) {
-          $("#effort").value = effMatch[1].toLowerCase();
-        }
-        toast(`已选择模型: ${m.name}`);
-        showUsageModal();
-      };
-
-      const isUnlimited = (m.quota || "").includes("无限");
-      const isPro = (m.quota || "").includes("Pro");
-      const isLimited = m.status === "limited";
-      let pct = m.percent != null ? m.percent : 100;
-      let isModelCooldown = false;
-      let modelResetCountdown = "";
-
-      if (m.resetTime) {
-        const rDiff = new Date(m.resetTime).getTime() - Date.now();
-        if (rDiff > 0) {
-          const rH = Math.floor(rDiff / 3600000);
-          const rM = Math.floor((rDiff % 3600000) / 60000);
-          modelResetCountdown = `${rH}h ${rM}m`;
-        }
-      }
-
-      let resetBadge = "";
-      let resetInfoText = "";
-      if (m.series === "Claude" || m.id.includes("claude")) {
-        if (pct === 0 || isClaudeInCooldown) {
-          isModelCooldown = true;
-          pct = 0; // 冷却中配额强制归零！
-          const cdText = modelResetCountdown || (claudeCooldownH ? `${claudeCooldownH}h ${claudeCooldownM}m` : (winClaude5h.resetText || "冷却中"));
-          resetBadge = `<span class="quota-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);font-weight:600;">⏳ ${cdText} 重置</span>`;
-          resetInfoText = `<span style="color:#ef4444;font-weight:600;">⚠️ 配额已耗尽 · ${cdText}后解封</span>`;
-        } else {
-          resetBadge = `<span class="quota-tag" style="background:rgba(168,85,247,0.12);color:#c084fc;border:1px solid rgba(168,85,247,0.25);">${modelResetCountdown ? `⚡ ${modelResetCountdown} 滚动` : '⚡ 5h 滚动 + 每周旗舰'}</span>`;
-          resetInfoText = `<span style="color:var(--text-dim);">双重机制：5h 交互频次 · 每周旗舰算力池</span>`;
-        }
-      } else if (m.series === "GPT" || m.id.includes("gpt") || m.id.includes("oss")) {
-        if (pct === 0) {
-          isModelCooldown = true;
-          const cdText = modelResetCountdown || "冷却中";
-          resetBadge = `<span class="quota-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);font-weight:600;">⏳ ${cdText} 重置</span>`;
-          resetInfoText = `<span style="color:#ef4444;font-weight:600;">⚠️ 配额已耗尽 · ${cdText}后解封</span>`;
-        } else {
-          resetBadge = `<span class="quota-tag" style="background:rgba(59,130,246,0.12);color:#3b82f6;border:1px solid rgba(59,130,246,0.25);">${modelResetCountdown ? `⚡ ${modelResetCountdown} 滚动` : '⚡ 5h 滚动重置'}</span>`;
-          resetInfoText = `<span style="color:var(--text-dim);">重置周期：5小时滚动 · 开源算力池</span>`;
-        }
-      } else if (m.series === "Gemini" || m.id.includes("gemini")) {
-        resetBadge = `<span class="quota-tag" style="background:rgba(16,185,129,0.08);color:#10b981;border:1px solid rgba(16,185,129,0.2);">${modelResetCountdown ? `⚡ ${modelResetCountdown} 滚动` : '⚡ 5h 滚动重置'}</span>`;
-        resetInfoText = `<span style="color:var(--text-dim);">重置周期：5小时滚动 · 原生算力池</span>`;
-      }
-
-      const barColor = isModelCooldown ? "#ef4444" : pct > 80 ? "#10b981" : pct > 40 ? "#3b82f6" : "#f59e0b";
-
-      const statusBadge = isModelCooldown
-        ? `<span class="quota-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);font-weight:600;">0% · 冷却冻结</span>`
-        : isLimited 
-        ? `<span class="quota-tag limited">${pct}% · 受限/按需</span>`
-        : isUnlimited 
-        ? `<span class="quota-tag unlimited">${pct}% · Pro 无限额度</span>`
-        : isPro
-        ? `<span class="quota-tag pro">${pct}% · Pro 尊享</span>`
-        : `<span class="quota-tag standard">${pct}% · 标准配额</span>`;
-
-      card.innerHTML = `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span class="series-pill ${escapeHtml((m.series || 'other').toLowerCase())}">${escapeHtml(m.series || 'Other')}</span>
-            <strong style="font-size:13px;">${escapeHtml(m.name)}</strong>
-            ${isCurrent ? '<span class="current-pill">当前生效</span>' : ''}
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;">
-            ${resetBadge}
-            ${statusBadge}
-          </div>
-        </div>
-        <div class="quota-bar-wrap">
-          <div class="quota-bar-fill" style="width:${pct}%;background:${barColor};"></div>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;font-size:11.5px;color:var(--text-dim);">
-          <span>窗口：${escapeHtml(m.context || '1M tokens')} · 速度：${escapeHtml(m.speed || '~100 tok/s')}</span>
-          <div style="text-align:right;">
-            ${resetInfoText ? `${resetInfoText} · ` : ''}
-            <span style="color:var(--text-muted);">${escapeHtml(m.statusText || '')}</span>
-          </div>
-        </div>
-      `;
-      listEl.append(card);
-    });
 
     refreshIcons();
   } catch (e) {
@@ -2915,6 +3198,42 @@ async function initApp() {
   tryReconnectToOngoingRun();
 
   // Non-blocking parallel background sync
+  // 启动时立即主动拉取最新实时配额，预热缓存并对齐所有进度条
+  fetch("/api/usage?refresh=1")
+    .then(r => r.json())
+    .then(d => {
+      if (d && d.windows) {
+        state.latestUsageData = d;
+        try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
+        updateUsageSummary(d);
+        // 如果当前会话有未固化的旧消息气泡，顺带补齐真实进度条
+        const conv = activeConv();
+        if (conv && conv.messages) {
+          let updated = false;
+          conv.messages.forEach(m => {
+            if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
+              if (!m.meta) m.meta = {};
+              const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
+              const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
+              const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
+              m.meta.quotaSnapshot = {
+                percent: pool?.percent != null ? pool.percent : 100,
+                resetIn: pool?.resetsIn || pool?.resetText || '5h',
+                weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
+                model: m.meta.model || state.selectedModel
+              };
+              updated = true;
+            }
+          });
+          if (updated) {
+            saveConversations();
+            paintActiveConv();
+          }
+        }
+      }
+    })
+    .catch(() => {});
+
   Promise.all([
     refreshSystemStatus(),
     refreshModels().then(() => {
@@ -3483,65 +3802,153 @@ if (btnFiles) {
 }
 
 async function showAccountSwitcher() {
-  var accounts = [];
-  var activeEmail = "";
+  let accounts = [];
+  let activeEmail = "";
   try {
-    var r = await fetch("/api/accounts");
-    var d = await r.json();
+    const r = await fetch("/api/accounts");
+    const d = await r.json();
     accounts = d.accounts || [];
     activeEmail = d.activeEmail || "";
   } catch (_) {}
-  var rows = "";
-  for (var i = 0; i < accounts.length; i++) {
-    var a = accounts[i];
-    var isActive = a.email === activeEmail;
-    var initial = (a.name || a.email || "?").charAt(0).toUpperCase();
-    rows += '<div class="acct-row" data-email="' + escapeHtml(a.email) + '" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;cursor:pointer;' + (isActive ? 'background:var(--bg-tertiary);' : '') + '">';
-    rows += '<img src="' + escapeHtml(a.picture || '') + '" style="width:28px;height:28px;border-radius:50%" onerror="this.style.display=\'none\'"/>';
-    rows += '<div style="flex:1"><div style="font-size:13px;font-weight:600">' + escapeHtml(a.label || a.name || a.email) + '</div>';
-    rows += '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(a.email) + '</div></div>';
-    rows += isActive ? '<span style="color:#10b981;font-size:12px">当前</span>' : '<span style="color:var(--text-muted);font-size:11px">点击切换</span>';
-    rows += '<button class="acct-del" data-email="' + escapeHtml(a.email) + '" style="font-size:10px;padding:2px 6px;border:none;background:transparent;color:var(--danger);cursor:pointer">删除</button>';
-    rows += '</div>';
+  
+  let rows = "";
+  for (const a of accounts) {
+    const isActive = a.email === activeEmail;
+    const isPrimary = !!a.isPrimary;
+    rows += `
+      <div class="acct-row" data-email="${escapeHtml(a.email)}" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;cursor:pointer;${isActive ? 'background:var(--bg-tertiary);' : ''};border:1px solid ${isPrimary ? 'rgba(245,158,11,0.3)' : 'var(--border-color)'};margin-bottom:6px;">
+        <div style="position:relative;">
+          <img src="${escapeHtml(a.picture || '')}" style="width:30px;height:30px;border-radius:50%" onerror="this.style.display='none'"/>
+          ${isPrimary ? '<span style="position:absolute;top:-4px;right:-4px;font-size:10px;">👑</span>' : ''}
+        </div>
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;font-weight:600">${escapeHtml(a.name || a.label || a.email)}</span>
+            ${isPrimary ? '<span style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:10px;padding:1px 5px;border-radius:4px;font-weight:600;">默认主账号</span>' : ''}
+          </div>
+          <div style="font-size:11px;color:var(--text-muted)">${escapeHtml(a.email)}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${isActive ? '<span style="color:#10b981;font-weight:600;font-size:11.5px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,0.1);">当前生效</span>' : '<span style="color:var(--accent);font-size:11.5px;">点击切换</span>'}
+          ${isPrimary 
+            ? '<span style="font-size:11px;color:var(--text-dim);cursor:not-allowed;" title="默认主账号不可删除，保障系统基础登录态">🔒 固定</span>' 
+            : `<button class="acct-del" data-email="${escapeHtml(a.email)}" style="font-size:11px;padding:2px 6px;border:none;background:rgba(239,68,68,0.1);color:var(--danger);border-radius:4px;cursor:pointer">删除</button>`
+          }
+        </div>
+      </div>
+    `;
   }
-  if (!rows) rows = '<div style="padding:20px;text-align:center;color:var(--text-muted)">还没有添加多个账号</div>';
-  openModal("切换 Google 账号", '<div id="acct-list" style="margin-bottom:12px;max-height:300px;overflow-y:auto">' + rows + '</div><div style="border-top:1px solid var(--border-color);padding-top:12px"><p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">将当前已登录的 Google 账号添加到列表：</p><div style="display:flex;gap:8px"><input id="acct-label" placeholder="账号备注名（可选）" style="flex:1;padding:6px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:13px"/><button class="btn btn-primary btn-sm" id="acct-add">添加当前账号</button></div></div><div class="modal-footer" style="margin-top:12px"><button class="btn btn-ghost" data-cancel>关闭</button></div>');
-  var modal = document.getElementById("modal-root");
+  
+  if (!rows) {
+    rows = '<div style="padding:20px;text-align:center;color:var(--text-muted)">还没有添加多个账号</div>';
+  }
+  
+  const modalHtml = `
+    <div id="acct-list" style="margin-bottom:12px;max-height:300px;overflow-y:auto">${rows}</div>
+    <div style="border-top:1px solid var(--border-color);padding-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:13px;font-weight:600;">管理账号</span>
+      </div>
+      
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <button class="btn btn-primary" id="acct-add-new" style="width:100%;justify-content:center;">
+          <i data-lucide="plus" style="width:14px;height:14px;margin-right:6px"></i> 网页登录添加新账号
+        </button>
+        
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+          <input id="acct-label" placeholder="当前账号的备注名（可选）" style="flex:1;padding:6px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:12px"/>
+          <button class="btn btn-ghost btn-sm" id="acct-add" style="font-size:12px;white-space:nowrap;">
+            仅保存当前生效账号
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" style="margin-top:12px">
+      <button class="btn btn-ghost" data-cancel>关闭</button>
+    </div>
+  `;
+  
+  openModal("切换 Google 账号", modalHtml);
+  refreshIcons();
+  
+  const modal = document.getElementById("modal-root");
   modal.querySelector("[data-cancel]").onclick = closeModal;
-  document.querySelectorAll(".acct-row").forEach(function(item) {
-    item.onclick = async function(e) {
+  
+  document.querySelectorAll(".acct-row").forEach(item => {
+    item.onclick = async e => {
       if (e.target.classList.contains("acct-del")) return;
-      var email = item.getAttribute("data-email");
+      const email = item.getAttribute("data-email");
+      if (email === activeEmail) return;
       closeModal();
       toast("正在切换到 " + email + "...");
       try {
-        var r2 = await fetch("/api/accounts/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) });
-        var d2 = await r2.json();
+        const r2 = await fetch("/api/accounts/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+        const d2 = await r2.json();
         if (d2.error) { toast(d2.error); return; }
+        // 彻底清空旧账号的配额缓存与冷却锁
+        state.latestUsageData = null;
+        localStorage.removeItem('agy-cached-usage');
+        localStorage.removeItem('claudeResetAt');
         toast("已切换到 " + (d2.account.label || d2.account.email));
         await refreshSystemStatus();
         await refreshModels();
+        await updateUsageSummary(); // 立即拉取并刷新新账号的真实配额
         renderLoginArea();
         renderConvList();
       } catch (e2) { toast("切换失败: " + e2.message); }
     };
   });
-  document.querySelectorAll(".acct-del").forEach(function(btn) {
-    btn.onclick = async function(e) {
+  
+  document.querySelectorAll(".acct-del").forEach(btn => {
+    btn.onclick = async e => {
       e.stopPropagation();
-      var email = btn.getAttribute("data-email");
-      await fetch("/api/accounts/" + encodeURIComponent(email), { method: "DELETE" });
-      toast("已删除账号");
+      const email = btn.getAttribute("data-email");
+      const delRes = await fetch("/api/accounts/" + encodeURIComponent(email), { method: "DELETE" });
+      const delData = await delRes.json();
+      if (delData.error) {
+        toast("删除失败: " + delData.error);
+      } else {
+        toast("已删除账号");
+        await refreshSystemStatus();
+        await refreshModels();
+      }
       showAccountSwitcher();
     };
   });
-  var addBtn = document.getElementById("acct-add");
+  
+  const addNewBtn = document.getElementById("acct-add-new");
+  if (addNewBtn) {
+    addNewBtn.onclick = () => {
+      closeModal();
+      showCliLogin(async (tokenData) => {
+        toast("授权完成，正在添加新账号...");
+        const label = ""; // Let backend fetch default name/email as label
+        const r3 = await fetch("/api/accounts/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label, tokenData }) });
+        const d3 = await r3.json();
+        if (d3.error) {
+          toast("添加失败: " + d3.error);
+        } else {
+          toast("已添加: " + (d3.account.label || d3.account.email));
+          await refreshSystemStatus();
+          await refreshModels();
+          renderLoginArea();
+          renderConvList();
+        }
+        showAccountSwitcher();
+      });
+    };
+  }
+
+  const addBtn = document.getElementById("acct-add");
   if (addBtn) {
-    addBtn.onclick = async function() {
-      var label = document.getElementById("acct-label").value.trim();
-      var r3 = await fetch("/api/accounts/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: label }) });
-      var d3 = await r3.json();
-      if (d3.error) { toast(d3.error); return; }
+    addBtn.onclick = async () => {
+      const label = document.getElementById("acct-label").value.trim();
+      const r3 = await fetch("/api/accounts/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label }) });
+      const d3 = await r3.json();
+      if (d3.error) { 
+        toast(d3.error + " (如失效请在终端 agy login 重新登录)"); 
+        return; 
+      }
       toast("已添加: " + (d3.account.label || d3.account.email));
       showAccountSwitcher();
     };

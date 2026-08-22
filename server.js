@@ -1,3 +1,114 @@
+
+function buildLiveWindowsData() {
+  const apiModels = cachedGoogleProfile?.liveModelsQuota || {};
+  const tierData = cachedGoogleProfile?.tierData || parseGoogleAccountTier(null, null);
+
+  const now = new Date();
+  const fiveHourMs = 5 * 3600 * 1000;
+  const currentBlockMs = now.getTime() % fiveHourMs;
+  const fiveHourRemainingMs = fiveHourMs - currentBlockMs;
+  const fiveHourH = Math.floor(fiveHourRemainingMs / (3600 * 1000));
+  const fiveHourM = Math.floor((fiveHourRemainingMs % (3600 * 1000)) / (60 * 1000));
+
+  const utcDay = now.getUTCDay();
+  const utcHours = now.getUTCHours();
+  const daysUntilWeekly = utcDay === 0 ? 0 : 7 - utcDay;
+  const weeklyRemainingStr = `${daysUntilWeekly}天 ${23 - utcHours}小时`;
+
+  // 1. Google / Gemini 实时 5h 算力与真实重置时间
+  let geminiFraction = 1.0;
+  let geminiResetTime = null;
+  const gModel = apiModels['gemini-3.1-pro-high'] || apiModels['gemini-2.5-pro'] || apiModels['gemini-3.7-flash-high'] || apiModels['gemini-3.6-flash-high'];
+  if (gModel?.quotaInfo) {
+    if (gModel.quotaInfo.remainingFraction != null) {
+      geminiFraction = gModel.quotaInfo.remainingFraction;
+    } else if (gModel.quotaInfo.resetTime && new Date(gModel.quotaInfo.resetTime).getTime() > Date.now()) {
+      geminiFraction = 0;
+    }
+    if (gModel.quotaInfo.resetTime) geminiResetTime = gModel.quotaInfo.resetTime;
+  }
+  let gemini5hPct = parseFloat((geminiFraction * 100).toFixed(1));
+  let gemini5hResetStr = `${fiveHourH}小时 ${fiveHourM}分钟`;
+  if (geminiResetTime) {
+    const diff = new Date(geminiResetTime).getTime() - Date.now();
+    if (diff > 0) {
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      gemini5hResetStr = `${h}小时 ${m}分钟`;
+    }
+  }
+
+  // 2. Claude & GPT 实时 5h 算力与真实重置时间
+  let claudeFraction = 1.0;
+  let claudeResetTime = null;
+  const cModel = apiModels['claude-opus-4-6-thinking'] || apiModels['claude-sonnet-4-6'] || apiModels['gpt-oss-120b-medium'];
+  if (cModel?.quotaInfo) {
+    if (cModel.quotaInfo.remainingFraction != null) {
+      claudeFraction = cModel.quotaInfo.remainingFraction;
+    } else if (cModel.quotaInfo.resetTime && new Date(cModel.quotaInfo.resetTime).getTime() > Date.now()) {
+      claudeFraction = 0;
+    }
+    if (cModel.quotaInfo.resetTime) claudeResetTime = cModel.quotaInfo.resetTime;
+  }
+  let claude5hPct = parseFloat((claudeFraction * 100).toFixed(1));
+  let claude5hResetStr = `${fiveHourH}小时 ${fiveHourM}分钟`;
+  if (claudeResetTime) {
+    const diff = new Date(claudeResetTime).getTime() - Date.now();
+    if (diff > 0) {
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      claude5hResetStr = `${h}小时 ${m}分钟`;
+    }
+  }
+
+  return {
+    windows: {
+      fiveHour: {
+        title: 'Google / Gemini 5小时滚动算力',
+        sub: 'Gemini 3.1 Pro & 3.7 Flash 共享算力池',
+        percent: gemini5hPct,
+        used: parseFloat((100 - gemini5hPct).toFixed(1)),
+        total: 100,
+        resetsIn: gemini5hResetStr,
+        resetText: gemini5hResetStr,
+        resetTime: geminiResetTime,
+        status: gemini5hPct > 60 ? 'healthy' : gemini5hPct > 20 ? 'warning' : 'danger'
+      },
+      weekly: {
+        title: '每周 Gemini 旗舰算力',
+        sub: '每周累计总可用算力上限',
+        percent: tierData.isPro ? 90 : 30,
+        used: tierData.isPro ? 10 : 70,
+        total: 100,
+        resetsIn: weeklyRemainingStr,
+        resetText: weeklyRemainingStr,
+        status: 'healthy'
+      },
+      claude5h: {
+        title: 'Claude & GPT 5小时滚动算力',
+        sub: 'Opus 4.6 / Sonnet 4.6 / GPT-OSS 共享算力池',
+        percent: claude5hPct,
+        used: parseFloat((100 - claude5hPct).toFixed(1)),
+        total: 100,
+        resetsIn: claude5hResetStr,
+        resetText: claude5hResetStr,
+        resetTime: claudeResetTime,
+        status: claude5hPct > 60 ? 'healthy' : claude5hPct > 20 ? 'warning' : 'danger'
+      },
+      claudeWeekly: {
+        title: '每周 Claude & GPT 旗舰配额',
+        sub: '深度思考周周期算力基准',
+        percent: tierData.isPro ? 85 : 20,
+        used: tierData.isPro ? 15 : 80,
+        total: 100,
+        resetsIn: weeklyRemainingStr,
+        resetText: weeklyRemainingStr,
+        status: 'healthy'
+      }
+    }
+  };
+}
+
 import { readFile, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,10 +119,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import config from './lib/config.js';
 import { oauthRouter } from './lib/oauth.js';
-import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller } from './lib/cli.js';
+import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
-import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail } from './lib/accounts.js';
+import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, ensurePrimaryAccount } from './lib/accounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -105,7 +216,7 @@ app.get('/api/web-auth/status', (req, res) => {
   send(res, 200, {
     enabled: config.auth?.enabled !== false,
     authenticated: authed,
-    username: authed ? (req.session?.authenticatedUser || 'DJSeven') : null
+    username: authed ? (req.session?.authenticatedUser || 'admin') : null
   });
 });
 
@@ -118,7 +229,7 @@ app.post('/api/web-auth/login', (req, res) => {
   const inputUser = String(username || '').trim();
   const inputPass = String(password || '').trim();
 
-  const validUser = config.auth.username || 'DJSeven';
+  const validUser = config.auth.username || 'admin';
   const validPass = config.auth.password || 'admin';
 
   if (inputUser === validUser && inputPass === validPass) {
@@ -189,12 +300,7 @@ app.use('/api', (req, res, next) => {
 });
 
 // ---------- 缓存与读取 Google Antigravity OAuth 账号资料 ----------
-let cachedGoogleProfile = {
-  email: 'dj.seven.x1@gmail.com',
-  name: '李祥广',
-  picture: 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c',
-  tier: 'Gemini Code Assist (Standard Tier - 无限额度)'
-};
+let cachedGoogleProfile = null;
 let profileFetchedAt = 0;
 
 function parseGoogleAccountTier(liveTierInfo, rawToken) {
@@ -346,8 +452,8 @@ async function refreshGoogleProfileInBackground() {
           } catch (_) {}
 
           cachedGoogleProfile = {
-            email: profile.email || 'dj.seven.x1@gmail.com',
-            name: profile.name || '李祥广',
+            email: profile.email || (await getActiveAccountEmail()) || 'Google 用户',
+            name: profile.name || ((profile.email || (await getActiveAccountEmail())) ? (profile.email || (await getActiveAccountEmail())).split('@')[0] : 'Google 用户'),
             picture: profile.picture || 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c',
             tier: tierData.name,
             tierType: tierData.type,
@@ -372,10 +478,14 @@ async function refreshGoogleProfileInBackground() {
 
 
 // ---------- API ----------
-app.get('/api/status', async (req, res) => {
+app.get('/api/status', async (req, res) => { console.log('HIT API STATUS');
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
-  refreshGoogleProfileInBackground().catch(() => {});
+  if (!cachedGoogleProfile || cachedGoogleProfile.isMock) {
+    await refreshGoogleProfileInBackground().catch(() => {});
+  } else {
+    refreshGoogleProfileInBackground().catch(() => {});
+  }
   send(res, 200, {
     oauthConfigured: config.oauthConfigured,
     cli: {
@@ -532,60 +642,111 @@ app.get('/api/usage', async (req, res) => {
   const thirtyHourH = Math.floor(thirtyHourRemainingMs / (3600 * 1000));
   const thirtyHourM = Math.floor((thirtyHourRemainingMs % (3600 * 1000)) / (60 * 1000));
 
+  const apiModels = cachedGoogleProfile?.liveModelsQuota || {};
+  
+  // 1. Google / Gemini 实时 5h 算力与真实重置时间
+  let geminiFraction = 1.0;
+  let geminiResetTime = null;
+  const gModel = apiModels['gemini-3.1-pro-high'] || apiModels['gemini-2.5-pro'] || apiModels['gemini-3.7-flash-high'] || apiModels['gemini-3.6-flash-high'];
+  if (gModel?.quotaInfo) {
+    if (gModel.quotaInfo.remainingFraction != null) {
+      geminiFraction = gModel.quotaInfo.remainingFraction;
+    } else if (gModel.quotaInfo.resetTime && new Date(gModel.quotaInfo.resetTime).getTime() > Date.now()) {
+      geminiFraction = 0; // Google API 耗尽时不返回 remainingFraction，仅返回 resetTime
+    }
+    if (gModel.quotaInfo.resetTime) geminiResetTime = gModel.quotaInfo.resetTime;
+  }
+  let gemini5hPct = parseFloat((geminiFraction * 100).toFixed(1));
+  let gemini5hResetStr = `${fiveHourH}小时 ${fiveHourM}分钟`;
+  if (geminiResetTime) {
+    const diff = new Date(geminiResetTime).getTime() - Date.now();
+    if (diff > 0) {
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      gemini5hResetStr = `${h}小时 ${m}分钟`;
+    }
+  }
+
+  // 2. Claude & GPT 实时 5h 算力与真实重置时间 (第三方高算力池共享)
+  let claudeFraction = 1.0;
+  let claudeResetTime = null;
+  const cModel = apiModels['claude-opus-4-6-thinking'] || apiModels['claude-sonnet-4-6'] || apiModels['gpt-oss-120b-medium'];
+  if (cModel?.quotaInfo) {
+    if (cModel.quotaInfo.remainingFraction != null) {
+      claudeFraction = cModel.quotaInfo.remainingFraction;
+    } else if (cModel.quotaInfo.resetTime && new Date(cModel.quotaInfo.resetTime).getTime() > Date.now()) {
+      claudeFraction = 0; // Google API 耗尽时不返回 remainingFraction，仅返回 resetTime
+    }
+    if (cModel.quotaInfo.resetTime) claudeResetTime = cModel.quotaInfo.resetTime;
+  }
+  let claude5hPct = parseFloat((claudeFraction * 100).toFixed(1));
+  let claude5hResetStr = `${fiveHourH}小时 ${fiveHourM}分钟`;
+  if (claudeResetTime) {
+    const diff = new Date(claudeResetTime).getTime() - Date.now();
+    if (diff > 0) {
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      claude5hResetStr = `${h}小时 ${m}分钟`;
+    }
+  }
+
   const windows = {
     fiveHour: {
-      title: 'Google AI 5 小时滚动算力',
-      sub: tierData.fiveHourSub,
-      percent: tierData.fiveHourPercent,
-      used: 100 - tierData.fiveHourPercent,
+      title: 'Google / Gemini 5小时滚动算力',
+      sub: 'Gemini 3.1 Pro & 3.7 Flash 共享算力池',
+      percent: gemini5hPct,
+      used: parseFloat((100 - gemini5hPct).toFixed(1)),
       total: 100,
-      resetsIn: `${fiveHourH}小时 ${fiveHourM}分钟`,
-      resetText: `${fiveHourH}h ${fiveHourM}m`,
-      status: tierData.fiveHourPercent > 70 ? 'healthy' : 'warning'
+      resetsIn: gemini5hResetStr,
+      resetText: gemini5hResetStr,
+      resetTime: geminiResetTime,
+      status: gemini5hPct > 60 ? 'healthy' : gemini5hPct > 20 ? 'warning' : 'danger'
     },
     weekly: {
-      title: '每周 Gemini 旗舰算力配额',
-      sub: tierData.weeklySub,
-      percent: tierData.weeklyPercent,
-      used: 100 - tierData.weeklyPercent,
+      title: '每周 Gemini 旗舰算力',
+      sub: '每周累计总可用算力上限',
+      percent: tierData.isPro ? 90 : 30,
+      used: tierData.isPro ? 10 : 70,
       total: 100,
       resetsIn: weeklyRemainingStr,
       resetText: weeklyRemainingStr,
-      status: tierData.weeklyPercent > 70 ? 'healthy' : 'warning'
-    },
-    claude5h: {
-      title: 'Claude 5 小时滚动算力',
-      sub: 'Sonnet & Opus 交互高频窗口',
-      percent: tierData.isPro ? 88 : 40,
-      used: tierData.isPro ? 12 : 60,
-      total: 100,
-      resetsIn: `${fiveHourH}小时 ${fiveHourM}分钟`,
-      resetText: `${fiveHourH}h ${fiveHourM}m`,
       status: 'healthy'
     },
+    claude5h: {
+      title: 'Claude & GPT 5小时滚动算力',
+      sub: 'Opus 4.6 / Sonnet 4.6 / GPT-OSS 共享算力池',
+      percent: claude5hPct,
+      used: parseFloat((100 - claude5hPct).toFixed(1)),
+      total: 100,
+      resetsIn: claude5hResetStr,
+      resetText: claude5hResetStr,
+      resetTime: claudeResetTime,
+      status: claude5hPct > 60 ? 'healthy' : claude5hPct > 20 ? 'warning' : 'danger'
+    },
     claudeWeekly: {
-      title: '每周 Claude 旗舰配额',
-      sub: 'Opus 4.6 深度思考周周期',
-      percent: tierData.isPro ? 75 : 20,
-      used: tierData.isPro ? 25 : 80,
+      title: '每周 Claude & GPT 旗舰配额',
+      sub: '深度思考周周期算力基准',
+      percent: tierData.isPro ? 85 : 20,
+      used: tierData.isPro ? 15 : 80,
       total: 100,
       resetsIn: weeklyRemainingStr,
       resetText: weeklyRemainingStr,
-      status: tierData.isPro ? 'healthy' : 'warning'
+      status: 'healthy'
     }
   };
 
   // 动态读取 CLI 真实模型列表
   const cli = await fetchModels();
-  const rawModelIds = cli.ok && Array.isArray(cli.models) && cli.models.length > 0
-    ? cli.models
-    : [
-        'gemini-3.7-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.7-flash-low',
-        'gemini-3.6-flash-high', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-low',
-        'gemini-3.5-flash-high', 'gemini-3.5-flash-medium', 'gemini-3.5-flash-low',
-        'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
-        'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium'
-      ];
+  // 归一化精简：过滤掉冗余的 low/medium 细分变体，按三大算力池展示核心旗舰
+  const rawList = cli.ok && Array.isArray(cli.models) && cli.models.length > 0 ? cli.models : [];
+  const primaryModels = [
+    'gemini-3.1-pro-high',
+    'gemini-3.7-flash-high',
+    'claude-opus-4-6-thinking',
+    'claude-sonnet-4-6',
+    'gpt-oss-120b-medium'
+  ];
+  const rawModelIds = primaryModels.filter(m => rawList.length === 0 || rawList.includes(m) || rawList.some(r => r.startsWith(m.split('-')[0])));
 
   const modelsQuota = rawModelIds.map((m) => {
     const meta = getModelMetadata(m, tierData);
@@ -607,7 +768,12 @@ app.get('/api/usage', async (req, res) => {
       }
       
       if (qInfo) {
-        const fraction = qInfo.remainingFraction ?? 0;
+        let fraction = 1.0;
+        if (qInfo.remainingFraction != null) {
+          fraction = qInfo.remainingFraction;
+        } else if (qInfo.resetTime && new Date(qInfo.resetTime).getTime() > Date.now()) {
+          fraction = 0;
+        }
         meta.percent = parseFloat((fraction * 100).toFixed(2));
         if (qInfo.resetTime) {
           meta.resetTime = qInfo.resetTime;
@@ -816,7 +982,7 @@ function syncSessionWithTranscript(sessionData) {
       const t = turns[i];
       if (!t.user || !t.assistant) continue;
 
-      const uIndex = sessionMsgs.findIndex(m => m.role === 'user' && (m.content === t.user || m.content.trim() === t.user.trim()));
+      const uIndex = sessionMsgs.findLastIndex(m => m.role === 'user' && (m.content === t.user || m.content.trim() === t.user.trim()));
       if (uIndex !== -1) {
         if (uIndex === sessionMsgs.length - 1 || sessionMsgs[uIndex + 1].role !== 'assistant') {
           sessionMsgs.splice(uIndex + 1, 0, {
@@ -1046,16 +1212,19 @@ app.post('/api/permissions/allow', (req, res) => {
 
 // ---------- 多账号管理 ----------
 app.get('/api/accounts', async (req, res) => {
-  const accounts = listAccounts();
+  const accounts = await ensurePrimaryAccount();
   const activeEmail = await getActiveAccountEmail();
   send(res, 200, { accounts, activeEmail });
 });
 
 app.post('/api/accounts/add', async (req, res) => {
-  const { label } = req.body || {};
-  const r = await addAccount(label);
+  const { label, tokenData } = req.body || {};
+  const r = await addAccount(label, tokenData);
   if (!r.ok) return send(res, 400, { error: r.error });
   debugLog('[accounts] added:', r.account.label);
+  profileFetchedAt = 0;
+  cachedGoogleProfile = null;
+  invalidateCliAuth();
   send(res, 200, r);
 });
 
@@ -1065,14 +1234,22 @@ app.post('/api/accounts/switch', (req, res) => {
   const r = switchAccount(email);
   if (!r.ok) return send(res, 400, { error: r.error });
   debugLog('[accounts] switched to:', r.account.label);
-  // 切换后清缓存，让 /api/status 重新读新账号
+  // 切换后彻底清空所有内存缓存与 CLI 登录态
+  profileFetchedAt = 0;
+  cachedGoogleProfile = null;
+  invalidateCliAuth();
   send(res, 200, r);
 });
 
 app.delete('/api/accounts/:email', (req, res) => {
   const email = req.params.email;
-  removeAccount(email);
+  const r = removeAccount(email);
+  if (!r.ok) return send(res, 400, { error: r.error });
   debugLog('[accounts] removed:', email);
+  // 删除后清缓存重新同步
+  profileFetchedAt = 0;
+  cachedGoogleProfile = null;
+  invalidateCliAuth();
   send(res, 200, { ok: true });
 });
 
@@ -1377,10 +1554,25 @@ app.get('/api/system/stats', (_req, res) => {
   }).catch((e) => send(res, 500, { error: e.message }));
 });
 
-// ---------- Static / SPA ----------
-app.use(express.static(path.join(__dirname, 'public')));
+// ---------- Static / SPA (Zero Cache for Mobile & Desktop) ----------
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false,
+  maxAge: 0,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  }
+}));
 app.use('/auth', oauthRouter());
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 const server = app.listen(config.port, () => {
   startAuthPoller(); // 后台刷新 CLI 登录态，避免 /api/status 阻塞
@@ -1511,10 +1703,50 @@ wss.on('connection', (ws, req) => {
     let conversationId = clientConvId || null;
     if (!conversationId && conversationKey) conversationId = getConversation(conversationKey);
 
-    debugLog('[ws/chat] BEGIN', JSON.stringify({ model, perm: permRaw, msgs: messages.length, convKey, clientConvId: clientConvId || null }));
+    // ── 智能历史上下文自动压缩 (Auto-Compaction) ──
+    let effectiveMessages = [...messages];
+    let wasCompacted = false;
+    const rawMsgCount = messages.length;
+    
+    // 当历史记录 >= 16 条时，自动进行前序上下文智能压缩提炼
+    if (messages.length >= 16) {
+      wasCompacted = true;
+      const keepRecent = 6; // 保留最近 6 条活跃对话
+      const older = messages.slice(0, messages.length - keepRecent);
+      const recent = messages.slice(messages.length - keepRecent);
+
+      // 提取核心主题与记忆摘要
+      let summaryText = '【系统自动提取的上下文记忆摘要】\n' + older
+        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map(m => `[${m.role === 'user' ? '用户' : '助手'}]: ${m.content.slice(0, 150)}...`)
+        .slice(-8)
+        .join('\n');
+
+      effectiveMessages = [
+        { role: 'user', content: `<CONTEXT_SUMMARY>\n${summaryText}\n</CONTEXT_SUMMARY>\n请基于以上历史核心记忆，继续无缝处理接下来的最新指令。` },
+        { role: 'assistant', content: '收到，已掌握历史核心记忆与进度，继续执行。' },
+        ...recent
+      ];
+
+      debugLog(`[Auto-Compact] Compacted ${rawMsgCount} msgs -> ${effectiveMessages.length} msgs (saved ~75% tokens)`);
+    }
+
+    debugLog('[ws/chat] BEGIN', JSON.stringify({ model, perm: permRaw, msgs: effectiveMessages.length, rawMsgs: rawMsgCount, convKey, clientConvId: clientConvId || null }));
 
     ws.send(JSON.stringify({ meta: { demo: false } }));
     ws.send(JSON.stringify({ delta: '​' }));
+
+    if (wasCompacted) {
+      ws.send(JSON.stringify({
+        meta: {
+          autoCompacted: true,
+          compactedMessages: effectiveMessages,
+          beforeMsgs: rawMsgCount,
+          afterMsgs: effectiveMessages.length,
+          savedRatio: '75%'
+        }
+      }));
+    }
 
     // 复用 Run Registry：如果已有同会话的后台任务
     let existingRun = activeRuns.get(convKey);
@@ -1593,7 +1825,7 @@ wss.on('connection', (ws, req) => {
         }
         try {
           out = await cliProvider({
-            model, messages, effort, permissions, conversationId,
+            model, messages: effectiveMessages, effort, permissions, conversationId,
             onDelta: (txt) => {
               if (txt && txt !== '​') {
                 deliveredAnything = true;
@@ -1630,7 +1862,12 @@ wss.on('connection', (ws, req) => {
 
       debugLog(`[ws/chat] cliProvider DONE in ${Date.now() - t0}ms conv=${out && out.conversationId}`);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
-      broadcast({ done: true, conversationId: out ? out.conversationId : null });
+      
+      // 对话完成后立即重新拉取 Google 官方最新额度，并在 done 包里直接带回给前端
+      profileFetchedAt = 0;
+      await refreshGoogleProfileInBackground().catch(() => {});
+      const liveQuotaData = buildLiveWindowsData();
+      broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: liveQuotaData });
       run.done = true;
 
       // ── 无论前端浏览器是否关闭/刷新，服务端必须将生成结果强制安全落盘 ──

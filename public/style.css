@@ -1433,7 +1433,8 @@ html[data-theme="dark"] .code-content-body {
   display: flex;
   flex-direction: column;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
-  overflow: hidden;
+  overflow: visible !important;
+  position: relative;
 }
 .composer-box:hover {
   border-color: var(--accent-hover);
@@ -1963,6 +1964,7 @@ html[data-theme="dark"] .code-content-body {
     gap: 16px;
   }
   .composer-wrap {
+  position: relative;
     padding: 6px 10px max(12px, env(safe-area-inset-bottom, 12px));
   }
   .scroll-bottom-btn {
@@ -2963,4 +2965,243 @@ html[data-theme="dark"] .code-content-body {
   font-size: 11px;
   color: var(--text-dim);
   opacity: 0.7;
+}
+
+/* ── Slash Commands Autocomplete Popup (Modern White Crystal UI) ── */
+.slash-popup-container {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 0;
+  right: 0;
+  width: 100%;
+  max-height: 480px;
+  background: #ffffff !important;
+  border: 1.5px solid #cbd5e1 !important;
+  border-radius: 18px !important;
+  box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.06) !important;
+  overflow-y: auto;
+  z-index: 999999 !important;
+  padding: 10px !important;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  animation: slashPopupFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slashPopupFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.slash-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px 8px !important;
+  background: #f8fafc !important;
+  border-radius: 10px !important;
+  margin-bottom: 6px;
+  font-size: 13px !important;
+  border: 1px solid #e2e8f0 !important;
+  color: #1e293b !important;
+}
+
+.slash-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px !important;
+  padding: 11px 15px !important;
+  border-radius: 12px !important;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  border: 1px solid #e2e8f0 !important;
+  background: #ffffff !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+}
+
+.slash-item:hover {
+  background: #f8fafc !important;
+  border-color: #3b82f6 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.12) !important;
+}
+
+.slash-item.active {
+  border: 1.5px solid #2563eb !important;
+  background: #eff6ff !important;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.18) !important;
+}
+
+.slash-icon {
+  font-size: 20px !important;
+  width: 40px !important;
+  height: 40px !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px !important;
+  background: #f1f5f9 !important;
+  border: 1px solid #e2e8f0 !important;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.slash-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px !important;
+  flex: 1;
+  min-width: 0;
+}
+
+.slash-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.slash-cmd {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  color: #2563eb !important;
+  font-family: var(--font-mono, monospace) !important;
+}
+
+.slash-title {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #0f172a !important;
+}
+
+.slash-badge {
+  font-size: 11px !important;
+  padding: 2px 8px !important;
+  border-radius: 6px !important;
+  font-weight: 600 !important;
+}
+
+.slash-desc {
+  font-size: 12.5px !important;
+  color: #475569 !important;
+  line-height: 1.45 !important;
+  white-space: normal;
+  word-break: break-word;
+}
+
+html:not([data-theme="light"]) .slash-desc {
+  color: #94a3b8;
+}
+.composer-input-row {
+  position: relative;
+}
+
+/* ── Message Bottom Quota Bars & Footer ── */
+.msg-usage-pill {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 6px 10px !important;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.msg-usage-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.msg-model-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.msg-model-tag.gemini {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.msg-model-tag.claude {
+  background: rgba(168, 85, 247, 0.12);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.25);
+}
+
+.msg-model-tag.gpt {
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.msg-quota-bars-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.msg-mini-bar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.msg-mini-bar-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.msg-bar-track {
+  width: 36px;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.msg-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.msg-bar-fill.gemini {
+  background: linear-gradient(90deg, #10b981, #34d399);
+}
+
+.msg-bar-fill.claude {
+  background: linear-gradient(90deg, #a855f7, #c084fc);
+}
+
+.msg-bar-fill.gpt {
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+}
+
+.msg-bar-fill.weekly {
+  background: linear-gradient(90deg, #eab308, #fde047);
+}
+
+.msg-bar-fill.danger {
+  background: #ef4444;
 }

@@ -1,18 +1,28 @@
 # Dependencies
 node_modules/
 
-# Runtime / secrets
+# Runtime, sessions, tokens & secrets
 config.json
+data/
 state.json
 .env
+auth_tokens.json
+antigravity-oauth-token
+*.token
 
-# Logs
+# Logs & scratch test scripts
 *.log
-
-# OS
-.DS_Store_ui_redesign/
-data/
-*.pre-ws
+scratch/
 _ui_redesign/
+*.bak
 *.pre-ws
-data/
+fix-*.cjs
+test-*.js
+test-*.cjs
+print-*.cjs
+add-*.cjs
+update-*.cjs
+finalize-*.cjs
+
+# OS files
+.DS_Store
