@@ -324,6 +324,8 @@ let profileFetchedAt = 0;
 
 function parseGoogleAccountTier(liveTierInfo, rawToken) {
   const currentId = (liveTierInfo?.currentTier?.id || '').toLowerCase();
+  const paidId = (liveTierInfo?.paidTier?.id || '').toLowerCase();
+  const paidName = liveTierInfo?.paidTier?.name || '';
   
   // 1. Enterprise 企业商业版
   if (currentId.includes('enterprise') || currentId.includes('business')) {
@@ -339,8 +341,15 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
     };
   }
 
-  // 2. Pro / Paid Tier (仅当 currentTier 明确不是 free-tier 且是付费时)
-  if (currentId && currentId !== 'free-tier' && (currentId.includes('pro') || currentId.includes('standard') || currentId.includes('ultra') || currentId.includes('paid'))) {
+  // 2. Google AI Pro / Google One AI Premium (用户具备 g1-pro-tier / Pro 权益)
+  const isGoogleAiPro = paidId === 'g1-pro-tier' ||
+                        paidName.includes('Pro') ||
+                        currentId.includes('pro') ||
+                        currentId.includes('standard') ||
+                        rawToken?.auth_method === 'consumer' ||
+                        rawToken?.useG1Credits;
+
+  if (isGoogleAiPro) {
     return {
       type: 'pro',
       name: 'Google AI Pro (Gemini Advanced · G1 Credits)',
@@ -349,11 +358,11 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
       isFree: false,
       isEnterprise: false,
       useG1Credits: true,
-      policyNote: 'Google AI Pro 订阅权益：享有 Gemini 5小时高额滚动算力池与无总量计费上限；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力兜底。'
+      policyNote: 'Google AI Pro 订阅特权：享有 Gemini 5小时高额滚动算力池与无总量计费上限；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力兜底。'
     };
   }
 
-  // 3. 免费版账号 (Free Tier) - 100% 对齐反重力 2.0 官方规范 (Claude/GPT 周配额为 0%)
+  // 3. 免费版账号 (Free Tier)
   return {
     type: 'free',
     name: 'Antigravity Free Tier (免费账号)',
@@ -362,7 +371,7 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
     isFree: true,
     isEnterprise: false,
     useG1Credits: false,
-    policyNote: 'Google 免费账号规则：享有 Gemini 官方 18% 周配额与 5 小时滚动算力；第三方 Claude / GPT 模型周额度为 0%（已达上限）。升级至 Google AI Pro 可解锁第三方模型周配额。'
+    policyNote: 'Google 免费账号规则：享有 Gemini 基础模型体验配额。升级至 Google AI Pro 可解锁高阶算力与第三方模型。'
   };
 }
 
