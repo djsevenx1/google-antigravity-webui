@@ -1790,24 +1790,29 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (!settled) {
             settled = true;
             if (silenceWatchdog) clearTimeout(silenceWatchdog);
+            state.streaming = false;
+            updateSendButton();
+            if (currentWs) {
+              try { currentWs.close(); } catch (_) {}
+              currentWs = null;
+            }
             fn();
           }
         };
 
         const resetSilenceWatchdog = (fromDelta = false) => {
           const clean = (acc || '').replace(/[\u200b\s]/g, '');
-          // 如果已经输出了有效正文内容，只有真正的文本增量 (delta) 才能重置看门狗；心跳不能重置！
-          if (clean.length > 15 && !fromDelta) {
-            return;
+          if (clean.length > 10 && !fromDelta) {
+            return; // 已经有正文输出时，心跳绝对不能打断/延长看门狗
           }
           if (silenceWatchdog) clearTimeout(silenceWatchdog);
           silenceWatchdog = setTimeout(() => {
             const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
-            if (currentClean.length > 10 && !settled) {
+            if (currentClean.length > 5 && !settled) {
               receivedDone = true;
               done(() => resolve());
             }
-          }, 2000);
+          }, 1200);
         };
 
         ws.onopen = () => {
