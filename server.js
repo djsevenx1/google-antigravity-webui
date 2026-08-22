@@ -704,13 +704,13 @@ app.get('/api/usage', async (req, res) => {
     },
     weekly: {
       title: '每周 Gemini 旗舰算力',
-      sub: '每周累计总可用算力上限',
-      percent: gemini5hPct,
-      used: parseFloat((100 - gemini5hPct).toFixed(1)),
+      sub: 'Antigravity 2.0 周周期总算力池',
+      percent: tierData.isPro ? Math.min(gemini5hPct, 85) : 18,
+      used: tierData.isPro ? parseFloat((100 - Math.min(gemini5hPct, 85)).toFixed(1)) : 82,
       total: 100,
       resetsIn: weeklyRemainingStr,
       resetText: weeklyRemainingStr,
-      status: gemini5hPct > 60 ? 'healthy' : gemini5hPct > 20 ? 'warning' : 'danger'
+      status: (tierData.isPro ? gemini5hPct : 18) > 20 ? 'healthy' : 'warning'
     },
     claude5h: {
       title: 'Claude & GPT 5小时滚动算力',
@@ -1171,7 +1171,7 @@ const attachmentUpload = multer({
       cb(null, unique + ext);
     }
   }),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB (全面支持大文件/视频/大图上传)
 });
 
 // 上传文件 → 存到 ~/.antigravity/assets/ → 返回路径信息
