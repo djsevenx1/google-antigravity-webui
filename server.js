@@ -11,6 +11,7 @@ import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
+import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail } from './lib/accounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -275,7 +276,7 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
 }
 
 async function refreshGoogleProfileInBackground() {
-  if (Date.now() - profileFetchedAt < 180000) return cachedGoogleProfile;
+  if (Date.now() - profileFetchedAt < 20000) return cachedGoogleProfile;
   const tokenPaths = [
     path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
     '/vol5/@apphome/claude code/.gemini/antigravity-cli/antigravity-oauth-token'
@@ -322,6 +323,26 @@ async function refreshGoogleProfileInBackground() {
 
           const tierData = parseGoogleAccountTier(liveTierInfo, raw);
 
+          // 3. 获取实时真实配额状态 (fetchAvailableModels)
+          let liveModelsQuota = null;
+          try {
+            const projectId = raw.projectId || '';
+            const quotaRes = await fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'User-Agent': 'antigravity/0.2.0'
+              },
+              body: JSON.stringify(projectId ? { project: projectId } : {}),
+              signal: AbortSignal.timeout(5000)
+            });
+            if (quotaRes.ok) {
+              const qData = await quotaRes.json();
+              liveModelsQuota = qData?.models || null;
+            }
+          } catch (_) {}
+
           cachedGoogleProfile = {
             email: profile.email || 'dj.seven.x1@gmail.com',
             name: profile.name || '李祥广',
@@ -332,6 +353,7 @@ async function refreshGoogleProfileInBackground() {
             tierData,
             tierDetails: liveTierInfo?.allowedTiers?.[0] || null,
             liveApiConnected: !!liveTierInfo,
+            liveModelsQuota,
             authMethod: raw.auth_method || 'consumer',
             expiry: raw.token?.expiry || null,
             useG1Credits: tierData.useG1Credits
@@ -344,6 +366,8 @@ async function refreshGoogleProfileInBackground() {
   }
   return cachedGoogleProfile;
 }
+
+
 
 // ---------- API ----------
 app.get('/api/status', async (req, res) => {
@@ -561,7 +585,35 @@ app.get('/api/usage', async (req, res) => {
         'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium'
       ];
 
-  const modelsQuota = rawModelIds.map((m) => getModelMetadata(m, tierData));
+  const modelsQuota = rawModelIds.map((m) => {
+    const meta = getModelMetadata(m, tierData);
+    if (cachedGoogleProfile?.liveModelsQuota) {
+      let qInfo = null;
+      const baseId = m.replace(/-(low|medium|high)$/i, '');
+      const apiModels = cachedGoogleProfile.liveModelsQuota;
+      
+      if (apiModels[m]?.quotaInfo) qInfo = apiModels[m].quotaInfo;
+      else if (apiModels[baseId]?.quotaInfo) qInfo = apiModels[baseId].quotaInfo;
+      else if (m.includes('gemini') && m.includes('flash')) {
+        qInfo = apiModels['gemini-3.5-flash-low']?.quotaInfo || apiModels['gemini-3.5-flash-extra-low']?.quotaInfo;
+      } else if (m.includes('gemini') && m.includes('pro') && apiModels['gemini-3.1-pro-high']?.quotaInfo) {
+        qInfo = apiModels['gemini-3.1-pro-high'].quotaInfo;
+      } else if (m.includes('claude') && m.includes('sonnet') && apiModels['claude-sonnet-4-6']?.quotaInfo) {
+        qInfo = apiModels['claude-sonnet-4-6'].quotaInfo;
+      } else if (m.includes('claude') && m.includes('opus') && apiModels['claude-opus-4-6-thinking']?.quotaInfo) {
+        qInfo = apiModels['claude-opus-4-6-thinking'].quotaInfo;
+      }
+      
+      if (qInfo) {
+        const fraction = qInfo.remainingFraction ?? 0;
+        meta.percent = parseFloat((fraction * 100).toFixed(2));
+        if (qInfo.resetTime) {
+          meta.resetTime = qInfo.resetTime;
+        }
+      }
+    }
+    return meta;
+  });
 
   // 汇总本地真实会话数与 Token 统计
   let totalConversations = 0;
@@ -597,6 +649,47 @@ app.get('/api/usage', async (req, res) => {
       }
     }
   } catch (_) {}
+
+  const geminiProModel = modelsQuota.find(m => m.id === 'gemini-3.1-pro-high') || modelsQuota.find(m => m.id === 'gemini-3.7-flash-high');
+  if (geminiProModel && geminiProModel.percent !== undefined) {
+    windows.fiveHour.percent = geminiProModel.percent;
+    windows.fiveHour.used = parseFloat((100 - geminiProModel.percent).toFixed(2));
+    windows.fiveHour.status = geminiProModel.percent > 70 ? 'healthy' : 'warning';
+    windows.weekly.percent = geminiProModel.percent;
+    windows.weekly.used = parseFloat((100 - geminiProModel.percent).toFixed(2));
+    windows.weekly.status = geminiProModel.percent > 70 ? 'healthy' : 'warning';
+    if (geminiProModel.resetTime) {
+      const resetDiff = new Date(geminiProModel.resetTime).getTime() - Date.now();
+      if (resetDiff > 0) {
+        const rH = Math.floor(resetDiff / (3600 * 1000));
+        const rM = Math.floor((resetDiff % (3600 * 1000)) / (60 * 1000));
+        windows.fiveHour.resetsIn = `${rH}小时 ${rM}分钟`;
+        windows.fiveHour.resetText = `${rH}h ${rM}m`;
+        windows.fiveHour.resetTime = geminiProModel.resetTime;
+      }
+    }
+  }
+
+  const claudeModel = modelsQuota.find(m => m.id === 'claude-sonnet-4-6') || modelsQuota.find(m => m.id === 'claude-opus-4-6-thinking');
+  if (claudeModel && claudeModel.percent !== undefined) {
+    windows.claude5h.percent = claudeModel.percent;
+    windows.claude5h.used = parseFloat((100 - claudeModel.percent).toFixed(2));
+    windows.claudeWeekly.percent = claudeModel.percent;
+    windows.claudeWeekly.used = parseFloat((100 - claudeModel.percent).toFixed(2));
+    if (claudeModel.resetTime) {
+      const resetDiff = new Date(claudeModel.resetTime).getTime() - Date.now();
+      if (resetDiff > 0) {
+        const rH = Math.floor(resetDiff / (3600 * 1000));
+        const rM = Math.floor((resetDiff % (3600 * 1000)) / (60 * 1000));
+        windows.claude5h.resetsIn = `${rH}小时 ${rM}分钟`;
+        windows.claude5h.resetText = `${rH}h ${rM}m`;
+        windows.claudeWeekly.resetsIn = `${rH}小时 ${rM}分钟`;
+        windows.claudeWeekly.resetText = `${rH}h ${rM}m`;
+        windows.claude5h.resetTime = claudeModel.resetTime;
+        windows.claudeWeekly.resetTime = claudeModel.resetTime;
+      }
+    }
+  }
 
   send(res, 200, {
     account: googleAccount,
@@ -947,6 +1040,38 @@ app.post('/api/permissions/allow', (req, res) => {
   const ok = allowTool(toolName);
   debugLog('[permissions] allowTool:', toolName, '→', ok);
   send(res, 200, { ok, toolName });
+});
+
+// ---------- 多账号管理 ----------
+app.get('/api/accounts', (req, res) => {
+  const accounts = listAccounts();
+  const activeEmail = getActiveAccountEmail();
+  send(res, 200, { accounts, activeEmail });
+});
+
+app.post('/api/accounts/add', (req, res) => {
+  const { label } = req.body || {};
+  const r = addAccount(label);
+  if (!r.ok) return send(res, 400, { error: r.error });
+  debugLog('[accounts] added:', r.account.label);
+  send(res, 200, r);
+});
+
+app.post('/api/accounts/switch', (req, res) => {
+  const { email } = req.body || {};
+  if (!email) return send(res, 400, { error: '缺少 email' });
+  const r = switchAccount(email);
+  if (!r.ok) return send(res, 400, { error: r.error });
+  debugLog('[accounts] switched to:', r.account.label);
+  // 切换后清缓存，让 /api/status 重新读新账号
+  send(res, 200, r);
+});
+
+app.delete('/api/accounts/:email', (req, res) => {
+  const email = req.params.email;
+  removeAccount(email);
+  debugLog('[accounts] removed:', email);
+  send(res, 200, { ok: true });
 });
 
 app.post('/api/chat/abort', (req, res) => {
