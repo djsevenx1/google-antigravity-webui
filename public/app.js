@@ -1866,12 +1866,20 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
         ws.onerror = () => { done(() => reject(new Error('network error'))); };
         ws.onclose = () => {
-          // 借鉴 CloudCLI：onclose 不放弃，自动重连。
-          // 浏览器切后台会杀 WebSocket，但后端 Run Registry 一直在跑——重连后回放所有错过的事件。
+          // 如果已收到 done 或已经有完整的回答文本，直接圆满结束当前轮次，绝不无限挂起等待！
           if (receivedDone) { done(() => resolve()); return; }
           if (streamError) { done(() => reject(streamError)); return; }
           if (needsPerm) { done(() => reject(Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput }))); return; }
-          // 没收到 done = 后台还在跑，浏览器把连接杀了 → 当 network error 触发重试
+          
+          // 如果已经输出了有效文本（回答已生成完成），连接关闭视为正常结束
+          const cleanText = (acc || '').replace(/[\u200b\s]/g, '');
+          if (cleanText.length > 0) {
+            receivedDone = true;
+            done(() => resolve());
+            return;
+          }
+          
+          // 只有在完全没有收到任何字的情况下，才作为 network error 重试
           done(() => reject(new Error('network error')));
         };
       });
@@ -1927,7 +1935,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
             };
             wsRetry.onerror = () => { done2(() => reject(new Error('network error'))); };
             wsRetry.onclose = () => {
-              if (receivedDone) { done2(() => resolve()); return; }
+              if (receivedDone || (acc && acc.replace(/[\u200b\s]/g, '').length > 0)) {
+                receivedDone = true;
+                done2(() => resolve());
+                return;
+              }
               done2(() => reject(new Error('network error')));
             };
           });
