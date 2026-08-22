@@ -97,6 +97,17 @@ PORT=3100 node server.js
 http://localhost:3100
 ```
 
+打开后会出现 **WebUI 登录页面**，需要输入账号密码才能使用。
+
+**默认账号密码**（在 `config.json` 里配置）：
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| 用户名 | `DJSeven` | 登录用户名 |
+| 密码 | `admin` | 登录密码 |
+
+> ⚠️ 生产环境请务必修改 `config.json` 里的 `auth.password`，不要使用默认密码。
+
 ### 5. 如需外网访问
 
 用 nginx 反代，**关键：WebSocket 需要特殊配置**：

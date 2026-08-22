@@ -2483,24 +2483,39 @@ async function showUsageModal() {
     const claudeResetAt = localStorage.getItem('claudeResetAt');
     let dynamicClaude5hReset = winClaude5h.resetsIn;
     let dynamicClaude5hStatus = `${winClaude5h.percent}% 可用`;
+    let dynamicClaude5hBar = `${winClaude5h.percent}%`;
     let dynamicClaudeWeeklyReset = winClaudeWeekly.resetsIn;
     let dynamicClaudeWeeklyStatus = `${winClaudeWeekly.percent}% 可用`;
+    let dynamicClaudeWeeklyBar = `${winClaudeWeekly.percent}%`;
 
-    if (claudeResetAt && parseInt(claudeResetAt) > Date.now()) {
+    const isClaudeInCooldown = claudeResetAt && parseInt(claudeResetAt) > Date.now();
+    let claudeCooldownH = 0, claudeCooldownM = 0;
+
+    if (isClaudeInCooldown) {
       const diffMs = parseInt(claudeResetAt) - Date.now();
-      const h = Math.floor(diffMs / 3600000);
-      const min = Math.floor((diffMs % 3600000) / 60000);
-      dynamicClaude5hReset = `${h}小时 ${min}分钟`;
-      dynamicClaude5hStatus = `冷却中`;
-      if ($("#win-percent-claude5h")) $("#win-percent-claude5h").style.color = "#f59e0b";
+      claudeCooldownH = Math.floor(diffMs / 3600000);
+      claudeCooldownM = Math.floor((diffMs % 3600000) / 60000);
+      dynamicClaude5hReset = `${claudeCooldownH}小时 ${claudeCooldownM}分钟`;
+      dynamicClaude5hStatus = `0% · 冷却中`;
+      dynamicClaude5hBar = `0%`;
+      dynamicClaudeWeeklyStatus = `0% · 暂不可用`;
+      dynamicClaudeWeeklyBar = `0%`;
+      if ($("#win-percent-claude5h")) $("#win-percent-claude5h").style.color = "#ef4444";
+      if ($("#win-percent-claudeweekly")) $("#win-percent-claudeweekly").style.color = "#ef4444";
     }
 
     if ($("#win-percent-claude5h")) $("#win-percent-claude5h").textContent = dynamicClaude5hStatus;
-    if ($("#win-bar-claude5h")) $("#win-bar-claude5h").style.width = `${winClaude5h.percent}%`;
+    if ($("#win-bar-claude5h")) {
+      $("#win-bar-claude5h").style.width = dynamicClaude5hBar;
+      if (isClaudeInCooldown) $("#win-bar-claude5h").style.background = "#ef4444";
+    }
     if ($("#win-reset-claude5h")) $("#win-reset-claude5h").textContent = `${dynamicClaude5hReset} 后重置`;
 
     if ($("#win-percent-claudeweekly")) $("#win-percent-claudeweekly").textContent = dynamicClaudeWeeklyStatus;
-    if ($("#win-bar-claudeweekly")) $("#win-bar-claudeweekly").style.width = `${winClaudeWeekly.percent}%`;
+    if ($("#win-bar-claudeweekly")) {
+      $("#win-bar-claudeweekly").style.width = dynamicClaudeWeeklyBar;
+      if (isClaudeInCooldown) $("#win-bar-claudeweekly").style.background = "#ef4444";
+    }
     if ($("#win-reset-claudeweekly")) $("#win-reset-claudeweekly").textContent = `${dynamicClaudeWeeklyReset} 后刷新`;
 
     updateUsageSummary(d);
@@ -2557,19 +2572,17 @@ async function showUsageModal() {
       const isUnlimited = (m.quota || "").includes("无限");
       const isPro = (m.quota || "").includes("Pro");
       const isLimited = m.status === "limited";
-      const pct = m.percent != null ? m.percent : 100;
-      const barColor = pct > 80 ? "#10b981" : pct > 40 ? "#3b82f6" : "#f59e0b";
+      let pct = m.percent != null ? m.percent : 100;
+      let isModelCooldown = false;
 
       let resetBadge = "";
       let resetInfoText = "";
       if (m.series === "Claude" || m.id.includes("claude")) {
-        const claudeResetAt = localStorage.getItem("claudeResetAt");
-        if (claudeResetAt && parseInt(claudeResetAt) > Date.now()) {
-          const diffMs = parseInt(claudeResetAt) - Date.now();
-          const h = Math.floor(diffMs / 3600000);
-          const min = Math.floor((diffMs % 3600000) / 60000);
-          resetBadge = `<span class="quota-tag" style="background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.3);font-weight:600;">⏳ ${h}h ${min}m 重置</span>`;
-          resetInfoText = `<span style="color:#eab308;font-weight:600;">⚠️ 5h 限制冷却中 · ${h}小时${min}分后恢复</span>`;
+        if (isClaudeInCooldown) {
+          isModelCooldown = true;
+          pct = 0; // 冷却中配额强制归零！
+          resetBadge = `<span class="quota-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);font-weight:600;">⏳ ${claudeCooldownH}h ${claudeCooldownM}m 重置</span>`;
+          resetInfoText = `<span style="color:#ef4444;font-weight:600;">⚠️ 配额已耗尽 · ${claudeCooldownH}小时${claudeCooldownM}分后解封</span>`;
         } else {
           resetBadge = `<span class="quota-tag" style="background:rgba(168,85,247,0.12);color:#c084fc;border:1px solid rgba(168,85,247,0.25);">⚡ 5h 滚动 + 每周旗舰</span>`;
           resetInfoText = `<span style="color:var(--text-dim);">双重机制：5h 交互频次 · 每周旗舰算力池</span>`;
@@ -2582,7 +2595,11 @@ async function showUsageModal() {
         resetInfoText = `<span style="color:var(--text-dim);">重置周期：5小时滚动 · 原生算力池</span>`;
       }
 
-      const statusBadge = isLimited 
+      const barColor = isModelCooldown ? "#ef4444" : pct > 80 ? "#10b981" : pct > 40 ? "#3b82f6" : "#f59e0b";
+
+      const statusBadge = isModelCooldown
+        ? `<span class="quota-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);font-weight:600;">0% · 冷却冻结</span>`
+        : isLimited 
         ? `<span class="quota-tag limited">${pct}% · 受限/按需</span>`
         : isUnlimited 
         ? `<span class="quota-tag unlimited">100% · Pro 无限额度</span>`
