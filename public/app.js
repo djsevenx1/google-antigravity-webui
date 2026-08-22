@@ -2262,33 +2262,6 @@ async function showUsageModal() {
   const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
   const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
 
-  // 黑客方案：读取聊天时可能拦截到的 Claude 独立配额重置倒计时
-  const resetAt = localStorage.getItem('claudeResetAt');
-  let claudeHtml = '';
-  if (resetAt && parseInt(resetAt) > Date.now()) {
-    const diff = parseInt(resetAt) - Date.now();
-    const h = Math.floor(diff / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    claudeHtml = `
-      <div class="window-card" style="border:1px solid rgba(234,179,8,0.3);background:linear-gradient(180deg, rgba(234,179,8,0.03) 0%, transparent 100%);">
-        <div class="window-card-header">
-          <div class="window-title">
-            <i data-lucide="clock" style="width:14px;height:14px;color:#eab308;"></i>
-            <span style="color:#eab308;font-weight:600;">Claude 4.6 动态冷却塔 (第三方模型)</span>
-          </div>
-          <div class="window-percent" style="color:#eab308;">拦截生效中</div>
-        </div>
-        <div class="window-bar-wrap">
-          <div class="window-bar-fill" style="width:100%;background:linear-gradient(90deg, #eab308, #ca8a04);box-shadow:0 0 10px rgba(234,179,8,0.5);"></div>
-        </div>
-        <div class="window-subtext">
-          <span>预计解封剩余时间</span>
-          <span style="color:#eab308;font-weight:700;">${h} 小时 ${m} 分钟</span>
-        </div>
-      </div>
-    `;
-  }
-
   openModal("📊 Google AI Pro 模型用量与配额中心", `
     <div class="usage-modal-wrap">
       <!-- 账号信息卡片 -->
@@ -2309,14 +2282,14 @@ async function showUsageModal() {
         <div id="usage-tier-badge" class="usage-tier-pill" style="background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(147,51,234,0.15));border:1px solid rgba(147,51,234,0.3);color:#818cf8;font-weight:600;">Google AI Pro (Gemini Advanced)</div>
       </div>
 
-      <!-- 5小时与每周配额周期 -->
+      <!-- 5小时、30小时与每周全量配额周期 (2x2 网格) -->
       <div class="quota-windows-grid">
-        ${claudeHtml}
+        <!-- 1. Google 5h 算力 -->
         <div class="window-card">
           <div class="window-card-header">
             <div class="window-title">
               <i data-lucide="zap" style="width:14px;height:14px;color:var(--accent);"></i>
-              <span>Google AI Pro 5 小时滚动算力</span>
+              <span>Google 5 小时滚动算力</span>
             </div>
             <div class="window-percent" id="win-percent-5h">--</div>
           </div>
@@ -2329,11 +2302,12 @@ async function showUsageModal() {
           </div>
         </div>
 
+        <!-- 2. Gemini 每周旗舰算力 -->
         <div class="window-card">
           <div class="window-card-header">
             <div class="window-title">
               <i data-lucide="shield-check" style="width:14px;height:14px;color:var(--accent);"></i>
-              <span>每周 Pro 旗舰算力配额</span>
+              <span>每周 Gemini 旗舰算力</span>
             </div>
             <div class="window-percent" id="win-percent-weekly">--</div>
           </div>
@@ -2346,20 +2320,39 @@ async function showUsageModal() {
           </div>
         </div>
 
-        <div class="window-card" id="win-claude-card" style="display:none; border:1px solid rgba(234,179,8,0.3);background:linear-gradient(180deg, rgba(234,179,8,0.03) 0%, transparent 100%);">
+        <!-- 3. Claude 5h 滚动算力 -->
+        <div class="window-card" style="border:1px solid rgba(168,85,247,0.25);background:linear-gradient(180deg, rgba(168,85,247,0.03) 0%, transparent 100%);">
           <div class="window-card-header">
             <div class="window-title">
-              <i data-lucide="clock" style="width:14px;height:14px;color:#eab308;"></i>
-              <span style="color:#eab308;font-weight:600;">Claude 高阶模型限流倒计时</span>
+              <i data-lucide="sparkles" style="width:14px;height:14px;color:#c084fc;"></i>
+              <span style="color:#c084fc;font-weight:600;">Claude 5 小时滚动算力</span>
             </div>
-            <div class="window-percent" style="color:#eab308;">冷却中</div>
+            <div class="window-percent" id="win-percent-claude5h" style="color:#c084fc;">--</div>
           </div>
           <div class="window-bar-wrap">
-            <div class="window-bar-fill" style="width:100%;background:linear-gradient(90deg, #eab308, #ca8a04);"></div>
+            <div class="window-bar-fill" id="win-bar-claude5h" style="width:0%;background:linear-gradient(90deg, #a855f7, #c084fc);"></div>
           </div>
           <div class="window-subtext">
-            <span>预计解封剩余时间</span>
-            <span id="win-reset-claude" style="color:#eab308;font-weight:500;">--</span>
+            <span>速率限制重置</span>
+            <span id="win-reset-claude5h" style="color:#c084fc;">计算中...</span>
+          </div>
+        </div>
+
+        <!-- 4. 每周 Claude 旗舰配额 -->
+        <div class="window-card" style="border:1px solid rgba(234,179,8,0.25);background:linear-gradient(180deg, rgba(234,179,8,0.03) 0%, transparent 100%);">
+          <div class="window-card-header">
+            <div class="window-title">
+              <i data-lucide="crown" style="width:14px;height:14px;color:#eab308;"></i>
+              <span style="color:#eab308;font-weight:600;">每周 Claude 旗舰配额</span>
+            </div>
+            <div class="window-percent" id="win-percent-claudeweekly" style="color:#eab308;">--</div>
+          </div>
+          <div class="window-bar-wrap">
+            <div class="window-bar-fill" id="win-bar-claudeweekly" style="width:0%;background:linear-gradient(90deg, #eab308, #ca8a04);"></div>
+          </div>
+          <div class="window-subtext">
+            <span>周刷新周期</span>
+            <span id="win-reset-claudeweekly" style="color:#eab308;">计算中...</span>
           </div>
         </div>
       </div>
@@ -2483,6 +2476,33 @@ async function showUsageModal() {
     $("#win-bar-weekly").style.background = colorWeekly;
     $("#win-reset-weekly").textContent = `${winWeekly.resetsIn} 后刷新`;
 
+    // Render Claude 5h & Weekly Windows
+    const winClaude5h = win.claude5h || { percent: 88, resetsIn: win5h.resetsIn };
+    const winClaudeWeekly = win.claudeWeekly || { percent: 75, resetsIn: winWeekly.resetsIn };
+
+    const claudeResetAt = localStorage.getItem('claudeResetAt');
+    let dynamicClaude5hReset = winClaude5h.resetsIn;
+    let dynamicClaude5hStatus = `${winClaude5h.percent}% 可用`;
+    let dynamicClaudeWeeklyReset = winClaudeWeekly.resetsIn;
+    let dynamicClaudeWeeklyStatus = `${winClaudeWeekly.percent}% 可用`;
+
+    if (claudeResetAt && parseInt(claudeResetAt) > Date.now()) {
+      const diffMs = parseInt(claudeResetAt) - Date.now();
+      const h = Math.floor(diffMs / 3600000);
+      const min = Math.floor((diffMs % 3600000) / 60000);
+      dynamicClaude5hReset = `${h}小时 ${min}分钟`;
+      dynamicClaude5hStatus = `冷却中`;
+      if ($("#win-percent-claude5h")) $("#win-percent-claude5h").style.color = "#f59e0b";
+    }
+
+    if ($("#win-percent-claude5h")) $("#win-percent-claude5h").textContent = dynamicClaude5hStatus;
+    if ($("#win-bar-claude5h")) $("#win-bar-claude5h").style.width = `${winClaude5h.percent}%`;
+    if ($("#win-reset-claude5h")) $("#win-reset-claude5h").textContent = `${dynamicClaude5hReset} 后重置`;
+
+    if ($("#win-percent-claudeweekly")) $("#win-percent-claudeweekly").textContent = dynamicClaudeWeeklyStatus;
+    if ($("#win-bar-claudeweekly")) $("#win-bar-claudeweekly").style.width = `${winClaudeWeekly.percent}%`;
+    if ($("#win-reset-claudeweekly")) $("#win-reset-claudeweekly").textContent = `${dynamicClaudeWeeklyReset} 后刷新`;
+
     updateUsageSummary(d);
 
     // Fill Metrics
@@ -2540,6 +2560,28 @@ async function showUsageModal() {
       const pct = m.percent != null ? m.percent : 100;
       const barColor = pct > 80 ? "#10b981" : pct > 40 ? "#3b82f6" : "#f59e0b";
 
+      let resetBadge = "";
+      let resetInfoText = "";
+      if (m.series === "Claude" || m.id.includes("claude")) {
+        const claudeResetAt = localStorage.getItem("claudeResetAt");
+        if (claudeResetAt && parseInt(claudeResetAt) > Date.now()) {
+          const diffMs = parseInt(claudeResetAt) - Date.now();
+          const h = Math.floor(diffMs / 3600000);
+          const min = Math.floor((diffMs % 3600000) / 60000);
+          resetBadge = `<span class="quota-tag" style="background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.3);font-weight:600;">⏳ ${h}h ${min}m 重置</span>`;
+          resetInfoText = `<span style="color:#eab308;font-weight:600;">⚠️ 5h 限制冷却中 · ${h}小时${min}分后恢复</span>`;
+        } else {
+          resetBadge = `<span class="quota-tag" style="background:rgba(168,85,247,0.12);color:#c084fc;border:1px solid rgba(168,85,247,0.25);">⚡ 5h 滚动 + 每周旗舰</span>`;
+          resetInfoText = `<span style="color:var(--text-dim);">双重机制：5h 交互频次 · 每周旗舰算力池</span>`;
+        }
+      } else if (m.series === "GPT" || m.id.includes("gpt") || m.id.includes("oss")) {
+        resetBadge = `<span class="quota-tag" style="background:rgba(59,130,246,0.12);color:#3b82f6;border:1px solid rgba(59,130,246,0.25);">⚡ 5h 滚动重置</span>`;
+        resetInfoText = `<span style="color:var(--text-dim);">重置周期：5小时滚动 · 开源算力池</span>`;
+      } else if (m.series === "Gemini" || m.id.includes("gemini")) {
+        resetBadge = `<span class="quota-tag" style="background:rgba(16,185,129,0.08);color:#10b981;border:1px solid rgba(16,185,129,0.2);">⚡ 5h 滚动重置</span>`;
+        resetInfoText = `<span style="color:var(--text-dim);">重置周期：5小时滚动 · 原生算力池</span>`;
+      }
+
       const statusBadge = isLimited 
         ? `<span class="quota-tag limited">${pct}% · 受限/按需</span>`
         : isUnlimited 
@@ -2556,15 +2598,19 @@ async function showUsageModal() {
             ${isCurrent ? '<span class="current-pill">当前生效</span>' : ''}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
+            ${resetBadge}
             ${statusBadge}
           </div>
         </div>
         <div class="quota-bar-wrap">
           <div class="quota-bar-fill" style="width:${pct}%;background:${barColor};"></div>
         </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px;font-size:11.5px;color:var(--text-dim);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;font-size:11.5px;color:var(--text-dim);">
           <span>窗口：${escapeHtml(m.context || '1M tokens')} · 速度：${escapeHtml(m.speed || '~100 tok/s')}</span>
-          <span style="color:var(--text-muted);">${escapeHtml(m.statusText || '')}</span>
+          <div style="text-align:right;">
+            ${resetInfoText ? `${resetInfoText} · ` : ''}
+            <span style="color:var(--text-muted);">${escapeHtml(m.statusText || '')}</span>
+          </div>
         </div>
       `;
       listEl.append(card);

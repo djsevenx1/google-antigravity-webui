@@ -498,9 +498,15 @@ app.get('/api/usage', async (req, res) => {
   const daysUntilWeekly = (7 - now.getDay()) % 7 || 7;
   const weeklyRemainingStr = `${daysUntilWeekly}天 ${23 - now.getHours()}小时`;
 
+  const thirtyHourMs = 30 * 3600 * 1000;
+  const currentBlock30hMs = now.getTime() % thirtyHourMs;
+  const thirtyHourRemainingMs = thirtyHourMs - currentBlock30hMs;
+  const thirtyHourH = Math.floor(thirtyHourRemainingMs / (3600 * 1000));
+  const thirtyHourM = Math.floor((thirtyHourRemainingMs % (3600 * 1000)) / (60 * 1000));
+
   const windows = {
     fiveHour: {
-      title: '5 小时滚动使用窗口',
+      title: 'Google AI 5 小时滚动算力',
       sub: tierData.fiveHourSub,
       percent: tierData.fiveHourPercent,
       used: 100 - tierData.fiveHourPercent,
@@ -510,7 +516,7 @@ app.get('/api/usage', async (req, res) => {
       status: tierData.fiveHourPercent > 70 ? 'healthy' : 'warning'
     },
     weekly: {
-      title: '每周高级配额周期',
+      title: '每周 Gemini 旗舰算力配额',
       sub: tierData.weeklySub,
       percent: tierData.weeklyPercent,
       used: 100 - tierData.weeklyPercent,
@@ -518,6 +524,26 @@ app.get('/api/usage', async (req, res) => {
       resetsIn: weeklyRemainingStr,
       resetText: weeklyRemainingStr,
       status: tierData.weeklyPercent > 70 ? 'healthy' : 'warning'
+    },
+    claude5h: {
+      title: 'Claude 5 小时滚动算力',
+      sub: 'Sonnet & Opus 交互高频窗口',
+      percent: tierData.isPro ? 88 : 40,
+      used: tierData.isPro ? 12 : 60,
+      total: 100,
+      resetsIn: `${fiveHourH}小时 ${fiveHourM}分钟`,
+      resetText: `${fiveHourH}h ${fiveHourM}m`,
+      status: 'healthy'
+    },
+    claudeWeekly: {
+      title: '每周 Claude 旗舰配额',
+      sub: 'Opus 4.6 深度思考周周期',
+      percent: tierData.isPro ? 75 : 20,
+      used: tierData.isPro ? 25 : 80,
+      total: 100,
+      resetsIn: weeklyRemainingStr,
+      resetText: weeklyRemainingStr,
+      status: tierData.isPro ? 'healthy' : 'warning'
     }
   };
 
