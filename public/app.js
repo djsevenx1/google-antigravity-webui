@@ -1794,16 +1794,20 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        const resetSilenceWatchdog = () => {
+        const resetSilenceWatchdog = (fromDelta = false) => {
+          const clean = (acc || '').replace(/[\u200b\s]/g, '');
+          // 如果已经输出了有效正文内容，只有真正的文本增量 (delta) 才能重置看门狗；心跳不能重置！
+          if (clean.length > 15 && !fromDelta) {
+            return;
+          }
           if (silenceWatchdog) clearTimeout(silenceWatchdog);
           silenceWatchdog = setTimeout(() => {
-            const clean = (acc || '').replace(/[\u200b\s]/g, '');
-            // 如果已经接收到实质性内容且持续 4 秒没有新的数据/思考事件，自动安全结算结束，坚决不卡住停止按钮！
-            if (clean.length > 10 && !settled) {
+            const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
+            if (currentClean.length > 10 && !settled) {
               receivedDone = true;
               done(() => resolve());
             }
-          }, 4000);
+          }, 2000);
         };
 
         ws.onopen = () => {
@@ -1853,7 +1857,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
             return;
           }
-          resetSilenceWatchdog();
+          resetSilenceWatchdog(true);
           if (data.delta != null) {
             acc += data.delta;
             asstNode.bubble.innerHTML = formatMarkdown(acc, true);
