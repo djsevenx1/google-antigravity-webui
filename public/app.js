@@ -3431,7 +3431,7 @@ async function handleFiles(files) {
   if (files.length > 10) return toast("最多 10 个文件");
   const formData = new FormData();
   for (const f of files) {
-    if (f.size > 10 * 1024 * 1024) return toast(`${f.name} 超过 10MB`);
+    if (f.size > 100 * 1024 * 1024) return toast(`${f.name} 超过 100MB 上限`);
     formData.append("files", f);
   }
   // 上传到 server
