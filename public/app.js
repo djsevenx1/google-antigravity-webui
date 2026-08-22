@@ -1641,6 +1641,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const isQuotaErr = e.quotaExceeded || /quota|limit reached|upgrade your subscription/i.test(errMsg);
         let errorHtml = "";
         if (isQuotaErr) {
+          const m = errMsg.match(/Resets in (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/i);
+          if (m) {
+            const resetAt = Date.now() + ((parseInt(m[1]||0)*3600) + (parseInt(m[2]||0)*60) + parseInt(m[3]||0))*1000;
+            localStorage.setItem('claudeResetAt', resetAt);
+          }
           errorHtml = `<div class="chat-error-card quota-error"><div class="chat-error-title">⚠️ 当前模型配额已用尽</div><div class="chat-error-desc">${escapeHtml(errMsg)}</div><div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="switchModelAndRetry('gemini-3.7-flash-high')"><i data-lucide="zap" style="width:13px;height:13px;"></i> 切换至 Gemini 3.7 Flash 并重试</button></div></div>`;
         } else if (isNetErr) {
           errorHtml = `<div class="chat-error-card network-error"><div class="chat-error-title">⚠️ 网络连接中断 (Network Error)</div><div class="chat-error-desc">连接被网络或反向代理超时重置（已自动尝试重连 ${netRetryCount} 次）。会话状态已保留，点击下方按钮可立即继续生成。</div><div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="retryLastConversationTurn()"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 续接 / 重试</button></div></div>`;
@@ -2257,6 +2262,33 @@ async function showUsageModal() {
   const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
   const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
 
+  // 黑客方案：读取聊天时可能拦截到的 Claude 独立配额重置倒计时
+  const resetAt = localStorage.getItem('claudeResetAt');
+  let claudeHtml = '';
+  if (resetAt && parseInt(resetAt) > Date.now()) {
+    const diff = parseInt(resetAt) - Date.now();
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    claudeHtml = `
+      <div class="window-card" style="border:1px solid rgba(234,179,8,0.3);background:linear-gradient(180deg, rgba(234,179,8,0.03) 0%, transparent 100%);">
+        <div class="window-card-header">
+          <div class="window-title">
+            <i data-lucide="clock" style="width:14px;height:14px;color:#eab308;"></i>
+            <span style="color:#eab308;font-weight:600;">Claude 4.6 动态冷却塔 (第三方模型)</span>
+          </div>
+          <div class="window-percent" style="color:#eab308;">拦截生效中</div>
+        </div>
+        <div class="window-bar-wrap">
+          <div class="window-bar-fill" style="width:100%;background:linear-gradient(90deg, #eab308, #ca8a04);box-shadow:0 0 10px rgba(234,179,8,0.5);"></div>
+        </div>
+        <div class="window-subtext">
+          <span>预计解封剩余时间</span>
+          <span style="color:#eab308;font-weight:700;">${h} 小时 ${m} 分钟</span>
+        </div>
+      </div>
+    `;
+  }
+
   openModal("📊 Google AI Pro 模型用量与配额中心", `
     <div class="usage-modal-wrap">
       <!-- 账号信息卡片 -->
@@ -2279,6 +2311,7 @@ async function showUsageModal() {
 
       <!-- 5小时与每周配额周期 -->
       <div class="quota-windows-grid">
+        ${claudeHtml}
         <div class="window-card">
           <div class="window-card-header">
             <div class="window-title">
@@ -2310,6 +2343,23 @@ async function showUsageModal() {
           <div class="window-subtext">
             <span>周刷新周期</span>
             <span id="win-reset-weekly">计算中...</span>
+          </div>
+        </div>
+
+        <div class="window-card" id="win-claude-card" style="display:none; border:1px solid rgba(234,179,8,0.3);background:linear-gradient(180deg, rgba(234,179,8,0.03) 0%, transparent 100%);">
+          <div class="window-card-header">
+            <div class="window-title">
+              <i data-lucide="clock" style="width:14px;height:14px;color:#eab308;"></i>
+              <span style="color:#eab308;font-weight:600;">Claude 高阶模型限流倒计时</span>
+            </div>
+            <div class="window-percent" style="color:#eab308;">冷却中</div>
+          </div>
+          <div class="window-bar-wrap">
+            <div class="window-bar-fill" style="width:100%;background:linear-gradient(90deg, #eab308, #ca8a04);"></div>
+          </div>
+          <div class="window-subtext">
+            <span>预计解封剩余时间</span>
+            <span id="win-reset-claude" style="color:#eab308;font-weight:500;">--</span>
           </div>
         </div>
       </div>
