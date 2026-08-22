@@ -2021,57 +2021,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
       const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
       const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
       
-      // 1. 先用当前最新的算力渲染底部栏
+      // 直接使用当前已同步的配额数据渲染底部栏，0 延迟、0 额外网络开销
       asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
       refreshIcons();
-
-      // 2. 立即异步向 Google 官方拉取对话结束后的「精准实际剩余额度」进行实时对齐并固化
-      fetch("/api/usage?refresh=1")
-        .then(r => r.json())
-        .then(freshQuota => {
-          if (freshQuota && freshQuota.windows) {
-            state.latestUsageData = freshQuota;
-            updateUsageSummary(freshQuota);
-
-            const modelId = String(state.selectedModel || '').toLowerCase();
-            const isClaude = modelId.includes('claude') || modelId.includes('gpt') || modelId.includes('oss');
-            const poolWindow = isClaude ? freshQuota.windows.claude5h : freshQuota.windows.fiveHour;
-            const weeklyWindow = isClaude ? freshQuota.windows.claudeWeekly : freshQuota.windows.weekly;
-
-            const updatedSnapshot = {
-              percent: poolWindow?.percent != null ? poolWindow.percent : 100,
-              resetIn: poolWindow?.resetsIn || poolWindow?.resetText || '5h',
-              weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : 90,
-          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '1天 15小时',
-              model: state.selectedModel
-            };
-
-            metaSnapshot.quotaSnapshot = updatedSnapshot;
-
-            // 同步更新已存入 conv.messages 里的快照并持久化
-            if (conv && conv.messages && conv.messages.length) {
-              const lastMsg = conv.messages[conv.messages.length - 1];
-              if (lastMsg && lastMsg.role === 'assistant') {
-                if (!lastMsg.meta) lastMsg.meta = {};
-                lastMsg.meta.quotaSnapshot = updatedSnapshot;
-                saveConversations();
-              }
-            }
-
-            // 找到刚才那条消息的 footer 并热替换为最新固化数据
-            const footerEl = asstNode.bubble.querySelector('.msg-usage-pill');
-            if (footerEl) {
-              const tempWrap = document.createElement('div');
-              tempWrap.innerHTML = getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-              const newFooter = tempWrap.querySelector('.msg-usage-pill');
-              if (newFooter) {
-                footerEl.replaceWith(newFooter);
-                refreshIcons();
-              }
-            }
-          }
-        })
-        .catch(() => {});
     }
     updateSendButton();
 

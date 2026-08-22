@@ -1763,19 +1763,10 @@ wss.on('connection', (ws, req) => {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
 
-      // 2. 核心修复：立刻向前端发送 done 信号，毫秒级解除 Web 端的等待转圈状态！
+      // 2. 核心修复：立刻向前端发送 done 信号与当前最新配额快照，毫秒级收尾
       run.done = true;
       const immediateQuotaData = buildLiveWindowsData();
       broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: immediateQuotaData });
-
-      // 3. 异步后台拉取 Google 官方最新额度，拉取完成后单独推送，绝不阻塞用户界面的结束判定
-      profileFetchedAt = 0;
-      refreshGoogleProfileInBackground()
-        .then(() => {
-          const freshQuota = buildLiveWindowsData();
-          broadcast({ liveQuota: freshQuota });
-        })
-        .catch(() => {});
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
