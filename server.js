@@ -1572,7 +1572,7 @@ wss.on('connection', (ws, req) => {
     const rawMsgCount = messages.length;
     
     // 当历史记录 >= 16 条时，自动进行前序上下文智能压缩提炼
-    if (messages.length >= 16) {
+    if (messages.length >= 8) {
       wasCompacted = true;
       const keepRecent = 6; // 保留最近 6 条活跃对话
       const older = messages.slice(0, messages.length - keepRecent);
