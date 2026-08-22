@@ -1790,7 +1790,6 @@ wss.on('connection', (ws, req) => {
     const broadcast = (obj) => {
       const str = JSON.stringify(obj);
       run.events.push(`data: ${str}\n\n`);
-      try { ws.send(str); } catch (_) {}
       for (const l of run.listeners) {
         try { l(`data: ${str}\n\n`); } catch (_) {}
       }
@@ -1861,16 +1860,10 @@ wss.on('connection', (ws, req) => {
       }
 
       debugLog(`[ws/chat] cliProvider DONE in ${Date.now() - t0}ms conv=${out && out.conversationId}`);
+      clearInterval(heartbeat);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
-      
-      // 对话完成后立即重新拉取 Google 官方最新额度，并在 done 包里直接带回给前端
-      profileFetchedAt = 0;
-      await refreshGoogleProfileInBackground().catch(() => {});
-      const liveQuotaData = buildLiveWindowsData();
-      broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: liveQuotaData });
-      run.done = true;
 
-      // ── 无论前端浏览器是否关闭/刷新，服务端必须将生成结果强制安全落盘 ──
+      // 1. 无论前端浏览器是否关闭/刷新，服务端立刻先将生成结果强制安全落盘
       try {
         const filePath = getSessionFilePath(convKey);
         let sessionData = {
@@ -1906,6 +1899,20 @@ wss.on('connection', (ws, req) => {
       } catch (err) {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
+
+      // 2. 核心修复：立刻向前端发送 done 信号，毫秒级解除 Web 端的等待转圈状态！
+      run.done = true;
+      const immediateQuotaData = buildLiveWindowsData();
+      broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: immediateQuotaData });
+
+      // 3. 异步后台拉取 Google 官方最新额度，拉取完成后单独推送，绝不阻塞用户界面的结束判定
+      profileFetchedAt = 0;
+      refreshGoogleProfileInBackground()
+        .then(() => {
+          const freshQuota = buildLiveWindowsData();
+          broadcast({ liveQuota: freshQuota });
+        })
+        .catch(() => {});
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
