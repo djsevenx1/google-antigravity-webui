@@ -58,7 +58,7 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   // 3. 兜底估计值
   if (h5Pct == null) h5Pct = isGemini ? 70.6 : 87.8;
   if (!h5Reset) h5Reset = '3小时 55分钟';
-  if (weeklyPct == null) weeklyPct = isGemini ? 70.6 : 87.8;
+  if (weeklyPct == null) weeklyPct = isGemini ? 18 : 0;
   if (!weeklyReset) weeklyReset = isGemini ? '1天 15小时' : '4小时 14分钟';
 
   const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
