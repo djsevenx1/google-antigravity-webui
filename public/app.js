@@ -1784,7 +1784,27 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
       await new Promise((resolve, reject) => {
         let settled = false;
-        const done = (fn) => { if (!settled) { settled = true; fn(); } };
+        let silenceWatchdog = null;
+
+        const done = (fn) => {
+          if (!settled) {
+            settled = true;
+            if (silenceWatchdog) clearTimeout(silenceWatchdog);
+            fn();
+          }
+        };
+
+        const resetSilenceWatchdog = () => {
+          if (silenceWatchdog) clearTimeout(silenceWatchdog);
+          silenceWatchdog = setTimeout(() => {
+            const clean = (acc || '').replace(/[\u200b\s]/g, '');
+            // 如果已经接收到实质性内容且持续 4 秒没有新的数据/思考事件，自动安全结算结束，坚决不卡住停止按钮！
+            if (clean.length > 10 && !settled) {
+              receivedDone = true;
+              done(() => resolve());
+            }
+          }, 4000);
+        };
 
         ws.onopen = () => {
           acc = ""; // 每次连接重放时从头构建，防止重连造成文本重复叠加
@@ -1808,26 +1828,16 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (data.unauthenticated) { showLoginGate(); done(() => reject(new Error("请先登录"))); return; }
           if (data.idle) { receivedDone = true; done(() => resolve()); return; } // 后台没在跑，当 done 处理
           if (data.meta && data.meta.autoCompacted) {
-            // 同步前端消息数组，避免每轮重复触发压缩
+            // 静默同步前端消息数组，完全不弹 toast 或横条打扰用户
             if (data.meta.compactedMessages && conv) {
               conv.messages = data.meta.compactedMessages;
               saveConversations();
-            }
-            // 限制聊天区域只显示一个提示横条，不重复跳动
-            const chatFeed = $("#chat-feed");
-            if (chatFeed && !document.querySelector('.chat-auto-compact-banner')) {
-              toast(`⚡ 已自动压缩历史上下文（节省 ${data.meta.savedRatio || '75%'} 算力开销）`);
-              const notice = document.createElement("div");
-              notice.className = "chat-auto-compact-banner";
-              notice.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 14px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);border-radius:10px;margin:8px auto;font-size:12px;color:#10b981;max-width:88%;";
-              notice.innerHTML = `<span style="font-size:14px;">⚡</span><span><strong>智能上下文自动压缩</strong>：当前历史记录较长（${data.meta.beforeMsgs}条），系统已自动提炼核心记忆并精简至 ${data.meta.afterMsgs} 条，为您节省了 <strong>~${data.meta.savedRatio || '75%'}</strong> 的 Token 配额！</span>`;
-              if (asstNode && asstNode.row) chatFeed.insertBefore(notice, asstNode.row);
-              else chatFeed.appendChild(notice);
             }
           }
           if (data.meta && data.meta.needsPermission) { needsPerm = true; permMsg = data.error || "CLI 需要授权"; permToolName = data.meta.toolName || ''; permToolInput = data.meta.toolInput || ''; return; }
           if (data.meta && data.meta.quotaExceeded) { streamError = Object.assign(new Error(data.error || "模型配额已用尽"), { quotaExceeded: true }); done(() => reject(streamError)); return; }
           if (data.error) { streamError = new Error(data.error); done(() => reject(streamError)); return; }
+          resetSilenceWatchdog();
           if (data.progress) {
             const tipText = data.tip || "正在思考…";
             const waitText = data.waited ? ` (${data.waited}s)` : "";
@@ -1843,6 +1853,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
             return;
           }
+          resetSilenceWatchdog();
           if (data.delta != null) {
             acc += data.delta;
             asstNode.bubble.innerHTML = formatMarkdown(acc, true);
