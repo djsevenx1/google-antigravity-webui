@@ -123,6 +123,9 @@ const state = {
   codeFile: null
 };
 
+// 客户端多会话后台运行管理器：支持边生成边切走会话
+const activeClientRuns = new Map();
+
 const CONV_KEY = "agy-convs-v2";
 const ACTIVE_KEY = "agy-active-conv-v2";
 
@@ -793,7 +796,8 @@ function renderConvList() {
 
   filtered.forEach((c) => {
     const isCur = c.id === state.activeId;
-    const item = el("div", "session-item" + (isCur ? " active" : ""));
+    const isRunning = activeClientRuns.has(c.id);
+    const item = el("div", "session-item" + (isCur ? " active" : "") + (isRunning ? " running" : ""));
     
     // Top row
     const row = el("div", "session-row");
@@ -801,8 +805,13 @@ function renderConvList() {
     
     // Icon
     const icon = document.createElement("i");
-    icon.setAttribute("data-lucide", isCur ? "message-square-dot" : "message-square");
-    icon.className = "session-icon";
+    if (isRunning) {
+      icon.setAttribute("data-lucide", "loader-2");
+      icon.className = "session-icon spin-icon";
+    } else {
+      icon.setAttribute("data-lucide", isCur ? "message-square-dot" : "message-square");
+      icon.className = "session-icon";
+    }
     
     // Title
     const titleSpan = el("span", "session-title");
@@ -881,15 +890,24 @@ function promptRenameConv(id) {
 }
 
 function selectConv(id) {
-  if (state.streaming) return toast("正在生成中，请等待完成或停止");
   state.activeId = id;
+  state.streaming = activeClientRuns.has(id);
   renderConvList();
   paintActiveConv();
   closeSidebar();
+  updateSendButton();
+  if (!activeClientRuns.has(id)) {
+    tryReconnectToOngoingRun();
+  }
 }
 
 async function deleteConv(id) {
-  if (state.streaming && id === state.activeId) return toast("正在生成中，请先停止");
+  const running = activeClientRuns.get(id);
+  if (running) {
+    if (running.ws) { try { running.ws.close(); } catch (_) {} }
+    if (running.abortCtrl) { running.abortCtrl.abort(); }
+    activeClientRuns.delete(id);
+  }
   const idx = state.conversations.findIndex((c) => c.id === id);
   if (idx === -1) return;
   state.conversations.splice(idx, 1);
@@ -903,10 +921,10 @@ async function deleteConv(id) {
   saveConversations(true);
   renderConvList();
   paintActiveConv();
+  updateSendButton();
 }
 
 function newChat(silent = false) {
-  if (state.streaming && !silent) return toast("正在生成中，请先停止");
   const c = {
     id: "c_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     title: "新对话",
@@ -916,9 +934,11 @@ function newChat(silent = false) {
   };
   state.conversations.unshift(c);
   state.activeId = c.id;
+  state.streaming = false;
   saveConversations();
   renderConvList();
   paintActiveConv();
+  updateSendButton();
   if (!silent) closeSidebar();
   $("#input").focus();
 }
@@ -1093,19 +1113,38 @@ function paintActiveConv() {
   feed.innerHTML = "";
 
   if (!c || !c.messages || c.messages.length === 0) {
-    empty.classList.remove("hidden");
-    feed.classList.add("hidden");
-    return;
+    const running = c ? activeClientRuns.get(c.id) : null;
+    if (!running) {
+      empty.classList.remove("hidden");
+      feed.classList.add("hidden");
+      state.streaming = false;
+      updateSendButton();
+      return;
+    }
   }
 
   empty.classList.add("hidden");
   feed.classList.remove("hidden");
 
-  c.messages.forEach((m) => {
-    appendMsgRow(m.role, m.content, false, m.meta, m.tools);
-  });
+  if (c && c.messages) {
+    c.messages.forEach((m) => {
+      appendMsgRow(m.role, m.content, false, m.meta, m.tools);
+    });
+  }
+
+  if (c) {
+    const running = activeClientRuns.get(c.id);
+    if (running) {
+      const liveNode = appendMsgRow("assistant", running.acc || "", true);
+      running.asstNode = liveNode;
+      state.streaming = true;
+    } else {
+      state.streaming = false;
+    }
+  }
   feed.scrollTop = feed.scrollHeight;
   refreshIcons();
+  updateSendButton();
 }
 
 function appendMsgRow(role, content, isStreaming = false, meta = null, tools = null) {
@@ -1753,6 +1792,19 @@ async function runConversationTurn(text, appendUserMsg = true) {
   let newConvId = null;
   let toolEvents = []; // 收集工具执行事件，刷新后可恢复
 
+  const clientRun = {
+    convId: conv.id,
+    acc: "",
+    toolEvents: toolEvents,
+    asstNode: asstNode,
+    abortCtrl: abortCtrl,
+    ws: null,
+    t0: Date.now(),
+    model: state.selectedModel
+  };
+  activeClientRuns.set(conv.id, clientRun);
+  renderConvList();
+
   let hasError = false;
   let wakeLock = null;
   try {
@@ -1779,6 +1831,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
       const wsUrl = `${proto}//${location.host}/ws/chat`;
       const ws = new WebSocket(wsUrl);
       currentWs = ws;
+      clientRun.ws = ws;
 
       await new Promise((resolve, reject) => {
         let settled = false;
@@ -1788,12 +1841,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (!settled) {
             settled = true;
             if (silenceWatchdog) clearTimeout(silenceWatchdog);
-            state.streaming = false;
-            updateSendButton();
             if (currentWs) {
               try { currentWs.close(); } catch (_) {}
               currentWs = null;
             }
+            clientRun.ws = null;
             fn();
           }
         };
@@ -1815,6 +1867,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
         ws.onopen = () => {
           acc = ""; // 每次连接重放时从头构建，防止重连造成文本重复叠加
+          clientRun.acc = "";
           const effortVal = $("#effort")?.value || "";
           const actualModel = resolveActualModelName(state.selectedModel, effortVal);
           
@@ -1853,19 +1906,28 @@ async function runConversationTurn(text, appendUserMsg = true) {
               toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: tipText, waited: data.waited || 0 });
             }
             const cleanAcc = (acc || "").replace(/​/g, "").trim();
-            if (!cleanAcc) {
-              asstNode.bubble.innerHTML = `
-                <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
-              `;
+            if (!cleanAcc && state.activeId === conv.id) {
+              const targetNode = clientRun.asstNode || asstNode;
+              if (targetNode && targetNode.bubble) {
+                targetNode.bubble.innerHTML = `
+                  <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
+                `;
+              }
             }
             return;
           }
           resetSilenceWatchdog(true);
           if (data.delta != null) {
             acc += data.delta;
-            asstNode.bubble.innerHTML = formatMarkdown(acc, true);
-            refreshIcons();
-            $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
+            clientRun.acc = acc;
+            if (state.activeId === conv.id) {
+              const targetNode = clientRun.asstNode || asstNode;
+              if (targetNode && targetNode.bubble) {
+                targetNode.bubble.innerHTML = formatMarkdown(acc, true);
+                refreshIcons();
+                $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
+              }
+            }
           }
           if (data.conversationId) {
             newConvId = data.conversationId;
@@ -1903,6 +1965,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
       });
 
       currentWs = null;
+      clientRun.ws = null;
       if (streamError) throw streamError;
       if (needsPerm) throw Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput });
       break;
@@ -1919,6 +1982,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsRetry = new WebSocket(`${proto}//${location.host}/ws/chat`);
         currentWs = wsRetry;
+        clientRun.ws = wsRetry;
         try {
           await new Promise((resolve, reject) => {
             let settled2 = false;
@@ -1939,14 +2003,25 @@ async function runConversationTurn(text, appendUserMsg = true) {
               if (data.error) { streamError = new Error(data.error); done2(() => reject(streamError)); return; }
               if (data.progress) {
                 if (data.toolName) toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
-                if (asstNode && !acc.replace(/​/g, '').trim()) {
-                  asstNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(data.tip || '正在续接…')}</span></div>`;
+                if (state.activeId === conv.id) {
+                  const targetNode = clientRun.asstNode || asstNode;
+                  if (targetNode && !acc.replace(/​/g, '').trim()) {
+                    targetNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(data.tip || '正在续接…')}</span></div>`;
+                  }
                 }
                 return;
               }
               if (data.delta != null && data.delta !== '​') {
                 acc += data.delta;
-                if (asstNode) { asstNode.bubble.innerHTML = formatMarkdown(acc, true); refreshIcons(); $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight; }
+                clientRun.acc = acc;
+                if (state.activeId === conv.id) {
+                  const targetNode = clientRun.asstNode || asstNode;
+                  if (targetNode && targetNode.bubble) {
+                    targetNode.bubble.innerHTML = formatMarkdown(acc, true);
+                    refreshIcons();
+                    $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
+                  }
+                }
               }
               if (data.conversationId) { newConvId = data.conversationId; conv.convId = data.conversationId; saveConversations(); }
               if (data.done) { receivedDone = true; done2(() => resolve()); }
@@ -1965,6 +2040,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           // subscribe 也失败了，继续外层 while 循环
         }
         currentWs = null;
+        clientRun.ws = null;
         if (streamError) throw streamError;
         if (receivedDone) break;
         continue;
@@ -1979,8 +2055,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
       } catch (_) {}
 
       hasError = true;
+      const targetNode = clientRun.asstNode || asstNode;
       if (isAbort) {
-        asstNode.bubble.innerHTML = formatMarkdown(acc + "\n\n*(已中止生成)*", false);
+        if (targetNode && targetNode.bubble) targetNode.bubble.innerHTML = formatMarkdown(acc + "\n\n*(已中止生成)*", false);
       } else {
         const isQuotaErr = e.quotaExceeded || /quota|limit reached|upgrade your subscription/i.test(errMsg);
         let errorHtml = "";
@@ -1996,12 +2073,14 @@ async function runConversationTurn(text, appendUserMsg = true) {
         } else {
           errorHtml = `<div class="chat-error-card general-error"><div class="chat-error-title">⚠️ 请求发生错误</div><div class="chat-error-desc">${escapeHtml(errMsg)}</div><div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="retryLastConversationTurn()"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 重试</button></div></div>`;
         }
-        if (acc && acc.replace(/[​\s]/g, "")) {
-          asstNode.bubble.innerHTML = formatMarkdown(acc, false) + errorHtml;
-        } else {
-          asstNode.bubble.innerHTML = errorHtml;
+        if (targetNode && targetNode.bubble) {
+          if (acc && acc.replace(/[​\s]/g, "")) {
+            targetNode.bubble.innerHTML = formatMarkdown(acc, false) + errorHtml;
+          } else {
+            targetNode.bubble.innerHTML = errorHtml;
+          }
+          if (targetNode.row) targetNode.row.className = "message-row error";
         }
-        asstNode.row.className = "message-row error";
         if (e.needsPermission) openPermissionModal(errMsg, text, e.toolName, e.toolInput);
       }
       break;
@@ -2012,17 +2091,22 @@ async function runConversationTurn(text, appendUserMsg = true) {
       try { wakeLock.release().catch(() => {}); } catch (_) {}
       wakeLock = null;
     }
+    activeClientRuns.delete(conv.id);
     abortCtrl = null;
-    state.streaming = false;
-    asstNode.row.classList.remove("streaming");
-    if (!hasError) {
+    state.streaming = activeClientRuns.has(state.activeId);
+    const targetNode = clientRun.asstNode || asstNode;
+    if (targetNode && targetNode.row) targetNode.row.classList.remove("streaming");
+    if (!hasError && state.activeId === conv.id) {
       const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
       const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
       
       // 直接使用当前已同步的配额数据渲染底部栏，0 延迟、0 额外网络开销
-      asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-      refreshIcons();
+      if (targetNode && targetNode.bubble) {
+        targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+        refreshIcons();
+      }
     }
+    renderConvList();
     updateSendButton();
 
     if (conv) {
