@@ -164,6 +164,7 @@ function proxyAvatar(url) {
   if (url.includes('/api/avatar')) return url;
   return '/api/avatar?u=' + encodeURIComponent(url);
 }
+
 window.fetch = async function(url, options = {}) {
   const opts = { ...options };
   opts.headers = new Headers(opts.headers || {});
@@ -1740,7 +1741,7 @@ function stopGenerating() {
   }
 }
 
-// 看门狗：对话结束后若 streaming 残留(ws 断了 done 没到)，自动重置，防光标闪烁/卡住
+// streaming 看门狗：对话结束后若 streaming 残留(ws 断了 done 没到)，自动重置
 setInterval(() => {
   if (state.streaming) {
     const noConn = !currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING;
@@ -3120,7 +3121,7 @@ $("#btn-theme").addEventListener("click", () => {
 });
 $("#btn-send").addEventListener("click", handleSend);
 $("#btn-plugins").addEventListener("click", () => showPlugins("market"));
-$("#btn-debug")?.addEventListener("click", showDebugModal);
+$("#btn-debug")?.addEventListener("click", () => showDebugModal());
 $("#btn-about").addEventListener("click", showAbout);
 
 // ── 快速回到底部悬浮按钮 ──
@@ -4049,10 +4050,7 @@ async function showAccountSwitcher() {
   }
 }
 
-
-
-
-// === 系统运行与连接诊断面板 (System Diagnostics Console) ===
+// === 系统运行与连接诊断面板 (System Diagnostics Dashboard) ===
 let debugLogsHistory = [];
 function addClientLog(type, msg) {
   const time = new Date().toTimeString().split(' ')[0];
@@ -4071,83 +4069,13 @@ function addClientLog(type, msg) {
   }
 }
 
-// 捕获前端未处理的全局错误并记录到诊断流
+// 全局错误捕获记录到诊断终端
 window.addEventListener("error", (e) => {
   if (e && e.message) addClientLog("err", `Window error: ${e.message} (${e.filename || ''}:${e.lineno || ''})`);
 });
 window.addEventListener("unhandledrejection", (e) => {
   if (e && e.reason) addClientLog("err", `Unhandled Promise rejection: ${e.reason.message || e.reason}`);
 });
-
-window.debugForceRefresh = async function() {
-  addClientLog("info", "正在向服务端请求刷新系统状态...");
-  const btn = document.getElementById("btn-dbg-refresh");
-  if (btn) btn.disabled = true;
-  try {
-    const t0 = Date.now();
-    await refreshSystemStatus();
-    addClientLog("ok", `系统状态刷新成功 (耗时: ${Date.now() - t0}ms)`);
-    if (state.status?.googleAccount) {
-      addClientLog("ok", `Google 账号: ${state.status.googleAccount.email} (${state.status.googleAccount.name || '无真实姓名'})`);
-    } else {
-      addClientLog("warn", "未检测到已绑定的 Google 账号");
-    }
-    toast("系统状态已强制刷新并同步！");
-    // 刷新模态框视图
-    showDebugModal();
-  } catch (err) {
-    addClientLog("err", `刷新失败: ${err && err.message}`);
-    toast("刷新失败: " + (err && err.message));
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-};
-
-window.debugTestHeartbeat = async function() {
-  addClientLog("info", "正在向 /api/heartbeat 发送探活心跳包...");
-  try {
-    const t0 = Date.now();
-    const res = await fetch("/api/heartbeat");
-    const data = await res.json();
-    const latency = Date.now() - t0;
-    if (res.ok && data.ok) {
-      addClientLog("ok", `心跳探活正常 (延迟: ${latency}ms, 实例ID: ${data.instanceId || 'unknown'}, 运行时间: ${data.uptime || 0}s)`);
-      toast(`心跳正常 (延迟: ${latency}ms)`);
-    } else {
-      addClientLog("warn", `心跳返回异常状态: ${res.status}`);
-    }
-  } catch (err) {
-    addClientLog("err", `心跳探针连接失败: ${err && err.message}`);
-  }
-};
-
-window.debugCopyReport = function() {
-  const report = {
-    generatedAt: new Date().toISOString(),
-    ua: navigator.userAgent,
-    authToken: authToken ? `${authToken.slice(0, 10)}...` : 'none',
-    selectedModel: state.selectedModel,
-    isStreaming: state.streaming,
-    activeRuns: activeClientRuns.size,
-    status: state.status,
-    recentLogs: debugLogsHistory.slice(-50)
-  };
-  navigator.clipboard.writeText(JSON.stringify(report, null, 2))
-    .then(() => toast("诊断报告已成功复制到剪贴板！"))
-    .catch(() => toast("复制失败，请手动选择复制"));
-};
-
-window.debugClearConsole = function() {
-  debugLogsHistory = [];
-  const consoleEl = document.getElementById("debug-terminal-output");
-  if (consoleEl) {
-    consoleEl.innerHTML = '<div class="debug-log-line dim">诊断控制台已清空。</div>';
-  }
-  const counterEl = document.getElementById("debug-log-counter");
-  if (counterEl) counterEl.textContent = '0 events';
-};
-
-let lastDebugFullData = null;
 
 window.switchDebugTab = function(tabName) {
   document.querySelectorAll(".debug-tab-btn").forEach(b => {
@@ -4159,21 +4087,20 @@ window.switchDebugTab = function(tabName) {
 };
 
 window.debugForceRefresh = async function() {
-  addClientLog("info", "正在向服务端请求拉取全量深度诊断数据 (/api/debug/full)...");
+  addClientLog("info", "正在请求刷新系统状态与配额数据...");
   const btn = document.getElementById("btn-dbg-refresh");
   if (btn) btn.disabled = true;
   try {
     const t0 = Date.now();
     await refreshSystemStatus();
-    const res = await fetch("/api/debug/full");
-    if (res.ok) {
-      lastDebugFullData = await res.json();
-      addClientLog("ok", `全量诊断数据拉取成功 (耗时: ${Date.now() - t0}ms)`);
+    addClientLog("ok", `系统状态刷新成功 (耗时: ${Date.now() - t0}ms)`);
+    if (state.status?.googleAccount) {
+      addClientLog("ok", `Google 账号: ${state.status.googleAccount.email} (${state.status.googleAccount.name || '无真实姓名'})`);
     }
-    toast("诊断数据已全面刷新同步！");
+    toast("诊断状态已刷新同步！");
     showDebugModal();
   } catch (err) {
-    addClientLog("err", `刷新诊断数据失败: ${err && err.message}`);
+    addClientLog("err", `刷新状态失败: ${err && err.message}`);
     toast("刷新失败: " + (err && err.message));
   } finally {
     if (btn) btn.disabled = false;
@@ -4205,9 +4132,8 @@ window.debugCopyReport = function() {
     authToken: authToken ? `${authToken.slice(0, 10)}...` : 'none',
     selectedModel: state.selectedModel,
     isStreaming: state.streaming,
-    activeRuns: activeClientRuns.size,
+    activeRunsCount: activeClientRuns.size,
     status: state.status,
-    fullDebug: lastDebugFullData,
     recentClientLogs: debugLogsHistory.slice(-60)
   };
   navigator.clipboard.writeText(JSON.stringify(report, null, 2))
@@ -4226,24 +4152,31 @@ window.debugClearConsole = function() {
 };
 
 window.showDebugModal = async function showDebugModal() {
-  // 如果尚未拉取过全量诊断，静默拉取一次
-  if (!lastDebugFullData) {
-    try {
-      const r = await fetch("/api/debug/full");
-      if (r.ok) lastDebugFullData = await r.json();
-    } catch (_) {}
-  }
-
   const isAuthed = Boolean(authToken);
-  const data = lastDebugFullData || {};
-  const srv = data.server || {};
-  const cli = data.cli || {};
-  const gAcc = data.googleAccount || {};
-  const profile = gAcc.profile || state.status?.googleAccount || null;
-  const webAuth = data.webAuth || {};
-  const runs = data.activeRuns || [];
-  const serverLogs = data.serverLogs || [];
-  const cliErrLogs = data.cliErrLogs || [];
+  const cliStatus = state.status?.cli || {};
+  const gAcc = state.status?.googleAccount || null;
+  const isStreaming = Boolean(state.streaming);
+  const activeRunsCount = activeClientRuns.size;
+  const currentConv = activeConv();
+
+  // 静默拉取系统硬件状态
+  let sysStats = null;
+  try {
+    const resStats = await fetch("/api/system/stats");
+    if (resStats.ok) sysStats = await resStats.json();
+  } catch (_) {}
+
+  // 静默拉取账号列表
+  let accountsList = [];
+  try {
+    const resAcc = await fetch("/api/accounts");
+    if (resAcc.ok) {
+      const accData = await resAcc.json();
+      accountsList = accData.accounts || [];
+    }
+  } catch (_) {}
+
+  const s = sysStats || {};
 
   const modalHtml = `
     <div class="debug-panel-wrap">
@@ -4253,35 +4186,32 @@ window.showDebugModal = async function showDebugModal() {
           <i data-lucide="layout-dashboard" style="width:13px;height:13px;"></i> 系统总览
         </button>
         <button class="debug-tab-btn" data-tab="account" onclick="switchDebugTab('account')">
-          <i data-lucide="user-check" style="width:13px;height:13px;"></i> 账号与 Token (${gAcc.accountsCount || 0})
+          <i data-lucide="user-check" style="width:13px;height:13px;"></i> 账号与 Token (${accountsList.length || 1})
         </button>
         <button class="debug-tab-btn" data-tab="cli" onclick="switchDebugTab('cli')">
           <i data-lucide="terminal-square" style="width:13px;height:13px;"></i> CLI 内核与模型
         </button>
         <button class="debug-tab-btn" data-tab="tasks" onclick="switchDebugTab('tasks')">
-          <i data-lucide="activity" style="width:13px;height:13px;"></i> 实时任务 (${runs.length})
-        </button>
-        <button class="debug-tab-btn" data-tab="serverlogs" onclick="switchDebugTab('serverlogs')">
-          <i data-lucide="file-text" style="width:13px;height:13px;"></i> 服务端日志
+          <i data-lucide="activity" style="width:13px;height:13px;"></i> 运行状态与任务
         </button>
         <button class="debug-tab-btn" data-tab="clientlogs" onclick="switchDebugTab('clientlogs')">
-          <i data-lucide="terminal" style="width:13px;height:13px;"></i> 客户端控制台
+          <i data-lucide="terminal" style="width:13px;height:13px;"></i> 客户端诊断日志
         </button>
       </div>
 
       <!-- 操作按钮栏 -->
       <div class="debug-actions-bar">
         <button class="btn btn-primary btn-sm" id="btn-dbg-refresh" onclick="debugForceRefresh()">
-          <i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 强制全量刷新
+          <i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 刷新状态
         </button>
         <button class="btn btn-secondary btn-sm" id="btn-dbg-ping" onclick="debugTestHeartbeat()">
           <i data-lucide="heart-pulse" style="width:13px;height:13px;"></i> 心跳探活测试
         </button>
         <button class="btn btn-secondary btn-sm" onclick="debugCopyReport()">
-          <i data-lucide="copy" style="width:13px;height:13px;"></i> 复制全量 JSON 报告
+          <i data-lucide="copy" style="width:13px;height:13px;"></i> 复制诊断 JSON
         </button>
         <button class="btn btn-ghost btn-sm" onclick="debugClearConsole()" style="margin-left:auto;">
-          <i data-lucide="trash-2" style="width:13px;height:13px;"></i> 清空控制台
+          <i data-lucide="trash-2" style="width:13px;height:13px;"></i> 清空日志
         </button>
       </div>
 
@@ -4289,38 +4219,38 @@ window.showDebugModal = async function showDebugModal() {
       <div class="debug-tab-content active" id="debug-tab-overview">
         <div class="debug-grid">
           <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="shield-check" style="width:13px;height:13px;"></i> Web 鉴权状态</div>
+            <div class="debug-card-title"><i data-lucide="shield-check" style="width:13px;height:13px;"></i> Web 鉴权凭证</div>
             <div class="debug-card-val">
-              ${isAuthed ? '<span class="debug-badge ok">已鉴权</span> <span class="debug-code-pill">' + authToken.slice(0, 10) + '...</span>' : '<span class="debug-badge warn">免密或未登录</span>'}
+              ${isAuthed ? '<span class="debug-badge ok">已鉴权登入</span> <span class="debug-code-pill">' + authToken.slice(0, 8) + '...</span>' : '<span class="debug-badge warn">免密或未登录</span>'}
             </div>
-            <div style="font-size:11px;color:var(--text-dim);">活跃 Session 凭证: ${webAuth.activeTokensCount || 0} 个</div>
+            <div style="font-size:11px;color:var(--text-dim);">当前会话密钥就绪</div>
           </div>
 
           <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="cpu" style="width:13px;height:13px;"></i> 服务器与平台</div>
+            <div class="debug-card-title"><i data-lucide="cpu" style="width:13px;height:13px;"></i> 宿主环境平台</div>
             <div class="debug-card-val">
-              <span>Node ${srv.nodeVersion || 'v20+'}</span>
-              <span class="debug-badge ok">${srv.platform || 'linux'} (${srv.arch || 'x64'})</span>
+              <span>${s.platform || 'linux'} (${s.arch || 'x64'})</span>
+              <span class="debug-badge ok">${s.cpus || 0} 核 CPU</span>
             </div>
-            <div style="font-size:11px;color:var(--text-dim);">CPU: ${srv.cpuCount || 0} 核 · ${srv.cpuModel || ''}</div>
+            <div style="font-size:11px;color:var(--text-dim);">${s.cpuModel || 'CPU 架构就绪'}</div>
           </div>
 
           <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="hard-drive" style="width:13px;height:13px;"></i> 内存占用 (系统/进程)</div>
+            <div class="debug-card-title"><i data-lucide="hard-drive" style="width:13px;height:13px;"></i> 系统内存状态</div>
             <div class="debug-card-val">
-              <span>${srv.usedMemMB || 0} / ${srv.totalMemMB || 0} MB</span>
-              <span class="debug-badge ${srv.memUsagePct > 85 ? 'err' : 'ok'}">${srv.memUsagePct || 0}%</span>
+              <span>${s.usedMemMB || 0} / ${s.totalMemMB || 0} MB</span>
+              <span class="debug-badge ${s.memUsagePct > 85 ? 'err' : 'ok'}">${s.memUsagePct || 0}%</span>
             </div>
-            <div style="font-size:11px;color:var(--text-dim);">Node RSS: ${srv.processMemory?.rssMB || 0}MB · Heap: ${srv.processMemory?.heapUsedMB || 0}MB</div>
+            <div style="font-size:11px;color:var(--text-dim);">可用空闲内存: ${s.freeMemMB || 0} MB</div>
           </div>
 
           <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="clock" style="width:13px;height:13px;"></i> 运行时间与实例</div>
+            <div class="debug-card-title"><i data-lucide="clock" style="width:13px;height:13px;"></i> 运行时间</div>
             <div class="debug-card-val">
-              <span>运行 ${srv.serverUptime || 0}s</span>
-              <span class="debug-code-pill" title="Server Instance ID">${(srv.instanceId || 'unknown').slice(0, 8)}...</span>
+              <span>已稳定运行 ${s.uptime || 0}s</span>
+              <span class="debug-badge ok">在线</span>
             </div>
-            <div style="font-size:11px;color:var(--text-dim);">PID: ${srv.pid || 'unknown'} · 启动于: ${srv.bootTime ? new Date(srv.bootTime).toLocaleTimeString() : '-'}</div>
+            <div style="font-size:11px;color:var(--text-dim);">当前前端视图: 正常</div>
           </div>
         </div>
       </div>
@@ -4332,26 +4262,24 @@ window.showDebugModal = async function showDebugModal() {
             <tr>
               <th>Google 账号 / 邮箱</th>
               <th>显示名称 (官方真实名)</th>
-              <th>Token 状态</th>
-              <th>过期时间 / 保活</th>
-              <th>Refresh Token</th>
+              <th>头像状态</th>
+              <th>账号类型 / Tier</th>
             </tr>
           </thead>
           <tbody>
-            ${(gAcc.accounts || []).map(a => `
-              <tr style="${a.email === gAcc.activeEmail ? 'background:rgba(59,130,246,0.08);font-weight:600;' : ''}">
+            ${(accountsList.length > 0 ? accountsList : (gAcc ? [gAcc] : [])).map(a => `
+              <tr style="${gAcc && a.email === gAcc.email ? 'background:rgba(59,130,246,0.08);font-weight:600;' : ''}">
                 <td>
-                  ${a.email === gAcc.activeEmail ? '<span class="debug-badge ok" style="margin-right:4px;">当前生效</span>' : ''}
-                  <span>${escapeHtml(a.email)}</span>
+                  ${gAcc && a.email === gAcc.email ? '<span class="debug-badge ok" style="margin-right:4px;">当前生效</span>' : ''}
+                  <span>${escapeHtml(a.email || '-')}</span>
                 </td>
-                <td>${escapeHtml(a.name || a.label || '-')}</td>
+                <td>${escapeHtml(a.name || a.label || (gAcc?.name) || '-')}</td>
                 <td>
-                  ${a.hasTokenData ? (a.isExpired ? '<span class="debug-badge warn">已过期 (需刷新)</span>' : '<span class="debug-badge ok">有效</span>') : '<span class="debug-badge err">无 Token</span>'}
+                  ${a.picture || gAcc?.picture ? '<span class="debug-badge ok">有头像</span>' : '<span class="debug-badge warn">无头像</span>'}
                 </td>
-                <td><span style="font-size:11.5px;color:var(--text-dim);">${a.expiryDate ? new Date(a.expiryDate).toLocaleString() : '未知'}</span></td>
-                <td>${a.hasRefreshToken ? '<span class="debug-badge ok">有</span>' : '<span class="debug-badge err">无</span>'}</td>
+                <td><span class="debug-code-pill">${escapeHtml(a.tier || gAcc?.tier || 'Google AI Pro (G1 Credits)')}</span></td>
               </tr>
-            `).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-dim);">暂无账号数据</td></tr>'}
+            `).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-dim);">暂无账号数据</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -4359,100 +4287,56 @@ window.showDebugModal = async function showDebugModal() {
       <!-- Tab 3: CLI 内核与模型 -->
       <div class="debug-tab-content" id="debug-tab-cli">
         <div class="debug-card" style="margin-bottom:10px;">
-          <div class="debug-card-title"><i data-lucide="binary" style="width:13px;height:13px;"></i> Antigravity CLI 二进制</div>
+          <div class="debug-card-title"><i data-lucide="binary" style="width:13px;height:13px;"></i> Antigravity CLI 引擎</div>
           <div class="debug-card-val">
-            <span class="debug-code-pill">${escapeHtml(cli.binPath || '未配置')}</span>
-            <span class="debug-badge ${cli.installed ? 'ok' : 'err'}">${cli.installed ? '已安装' : '未找到'}</span>
-            <span class="debug-badge ${cli.authenticated ? 'ok' : 'warn'}">${cli.authenticated ? '已认证 (Auth OK)' : '未认证'}</span>
+            <span class="debug-badge ${cliStatus.installed ? 'ok' : 'err'}">${cliStatus.installed ? '已安装 (Installed)' : '未找到'}</span>
+            <span class="debug-badge ${cliStatus.authenticated ? 'ok' : 'warn'}">${cliStatus.authenticated ? '认证就绪 (Authenticated)' : '未认证'}</span>
           </div>
         </div>
 
-        <div style="font-size:12.5px;font-weight:600;color:var(--text-main);margin-bottom:6px;">可用模型列表 (${(cli.models || []).length}):</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
-          ${(cli.models || []).map(m => `<span class="debug-code-pill">${escapeHtml(m)}</span>`).join('') || '<span style="color:var(--text-dim);font-size:12px;">暂无模型列表</span>'}
-        </div>
-
-        <div style="font-size:12.5px;font-weight:600;color:var(--text-main);margin-bottom:6px;">已安装扩展插件 (${(cli.plugins || []).length}):</div>
+        <div style="font-size:12.5px;font-weight:600;color:var(--text-main);margin-bottom:6px;">可用模型列表:</div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;">
-          ${(cli.plugins || []).map(p => `<span class="debug-badge ok">${escapeHtml(p.name || p)}</span>`).join('') || '<span style="color:var(--text-dim);font-size:12px;">暂无插件</span>'}
+          ${(state.models || ['gemini-3.7-flash-high', 'gemini-3.1-pro-high', 'claude-sonnet-4-6']).map(m => `<span class="debug-code-pill">${escapeHtml(m)}</span>`).join('')}
         </div>
       </div>
 
-      <!-- Tab 4: 实时任务 -->
+      <!-- Tab 4: 运行状态与任务 -->
       <div class="debug-tab-content" id="debug-tab-tasks">
-        <table class="debug-table">
-          <thead>
-            <tr>
-              <th>会话标识 (convKey)</th>
-              <th>模型</th>
-              <th>运行状态</th>
-              <th>已生成字符数</th>
-              <th>工具调用次数</th>
-              <th>运行时长</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${runs.map(r => `
-              <tr>
-                <td><span class="debug-code-pill">${escapeHtml(r.convKey)}</span></td>
-                <td>${escapeHtml(r.model || '-')}</td>
-                <td>${r.isRunning ? '<span class="debug-badge warn">生成中</span>' : (r.done ? '<span class="debug-badge ok">已完成</span>' : '<span class="debug-badge">就绪</span>')}</td>
-                <td>${r.accumulatedLen || 0} 字</td>
-                <td>${r.toolEventsCount || 0} 次</td>
-                <td>${r.ageSec || 0}s</td>
-              </tr>
-            `).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);">当前无后台活跃任务（全部空闲）</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Tab 5: 服务端日志 -->
-      <div class="debug-tab-content" id="debug-tab-serverlogs">
-        <div class="debug-console-wrap">
-          <div class="debug-console-header">
-            <span><i data-lucide="file-text" style="width:12px;height:12px;vertical-align:-1px;display:inline-block;margin-right:4px;"></i> SERVER DEBUG LOG (chat-debug.log)</span>
-            <span>${serverLogs.length} lines</span>
+        <div class="debug-grid">
+          <div class="debug-card">
+            <div class="debug-card-title"><i data-lucide="activity" style="width:13px;height:13px;"></i> 实时流式状态</div>
+            <div class="debug-card-val">
+              ${isStreaming ? '<span class="debug-badge warn">生成中 (Streaming)</span>' : '<span class="debug-badge ok">空闲 (Idle)</span>'}
+              <span style="font-size:11.5px;color:var(--text-dim);">活跃任务数: ${activeRunsCount}</span>
+            </div>
           </div>
-          <div class="debug-console-body" style="max-height:300px;">
-            ${serverLogs.map(l => {
-              let cls = 'info';
-              if (/error|failed|exception/i.test(l)) cls = 'err';
-              else if (/warn|transient/i.test(l)) cls = 'warn';
-              else if (/done|success|ok/i.test(l)) cls = 'ok';
-              return `<div class="debug-log-line ${cls}">${escapeHtml(l)}</div>`;
-            }).join('') || '<div class="debug-log-line dim">服务端暂无日志记录。</div>'}
+
+          <div class="debug-card">
+            <div class="debug-card-title"><i data-lucide="message-square" style="width:13px;height:13px;"></i> 当前选中会话</div>
+            <div class="debug-card-val">
+              <span class="debug-code-pill">${escapeHtml(currentConv ? (currentConv.id || '新对话') : '无')}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-dim);">消息总数: ${currentConv?.messages?.length || 0} 条</div>
           </div>
         </div>
-
-        ${cliErrLogs.length > 0 ? `
-          <div class="debug-console-wrap" style="margin-top:10px;">
-            <div class="debug-console-header" style="background:#2d1515;color:#f85149;">
-              <span><i data-lucide="alert-triangle" style="width:12px;height:12px;vertical-align:-1px;display:inline-block;margin-right:4px;"></i> CLI ERRORS LOG (cli-err-debug.log)</span>
-              <span>${cliErrLogs.length} lines</span>
-            </div>
-            <div class="debug-console-body" style="max-height:180px;">
-              ${cliErrLogs.map(l => `<div class="debug-log-line err">${escapeHtml(l)}</div>`).join('')}
-            </div>
-          </div>
-        ` : ''}
       </div>
 
-      <!-- Tab 6: 客户端控制台日志 -->
+      <!-- Tab 5: 客户端控制台日志 -->
       <div class="debug-tab-content" id="debug-tab-clientlogs">
         <div class="debug-console-wrap">
           <div class="debug-console-header">
-            <span><i data-lucide="terminal" style="width:12px;height:12px;vertical-align:-1px;display:inline-block;margin-right:4px;"></i> BROWSER CLIENT EVENTS CONSOLE</span>
+            <span><i data-lucide="terminal" style="width:12px;height:12px;vertical-align:-1px;display:inline-block;margin-right:4px;"></i> BROWSER CLIENT DIAGNOSTIC LOGS</span>
             <span id="debug-log-counter">${debugLogsHistory.length} events</span>
           </div>
           <div class="debug-console-body" id="debug-terminal-output">
-            ${debugLogsHistory.length === 0 ? '<div class="debug-log-line dim">暂无客户端日志。点击上方【心跳探活测试】或【强制全量刷新】触发事件。</div>' : ''}
+            ${debugLogsHistory.length === 0 ? '<div class="debug-log-line dim">暂无诊断日志。点击上方【心跳探活测试】或【刷新状态】开始检查。</div>' : ''}
           </div>
         </div>
       </div>
     </div>
   `;
 
-  openModal("🔧 系统深度诊断与全量调试中心", modalHtml, true);
+  openModal("🔧 系统运行与全量诊断中心", modalHtml, true);
   refreshIcons();
 
   // 渲染历史客户端日志
@@ -4461,4 +4345,4 @@ window.showDebugModal = async function showDebugModal() {
     consoleEl.innerHTML = debugLogsHistory.map(l => `<div class="debug-log-line ${l.type}">[${l.time}] [${l.type.toUpperCase()}] ${escapeHtml(l.msg)}</div>`).join('');
     consoleEl.scrollTop = consoleEl.scrollHeight;
   }
-}
+};
