@@ -666,6 +666,13 @@ html, body {
   display: block !important;
 }
 
+/* 当「显示思考与工具」关闭时，隐藏工具块与思考块 */
+body.hide-thinking-tools .tool-event-box,
+body.hide-thinking-tools .thinking-block,
+body.hide-thinking-tools .thinking-active-indicator {
+  display: none !important;
+}
+
 .thinking-active-indicator {
   display: inline-flex !important;
   align-items: center;
