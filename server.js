@@ -1330,10 +1330,16 @@ app.post('/api/chat/abort', (req, res) => {
   const { conversationKey, conversationId } = req.body || {};
   const key = conversationKey || conversationId;
   const run = key ? activeRuns.get(key) : null;
-  if (run && run.isRunning) {
+  if (run) {
     debugLog(`[api/chat/abort] user aborted run for ${key}`);
     try { run.abortController.abort(); } catch (_) {}
     run.isRunning = false;
+    run.done = true;
+    for (const l of run.listeners) {
+      try { l('data: {"done":true,"aborted":true}\n\n'); } catch (_) {}
+      try { l.end?.(); } catch (_) {}
+    }
+    activeRuns.delete(key);
   }
   send(res, 200, { ok: true });
 });
@@ -1743,6 +1749,24 @@ wss.on('connection', (ws, req) => {
 
     const { model, messages, effort, permissions, conversationKey, conversationId: clientConvId } = body;
     const permRaw = String(permissions || '').trim().toLowerCase();
+
+    // ── abort 模式：用户主动点击停止，立即强制终止底层 CLI 进程并清理 activeRuns ──
+    if (body.action === 'abort' || body.type === 'abort') {
+      const convKey = conversationKey || clientConvId || body.conversationId || 'default-chat';
+      const run = activeRuns.get(convKey);
+      if (run) {
+        debugLog(`[ws/chat] user aborted run for ${convKey}`);
+        try { run.abortController.abort(); } catch (_) {}
+        run.isRunning = false;
+        run.done = true;
+        for (const l of run.listeners) {
+          try { l('data: {"done":true,"aborted":true}\n\n'); } catch (_) {}
+        }
+        activeRuns.delete(convKey);
+      }
+      try { ws.send(JSON.stringify({ done: true, aborted: true })); } catch (_) {}
+      return;
+    }
 
     // ── subscribe 模式：刷新/重开/切回页面后，前端请求挂接到后台任务，自动回放已生成及正在生成的全部流式内容 ──
     if (body.action === 'subscribe' && conversationKey) {
