@@ -2003,7 +2003,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (silenceWatchdog) clearTimeout(silenceWatchdog);
           silenceWatchdog = setTimeout(() => {
             const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
-            if (currentClean.length > 5 && !settled) {
+            if (currentClean.length > 0 && !settled) {
               receivedDone = true;
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode) {
@@ -2017,7 +2017,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
               }
               done(() => resolve());
             }
-          }, 1500);
+          }, 1000);
         };
 
         ws.onopen = () => {
