@@ -4225,7 +4225,7 @@ window.debugClearConsole = function() {
   if (counterEl) counterEl.textContent = '0 events';
 };
 
-async function showDebugModal() {
+window.showDebugModal = async function showDebugModal() {
   // 如果尚未拉取过全量诊断，静默拉取一次
   if (!lastDebugFullData) {
     try {
