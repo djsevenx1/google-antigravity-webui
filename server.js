@@ -1446,6 +1446,119 @@ app.get('/api/system/stats', (_req, res) => {
   }).catch((e) => send(res, 500, { error: e.message }));
 });
 
+// ---------- 全量深度诊断数据接口 ----------
+app.get('/api/debug/full', async (req, res) => {
+  try {
+    const os = await import('node:os');
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+    const memUsage = process.memoryUsage();
+    
+    // CLI 状态
+    const cliInstalled = cliAvailable();
+    const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
+    let modelsList = [];
+    try { modelsList = await fetchModels(); } catch (_) {}
+    let pluginsResult = { plugins: [] };
+    try { pluginsResult = await listPlugins(); } catch (_) {}
+
+    // Google 账号状态
+    const accounts = listAccounts();
+    const activeEmail = (await getActiveAccountEmail()) || cachedGoogleProfile?.email || (accounts[0]?.email);
+
+    // 活跃任务
+    const runs = [];
+    for (const [key, r] of activeRuns.entries()) {
+      runs.push({
+        convKey: key,
+        isRunning: r.isRunning,
+        done: r.done,
+        model: r.model,
+        accumulatedLen: (r.accumulated || '').length,
+        toolEventsCount: (r.toolEvents || []).length,
+        listenersCount: r.listeners ? r.listeners.size : 0,
+        ageSec: Math.round((Date.now() - r.startTime) / 1000)
+      });
+    }
+
+    // 读取服务端调试日志
+    let serverLogs = [];
+    try {
+      if (fs.existsSync(DEBUG_LOG)) {
+        const lines = fs.readFileSync(DEBUG_LOG, 'utf8').trim().split('\n').filter(Boolean);
+        serverLogs = lines.slice(-60);
+      }
+    } catch (_) {}
+
+    // 读取 CLI 错误日志
+    let cliErrLogs = [];
+    try {
+      const cliErrPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'cli-err-debug.log');
+      if (fs.existsSync(cliErrPath)) {
+        const lines = fs.readFileSync(cliErrPath, 'utf8').trim().split('\n').filter(Boolean);
+        cliErrLogs = lines.slice(-60);
+      }
+    } catch (_) {}
+
+    send(res, 200, {
+      ok: true,
+      timestamp: Date.now(),
+      server: {
+        nodeVersion: process.version,
+        platform: os.platform(),
+        arch: os.arch(),
+        pid: process.pid,
+        instanceId: SERVER_INSTANCE_ID,
+        bootTime: SERVER_BOOT_TIME,
+        serverUptime: Math.floor(process.uptime()),
+        systemUptime: Math.floor(os.uptime()),
+        cpuCount: os.cpus().length,
+        cpuModel: os.cpus()[0]?.model || 'Unknown',
+        totalMemMB: Math.round(totalMem / (1024 * 1024)),
+        usedMemMB: Math.round(usedMem / (1024 * 1024)),
+        freeMemMB: Math.round(freeMem / (1024 * 1024)),
+        memUsagePct: Math.round((usedMem / totalMem) * 100),
+        processMemory: {
+          rssMB: Math.round(memUsage.rss / (1024 * 1024)),
+          heapTotalMB: Math.round(memUsage.heapTotal / (1024 * 1024)),
+          heapUsedMB: Math.round(memUsage.heapUsed / (1024 * 1024))
+        }
+      },
+      cli: {
+        binPath: bin(),
+        installed: cliInstalled,
+        authenticated: cliAuthed,
+        models: modelsList,
+        plugins: pluginsResult.plugins || []
+      },
+      googleAccount: {
+        activeEmail,
+        profile: cachedGoogleProfile,
+        accountsCount: accounts.length,
+        accounts: accounts.map(a => ({
+          email: a.email,
+          name: a.name || a.label || '',
+          label: a.label || '',
+          hasTokenData: Boolean(a.tokenData?.token?.access_token),
+          hasRefreshToken: Boolean(a.tokenData?.token?.refresh_token),
+          expiryDate: a.tokenData?.token?.expiry_date ? new Date(a.tokenData.token.expiry_date).toISOString() : null,
+          isExpired: a.tokenData?.token?.expiry_date ? (Date.now() >= a.tokenData.token.expiry_date) : false
+        }))
+      },
+      webAuth: {
+        activeTokensCount: activeAuthTokens.size,
+        hasSession: Boolean(req.session?.authToken)
+      },
+      activeRuns: runs,
+      serverLogs,
+      cliErrLogs
+    });
+  } catch (err) {
+    send(res, 500, { ok: false, error: err.message });
+  }
+});
+
 // ---------- Static / SPA (Zero Cache for Mobile & Desktop) ----------
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
