@@ -301,7 +301,7 @@ app.post('/api/debug-log', (req, res) => {
 
 // 对其余所有 /api 接口强制鉴权
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/web-auth') || req.path === '/debug-log') {
+  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/heartbeat' || req.path === '/avatar') {
     return next();
   }
   return requireWebAuth(req, res, next);
@@ -504,6 +504,16 @@ app.get('/api/avatar', async (req, res) => {
     res.set('Cache-Control', 'public, max-age=86400');
     res.send(buf);
   } catch(e) { res.status(502).end(); }
+});
+
+app.get('/api/debug-log', async (req, res) => {
+  const type = req.query.type || 'server';
+  try {
+    const logFile = type === 'chat' ? 'chat-debug.log' : 'server.log';
+    const data = await readFile(path.join(__dirname, logFile));
+    const lines = data.toString().split('\n').filter(Boolean).slice(-50);
+    send(res, 200, { lines });
+  } catch(e) { send(res, 200, { lines: ['[read failed: ' + e.message + ']'] }); }
 });
 
 app.get('/api/heartbeat', (req, res) => { send(res, 200, { ok: true, ts: Date.now(), uptime: Date.now() - (globalThis.__boot || Date.now()) }); });
