@@ -3,10 +3,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# 设独立 HOME：让 agy 读取本目录 home/ 下的登录态与对话历史，脱离 vol5 原 HOME
+export HOME="$(pwd)/home"
+
 # 1) 检查 CLI
 AGY_BIN="${AGY_BIN:-}"
 if [ -z "$AGY_BIN" ]; then
-  for cand in "$(command -v antigravity || true)" /usr/local/bin/antigravity "$HOME/.local/bin/antigravity"; do
+  for cand in "$(pwd)/bin/antigravity" "$(pwd)/bin/agy" "$(command -v antigravity || true)" /usr/local/bin/antigravity "$HOME/.local/bin/antigravity"; do
     if [ -n "$cand" ] && [ -x "$cand" ]; then AGY_BIN="$cand"; break; fi
   done
 fi

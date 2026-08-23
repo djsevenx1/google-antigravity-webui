@@ -24,5 +24,10 @@ add-*.cjs
 update-*.cjs
 finalize-*.cjs
 
-# OS files
+# OS & Backups
 .DS_Store
+backups/
+bin/
+home/
+*.apk
+*.bak.*
