@@ -1727,11 +1727,11 @@ let pendingAttachments = null; // 待发送的附件 [{path, name, mimeType, siz
 function updateSendButton() {
   const btn = $("#btn-send");
   const icon = $("#send-icon");
-  // 严格校准 streaming 状态：若无运行中任务，强制重置
-  if (activeClientRuns.size === 0 && !currentWs) {
-    state.streaming = false;
-  }
-  if (state.streaming) {
+  const hasStreamingRow = Boolean($("#chat-feed")?.querySelector(".message-row.assistant.streaming"));
+  const isStreaming = Boolean(state.streaming || activeClientRuns.size > 0 || currentWs || hasStreamingRow);
+  state.streaming = isStreaming;
+
+  if (isStreaming) {
     btn.classList.add("stop");
     btn.title = "停止生成";
     icon.setAttribute("data-lucide", "square");
@@ -1769,7 +1769,8 @@ function stopGenerating() {
 // 自动看门狗：如果当前没有任何活跃 WebSocket 连接和后台任务，坚决不允许 UI 卡在停止按钮状态
 setInterval(() => {
   if (state.streaming) {
-    if (activeClientRuns.size === 0 && (!currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING)) {
+    const hasStreamingRow = Boolean($("#chat-feed")?.querySelector(".message-row.assistant.streaming"));
+    if (!hasStreamingRow && activeClientRuns.size === 0 && (!currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING)) {
       state.streaming = false;
       updateSendButton();
     }
@@ -3450,6 +3451,7 @@ function tryReconnectToOngoingRun() {
 
     if (data.idle) {
       activeClientRuns.delete(conv.id);
+      if (currentWs === ws) currentWs = null;
       state.streaming = false;
       updateSendButton();
       try { ws.close(); } catch (_) {}
@@ -3469,6 +3471,7 @@ function tryReconnectToOngoingRun() {
     if (!reconnected && (data.progress || data.delta || data.error)) {
       reconnected = true;
       state.streaming = true;
+      currentWs = ws;
       updateSendButton();
 
       $("#chat-empty")?.classList.add("hidden");
@@ -3489,6 +3492,7 @@ function tryReconnectToOngoingRun() {
 
     if (data.error) {
       activeClientRuns.delete(conv.id);
+      if (currentWs === ws) currentWs = null;
       if (asstNode) {
         asstNode.bubble.innerHTML = formatMarkdown(data.error, false);
         if (asstNode.row) asstNode.row.className = 'message-row error';
@@ -3541,6 +3545,7 @@ function tryReconnectToOngoingRun() {
 
     if (data.done) {
       activeClientRuns.delete(conv.id);
+      if (currentWs === ws) currentWs = null;
       if (asstNode && asstNode.bubble) {
         const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
@@ -3565,6 +3570,7 @@ function tryReconnectToOngoingRun() {
   };
 
   ws.onclose = () => {
+    if (currentWs === ws) currentWs = null;
     state.streaming = activeClientRuns.has(conv.id);
     updateSendButton();
   };
