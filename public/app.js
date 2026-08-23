@@ -453,6 +453,73 @@ function toast(msg, ms = 2800) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
 }
 
+// ── 服务器重启与网络连接状态智能感知监控器 ──
+let lastServerInstanceId = null;
+let isServerDown = false;
+let heartbeatTimer = null;
+let failedHeartbeats = 0;
+
+function showReconnectBanner(text) {
+  const banner = $("#reconnect-banner");
+  const textEl = $("#reconnect-text");
+  if (banner && textEl) {
+    textEl.textContent = text || "🔄 检测到服务器正在重启中，正在自动重连...";
+    banner.classList.remove("hidden");
+  }
+}
+
+function hideReconnectBanner() {
+  const banner = $("#reconnect-banner");
+  if (banner) banner.classList.add("hidden");
+}
+
+async function checkServerHeartbeat() {
+  try {
+    const res = await _origFetch("/api/heartbeat", { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error("status " + res.status);
+    const data = await res.json();
+    failedHeartbeats = 0;
+
+    if (data && data.instanceId) {
+      if (lastServerInstanceId && lastServerInstanceId !== data.instanceId) {
+        // 检测到服务器完成了一次重启
+        toast("⚡ 服务器已完成重启，连接与状态已自动同步！", 3500);
+        // 自动静默拉取并刷新最新状态，无需手动刷新网页
+        refreshSystemStatus().catch(() => {});
+        updateUsageSummary().catch(() => {});
+      } else if (isServerDown) {
+        // 连接断开后重新连上
+        toast("✅ 已恢复与服务器的实时连接", 2500);
+        refreshSystemStatus().catch(() => {});
+      }
+      lastServerInstanceId = data.instanceId;
+    }
+
+    if (isServerDown) {
+      isServerDown = false;
+      hideReconnectBanner();
+    }
+  } catch (err) {
+    failedHeartbeats++;
+    // 连续失败 2 次判定为断连/重启中
+    if (failedHeartbeats >= 2 && !isServerDown) {
+      isServerDown = true;
+      showReconnectBanner("🔄 检测到服务器正在重启中，正在自动重连...");
+    }
+  }
+}
+
+function startServerHeartbeatWatcher() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  checkServerHeartbeat();
+  heartbeatTimer = setInterval(checkServerHeartbeat, 3500);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkServerHeartbeat();
+  });
+  window.addEventListener("online", checkServerHeartbeat);
+}
+
 // Modal Control
 function openModal(title, bodyHTML, isLarge = false) {
   $("#modal-title").innerHTML = title;
@@ -3316,9 +3383,10 @@ function updateUserAvatarsInFeed() {
 
 async function refreshSystemStatus() {
   try {
-    const res = await fetch("/api/status");
+    const res = await _origFetch("/api/status");
     const d = await res.json();
     state.status = d;
+    if (d && d.instanceId) lastServerInstanceId = d.instanceId;
     try { localStorage.setItem("agy-cached-status", JSON.stringify(d)); } catch (_) {}
     renderLoginArea();
     updateUserAvatarsInFeed();
@@ -3383,6 +3451,7 @@ async function initApp() {
     .then(d => {
       if (d && d.ok) {
         hideLoginGate();
+        if (d.instanceId) lastServerInstanceId = d.instanceId;
         if (d.status) {
           state.status = d.status;
           try { localStorage.setItem("agy-cached-status", JSON.stringify(d.status)); } catch (_) {}
@@ -3453,6 +3522,9 @@ async function initApp() {
       }
     })
   ]).catch(() => {});
+
+  // 启动服务器重启与断连秒级心跳感知
+  startServerHeartbeatWatcher();
 }
 
 try { initApp(); } catch (e) { console.error('[boot] initApp error:', e); }
