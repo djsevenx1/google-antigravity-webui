@@ -46,9 +46,8 @@ function buildLiveWindowsData() {
     const gWeeklyPct = geminiWeeklyB ? parseFloat((geminiWeeklyB.remainingFraction * 100).toFixed(1)) : 17.1;
     const g5hPct = gemini5hB ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 65.3;
 
-    // 官方反重力 2.0 规范：Free Tier 免费层下，第三方模型 (Claude/GPT) 周配额显示 0% (已达周上限)
-    // 官方反重力 2.0 规范：三方模型 (Claude/GPT) 周配额显示 0% (已达周上限)，随周周期刷新
-    const cWeeklyPct = 0;
+    // 使用官方返回的真实 Claude/GPT 周配额数据（不再强制写 0）
+    const cWeeklyPct = claudeWeeklyB ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 100;
     const c5hPct = claude5hB ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100;
 
     return {
@@ -134,8 +133,6 @@ import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } f
 import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, ensurePrimaryAccount } from './lib/accounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BOOT_TIME = Date.now();
-const SERVER_INSTANCE_ID = crypto.randomUUID();
 const app = express();
 
 app.use(express.json());
@@ -302,20 +299,9 @@ app.post('/api/debug-log', (req, res) => {
   send(res, 200, { ok: true });
 });
 
-// 轻量心跳与服务重启探针（无需鉴权，供前端秒级感知连接中断与服务重启事件）
-app.get('/api/heartbeat', (req, res) => {
-  send(res, 200, {
-    ok: true,
-    bootTime: SERVER_BOOT_TIME,
-    instanceId: SERVER_INSTANCE_ID,
-    uptime: Math.floor(process.uptime()),
-    ts: Date.now()
-  });
-});
-
 // 对其余所有 /api 接口强制鉴权
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/heartbeat' || req.path === '/avatar') {
+  if (req.path.startsWith('/web-auth') || req.path === '/debug-log') {
     return next();
   }
   return requireWebAuth(req, res, next);
@@ -520,13 +506,14 @@ app.get('/api/avatar', async (req, res) => {
   } catch(e) { res.status(502).end(); }
 });
 
+app.get('/api/heartbeat', (req, res) => { send(res, 200, { ok: true, ts: Date.now(), uptime: Date.now() - (globalThis.__boot || Date.now()) }); });
+
 app.get('/api/status', async (req, res) => {
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
   if (!cachedGoogleProfile || cachedGoogleProfile.isMock || (Date.now() - profileFetchedAt > 300000)) {
     await refreshGoogleProfileInBackground().catch(() => {});
   }
-  // 把 Google 头像 URL 转成服务器代理 URL(手机无法直连 Google)
   const ga = cachedGoogleProfile ? { ...cachedGoogleProfile, picture: cachedGoogleProfile.picture ? ('/api/avatar?u=' + encodeURIComponent(cachedGoogleProfile.picture)) : cachedGoogleProfile.picture } : null;
   send(res, 200, {
     oauthConfigured: config.oauthConfigured,
@@ -1444,119 +1431,6 @@ app.get('/api/system/stats', (_req, res) => {
       memUsagePct: Math.round((usedMem / totalMem) * 100)
     });
   }).catch((e) => send(res, 500, { error: e.message }));
-});
-
-// ---------- 全量深度诊断数据接口 ----------
-app.get('/api/debug/full', async (req, res) => {
-  try {
-    const os = await import('node:os');
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const usedMem = totalMem - freeMem;
-    const memUsage = process.memoryUsage();
-    
-    // CLI 状态
-    const cliInstalled = cliAvailable();
-    const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
-    let modelsList = [];
-    try { modelsList = await fetchModels(); } catch (_) {}
-    let pluginsResult = { plugins: [] };
-    try { pluginsResult = await listPlugins(); } catch (_) {}
-
-    // Google 账号状态
-    const accounts = listAccounts();
-    const activeEmail = (await getActiveAccountEmail()) || cachedGoogleProfile?.email || (accounts[0]?.email);
-
-    // 活跃任务
-    const runs = [];
-    for (const [key, r] of activeRuns.entries()) {
-      runs.push({
-        convKey: key,
-        isRunning: r.isRunning,
-        done: r.done,
-        model: r.model,
-        accumulatedLen: (r.accumulated || '').length,
-        toolEventsCount: (r.toolEvents || []).length,
-        listenersCount: r.listeners ? r.listeners.size : 0,
-        ageSec: Math.round((Date.now() - r.startTime) / 1000)
-      });
-    }
-
-    // 读取服务端调试日志
-    let serverLogs = [];
-    try {
-      if (fs.existsSync(DEBUG_LOG)) {
-        const lines = fs.readFileSync(DEBUG_LOG, 'utf8').trim().split('\n').filter(Boolean);
-        serverLogs = lines.slice(-60);
-      }
-    } catch (_) {}
-
-    // 读取 CLI 错误日志
-    let cliErrLogs = [];
-    try {
-      const cliErrPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'cli-err-debug.log');
-      if (fs.existsSync(cliErrPath)) {
-        const lines = fs.readFileSync(cliErrPath, 'utf8').trim().split('\n').filter(Boolean);
-        cliErrLogs = lines.slice(-60);
-      }
-    } catch (_) {}
-
-    send(res, 200, {
-      ok: true,
-      timestamp: Date.now(),
-      server: {
-        nodeVersion: process.version,
-        platform: os.platform(),
-        arch: os.arch(),
-        pid: process.pid,
-        instanceId: SERVER_INSTANCE_ID,
-        bootTime: SERVER_BOOT_TIME,
-        serverUptime: Math.floor(process.uptime()),
-        systemUptime: Math.floor(os.uptime()),
-        cpuCount: os.cpus().length,
-        cpuModel: os.cpus()[0]?.model || 'Unknown',
-        totalMemMB: Math.round(totalMem / (1024 * 1024)),
-        usedMemMB: Math.round(usedMem / (1024 * 1024)),
-        freeMemMB: Math.round(freeMem / (1024 * 1024)),
-        memUsagePct: Math.round((usedMem / totalMem) * 100),
-        processMemory: {
-          rssMB: Math.round(memUsage.rss / (1024 * 1024)),
-          heapTotalMB: Math.round(memUsage.heapTotal / (1024 * 1024)),
-          heapUsedMB: Math.round(memUsage.heapUsed / (1024 * 1024))
-        }
-      },
-      cli: {
-        binPath: bin(),
-        installed: cliInstalled,
-        authenticated: cliAuthed,
-        models: modelsList,
-        plugins: pluginsResult.plugins || []
-      },
-      googleAccount: {
-        activeEmail,
-        profile: cachedGoogleProfile,
-        accountsCount: accounts.length,
-        accounts: accounts.map(a => ({
-          email: a.email,
-          name: a.name || a.label || '',
-          label: a.label || '',
-          hasTokenData: Boolean(a.tokenData?.token?.access_token),
-          hasRefreshToken: Boolean(a.tokenData?.token?.refresh_token),
-          expiryDate: a.tokenData?.token?.expiry_date ? new Date(a.tokenData.token.expiry_date).toISOString() : null,
-          isExpired: a.tokenData?.token?.expiry_date ? (Date.now() >= a.tokenData.token.expiry_date) : false
-        }))
-      },
-      webAuth: {
-        activeTokensCount: activeAuthTokens.size,
-        hasSession: Boolean(req.session?.authToken)
-      },
-      activeRuns: runs,
-      serverLogs,
-      cliErrLogs
-    });
-  } catch (err) {
-    send(res, 500, { ok: false, error: err.message });
-  }
 });
 
 // ---------- Static / SPA (Zero Cache for Mobile & Desktop) ----------

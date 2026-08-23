@@ -156,6 +156,26 @@ function refreshIcons() {
 let authToken = localStorage.getItem("agy-auth-token") || sessionStorage.getItem("agy-auth-token") || "";
 
 // 全局 Fetch 拦截器：自动携带鉴权 Token 并捕获 401 未认证状态
+function silentSyncActiveConversation() {} // 兼容占位
+// 通用复制函数(HTTP/HTTPS 都能用)
+window.__copyToClipboard = function(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return __copyToClipboard(text);
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      resolve();
+    } catch(e) { reject(e); }
+  });
+};
+
 const _origFetch = window.fetch;
 
 // 头像代理：把 Google 图片 URL 转成服务器代理 URL(手机无法直连 Google)
@@ -1107,7 +1127,7 @@ window.copyCodeFromBlock = function(btn) {
   const code = wrapper.querySelector("code");
   if (!code) return;
   const text = code.innerText || code.textContent;
-  navigator.clipboard.writeText(text).then(() => {
+  (navigator.clipboard ? __copyToClipboard(text) : Promise.reject('no clipboard')).then(() => {
     btn.innerHTML = `<i data-lucide="check" style="width:12px;height:12px;color:var(--success);"></i> 已复制`;
     refreshIcons();
     setTimeout(() => {
@@ -2979,9 +2999,9 @@ async function showUsageModal(manualRefresh = false) {
 
     // Render Claude & GPT 5h & Weekly Windows (100% 像素级对齐反重力 2.0 官方客户端)
     const winClaude5h = win.claude5h || { percent: 100, resetsIn: "4小时 59分钟" };
-    const winClaudeWeekly = win.claudeWeekly || { percent: 0, resetsIn: winWeekly.resetsIn };
+    const winClaudeWeekly = win.claudeWeekly || { percent: 100, resetsIn: winWeekly.resetsIn };
 
-    const isClaudeWeeklyHit = winClaudeWeekly.percent === 0;
+    const isClaudeWeeklyHit = winClaudeWeekly.percent <= 0;
 
     if ($("#win-percent-claude5h")) {
       $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100%" : `${winClaude5h.percent}%`;
@@ -4136,7 +4156,8 @@ window.debugCopyReport = function() {
     status: state.status,
     recentClientLogs: debugLogsHistory.slice(-60)
   };
-  navigator.clipboard.writeText(JSON.stringify(report, null, 2))
+  const _clipText = JSON.stringify(report, null, 2);
+  (__copyToClipboard(_clipText))
     .then(() => toast("全量诊断报告已成功复制到剪贴板！"))
     .catch(() => toast("复制失败，请手动选择复制"));
 };
