@@ -1747,27 +1747,17 @@ function updateSendButton() {
 }
 
 function stopGenerating() {
-  if (currentWs) { try { currentWs.close(); } catch (_) {} currentWs = null; }
   if (abortCtrl) {
     try { abortCtrl.abort(); } catch (_) {}
-    abortCtrl = null;
   }
-  activeClientRuns.clear();
+  if (currentWs) { try { currentWs.close(); } catch (_) {} currentWs = null; }
+
+  // 立即更新发送按钮状态
   state.streaming = false;
   updateSendButton();
-  // 清除思考动画:把最后一个助手气泡的思考指示器去掉
+
   const conv = activeConv();
   if (conv) {
-    const lastMsg = conv.messages[conv.messages.length - 1];
-    if (lastMsg && lastMsg.role === 'assistant') {
-      // 如果没有实质内容,移除这条空助手消息
-      if (!lastMsg.content || !lastMsg.content.replace(/\u200b/g,'').trim()) {
-        conv.messages.pop();
-      }
-    }
-    saveConversations(true);
-    paintActiveConv();
-    renderConvList();
     fetch("/api/chat/abort", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2168,6 +2158,14 @@ async function runConversationTurn(text, appendUserMsg = true) {
           } else {
             targetNode.bubble.innerHTML = `<div style="font-size:13px;color:var(--text-muted);font-style:italic;">(已中止)</div>`;
           }
+        }
+        if (state.activeId === conv.id) {
+          const lastMsg = conv.messages[conv.messages.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant') {
+            const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
+            lastMsg.content = cleanAcc ? acc + "\n\n*(已中止)*" : "*(已中止)*";
+          }
+          saveConversations();
         }
       } else {
         const isQuotaErr = e.quotaExceeded || /quota|limit reached|upgrade your subscription/i.test(errMsg);
