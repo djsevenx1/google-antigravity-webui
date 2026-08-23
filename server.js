@@ -471,10 +471,16 @@ async function refreshGoogleProfileInBackground(force = false) {
             }
           } catch (_) {}
 
+          const activeEmail = profile.email || (await getActiveAccountEmail()) || 'Google 用户';
+          const accounts = listAccounts();
+          const matchedAcc = accounts.find(a => a.email === activeEmail || (raw?.token?.refresh_token && a.tokenData?.token?.refresh_token === raw.token.refresh_token));
+          const finalName = profile.name || (matchedAcc && matchedAcc.name && !matchedAcc.name.includes('@') ? matchedAcc.name : '') || matchedAcc?.label || (activeEmail ? activeEmail.split('@')[0] : 'Google 用户');
+          const finalPicture = profile.picture || matchedAcc?.picture || 'https://lh3.googleusercontent.com/a/ACg8ocISdUlSHibfzKT5FLpAnxdHErsJ74zdQNO95SeZ2SyYf6YHG7Xm=s96-c';
+
           cachedGoogleProfile = {
-            email: profile.email || (await getActiveAccountEmail()) || 'Google 用户',
-            name: profile.name || ((profile.email || (await getActiveAccountEmail())) ? (profile.email || (await getActiveAccountEmail())).split('@')[0] : 'Google 用户'),
-            picture: profile.picture || 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c',
+            email: activeEmail,
+            name: finalName,
+            picture: finalPicture,
             tier: tierData.name,
             tierType: tierData.type,
             tierBadge: tierData.badge,
@@ -502,25 +508,31 @@ async function refreshGoogleProfileInBackground(force = false) {
 
 
 function getActiveGoogleProfile() {
-  if (cachedGoogleProfile && cachedGoogleProfile.email) return cachedGoogleProfile;
-  try {
-    const accounts = listAccounts();
-    const activeToken = readActiveToken();
-    const rt = activeToken?.token?.refresh_token;
-    const acc = (rt ? accounts.find(a => a.tokenData?.token?.refresh_token === rt) : null) || accounts[0];
-    if (acc) {
-      return {
-        email: acc.email,
-        name: acc.name || acc.label || acc.email.split('@')[0],
-        picture: acc.picture || '',
-        tier: 'Google AI Pro (Gemini Advanced · G1 Credits)',
-        tierType: 'pro',
-        tierBadge: 'Google AI Pro',
-        tierData: { type: 'pro', name: 'Google AI Pro (Gemini Advanced · G1 Credits)', badge: 'Google AI Pro', isPro: true, isFree: false, isEnterprise: false, useG1Credits: true, policyNote: 'Google AI Pro 订阅特权：享有 Gemini 5小时高额滚动算力池与无总量计费上限；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力兜底。' },
-        expiry: acc.tokenData?.token?.expiry || null
-      };
+  const accounts = listAccounts();
+  const activeToken = readActiveToken();
+  const rt = activeToken?.token?.refresh_token;
+  const acc = (rt ? accounts.find(a => a.tokenData?.token?.refresh_token === rt) : null) || accounts.find(a => a.email === cachedGoogleProfile?.email) || accounts[0];
+
+  if (cachedGoogleProfile && cachedGoogleProfile.email) {
+    if (acc && acc.name && !acc.name.includes('@') && (!cachedGoogleProfile.name || cachedGoogleProfile.name === cachedGoogleProfile.email.split('@')[0])) {
+      cachedGoogleProfile.name = acc.name;
+      if (acc.picture) cachedGoogleProfile.picture = acc.picture;
     }
-  } catch (_) {}
+    return cachedGoogleProfile;
+  }
+
+  if (acc) {
+    return {
+      email: acc.email,
+      name: acc.name || acc.label || acc.email.split('@')[0],
+      picture: acc.picture || 'https://lh3.googleusercontent.com/a/ACg8ocISdUlSHibfzKT5FLpAnxdHErsJ74zdQNO95SeZ2SyYf6YHG7Xm=s96-c',
+      tier: 'Google AI Pro (Gemini Advanced · G1 Credits)',
+      tierType: 'pro',
+      tierBadge: 'Google AI Pro',
+      tierData: { type: 'pro', name: 'Google AI Pro (Gemini Advanced · G1 Credits)', badge: 'Google AI Pro', isPro: true, isFree: false, isEnterprise: false, useG1Credits: true, policyNote: 'Google AI Pro 订阅特权：享有 Gemini 5小时高额滚动算力池与无总量计费上限；Claude 与高阶模型享 Pro 优先调度，超额自动启用 G1 Credits 算力兜底。' },
+      expiry: acc.tokenData?.token?.expiry || null
+    };
+  }
   return null;
 }
 
