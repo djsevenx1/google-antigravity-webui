@@ -3233,3 +3233,44 @@ html:not([data-theme="light"]) .slash-desc {
   color: var(--accent);
 }
 
+/* Server Reconnect & Restart Banner */
+.reconnect-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #ffffff;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(217, 119, 6, 0.4);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: slideDownBanner 0.3s ease forwards;
+}
+.reconnect-banner.hidden {
+  display: none !important;
+}
+.reconnect-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.reconnect-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes slideDownBanner {
+  from { transform: translateY(-100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+

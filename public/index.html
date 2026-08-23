@@ -15,6 +15,14 @@
   <script src="/vendor/lucide.min.js"></script>
 </head>
 <body>
+  <!-- Server Reconnection / Restart Banner -->
+  <div id="reconnect-banner" class="reconnect-banner hidden">
+    <div class="reconnect-content">
+      <span class="reconnect-spinner"></span>
+      <span id="reconnect-text">🔄 检测到服务器正在重启中，正在自动重连...</span>
+    </div>
+  </div>
+
   <!-- Header / Topbar -->
   <header class="header">
     <div class="brand">

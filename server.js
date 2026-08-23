@@ -138,9 +138,11 @@ import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
-import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, ensurePrimaryAccount, refreshAllAccountsTokens } from './lib/accounts.js';
+import { listAccounts, saveAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, ensurePrimaryAccount, refreshAllAccountsTokens, readActiveToken, writeActiveToken, ensureValidToken } from './lib/accounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SERVER_BOOT_TIME = Date.now();
+const SERVER_INSTANCE_ID = crypto.randomUUID();
 const app = express();
 
 app.use(compression());
@@ -310,7 +312,7 @@ app.post('/api/debug-log', (req, res) => {
 
 // 对其余所有 /api 接口强制鉴权
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/avatar') {
+  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/avatar' || req.path === '/heartbeat') {
     return next();
   }
   return requireWebAuth(req, res, next);
@@ -394,7 +396,11 @@ async function refreshGoogleProfileInBackground(force = false) {
   for (const tp of tokenPaths) {
     try {
       if (fs.existsSync(tp)) {
-        const raw = JSON.parse(fs.readFileSync(tp, 'utf-8'));
+        let raw = JSON.parse(fs.readFileSync(tp, 'utf-8'));
+        raw = await ensureValidToken(raw);
+        if (raw?.token?.access_token) {
+          writeActiveToken(raw);
+        }
         const token = raw?.token?.access_token;
         if (token) {
           // 1. 直连 Google OAuth 获取用户信息
@@ -474,7 +480,21 @@ async function refreshGoogleProfileInBackground(force = false) {
           const activeEmail = profile.email || (await getActiveAccountEmail()) || 'Google 用户';
           const accounts = listAccounts();
           const matchedAcc = accounts.find(a => a.email === activeEmail || (raw?.token?.refresh_token && a.tokenData?.token?.refresh_token === raw.token.refresh_token));
-          const finalName = profile.name || (matchedAcc && matchedAcc.name && !matchedAcc.name.includes('@') ? matchedAcc.name : '') || matchedAcc?.label || (activeEmail ? activeEmail.split('@')[0] : 'Google 用户');
+          
+          if (matchedAcc && (profile.name || profile.picture)) {
+            let changed = false;
+            if (profile.name && matchedAcc.name !== profile.name) {
+              matchedAcc.name = profile.name;
+              changed = true;
+            }
+            if (profile.picture && matchedAcc.picture !== profile.picture) {
+              matchedAcc.picture = profile.picture;
+              changed = true;
+            }
+            if (changed) saveAccounts(accounts);
+          }
+
+          const finalName = profile.name || (matchedAcc && matchedAcc.name && !matchedAcc.name.includes('@') ? matchedAcc.name : '') || (matchedAcc?.label && !matchedAcc.label.includes('@') ? matchedAcc.label : '') || (activeEmail ? activeEmail.split('@')[0] : 'Google 用户');
           const finalPicture = profile.picture || matchedAcc?.picture || 'https://lh3.googleusercontent.com/a/ACg8ocISdUlSHibfzKT5FLpAnxdHErsJ74zdQNO95SeZ2SyYf6YHG7Xm=s96-c';
 
           cachedGoogleProfile = {
@@ -514,17 +534,21 @@ function getActiveGoogleProfile() {
   const acc = (rt ? accounts.find(a => a.tokenData?.token?.refresh_token === rt) : null) || accounts.find(a => a.email === cachedGoogleProfile?.email) || accounts[0];
 
   if (cachedGoogleProfile && cachedGoogleProfile.email) {
-    if (acc && acc.name && !acc.name.includes('@') && (!cachedGoogleProfile.name || cachedGoogleProfile.name === cachedGoogleProfile.email.split('@')[0])) {
-      cachedGoogleProfile.name = acc.name;
-      if (acc.picture) cachedGoogleProfile.picture = acc.picture;
+    if (acc && acc.email && cachedGoogleProfile.email !== acc.email) {
+      // 缓存与当前生效账号不一致，优先使用当前账号信息
+    } else {
+      if (acc && acc.name && !acc.name.includes('@')) {
+        cachedGoogleProfile.name = acc.name;
+        if (acc.picture) cachedGoogleProfile.picture = acc.picture;
+      }
+      return cachedGoogleProfile;
     }
-    return cachedGoogleProfile;
   }
 
   if (acc) {
     return {
       email: acc.email,
-      name: acc.name || acc.label || acc.email.split('@')[0],
+      name: (acc.name && !acc.name.includes('@')) ? acc.name : (acc.label && !acc.label.includes('@') ? acc.label : (acc.email ? acc.email.split('@')[0] : 'Google 用户')),
       picture: acc.picture || 'https://lh3.googleusercontent.com/a/ACg8ocISdUlSHibfzKT5FLpAnxdHErsJ74zdQNO95SeZ2SyYf6YHG7Xm=s96-c',
       tier: 'Google AI Pro (Gemini Advanced · G1 Credits)',
       tierType: 'pro',
@@ -537,6 +561,17 @@ function getActiveGoogleProfile() {
 }
 
 // ---------- API ----------
+// 轻量心跳与服务重启探针（无需鉴权，供前端秒级感知连接中断与服务重启事件）
+app.get('/api/heartbeat', (req, res) => {
+  send(res, 200, {
+    ok: true,
+    bootTime: SERVER_BOOT_TIME,
+    instanceId: SERVER_INSTANCE_ID,
+    uptime: Math.floor(process.uptime()),
+    ts: Date.now()
+  });
+});
+
 app.get('/api/status', async (req, res) => {
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
@@ -545,6 +580,8 @@ app.get('/api/status', async (req, res) => {
   }
   const profile = cliAuthed ? getActiveGoogleProfile() : null;
   send(res, 200, {
+    bootTime: SERVER_BOOT_TIME,
+    instanceId: SERVER_INSTANCE_ID,
     oauthConfigured: config.oauthConfigured,
     cli: {
       installed: cliInstalled,
@@ -1065,6 +1102,8 @@ app.get('/api/bootstrap', async (req, res) => {
 
     send(res, 200, {
       ok: true,
+      bootTime: SERVER_BOOT_TIME,
+      instanceId: SERVER_INSTANCE_ID,
       status,
       usage,
       models: rawList.length ? rawList : ['gemini-3.7-flash-high', 'gemini-3.1-pro-high', 'claude-sonnet-4-6'],
