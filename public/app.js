@@ -2038,6 +2038,12 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
         ws.onerror = () => { done(() => reject(new Error('network error'))); };
         ws.onclose = () => {
+          if (abortCtrl && abortCtrl.signal && abortCtrl.signal.aborted) {
+            const err = new Error('AbortError');
+            err.name = 'AbortError';
+            done(() => reject(err));
+            return;
+          }
           // 如果已收到 done 或已经有完整的回答文本，直接圆满结束当前轮次，绝不无限挂起等待！
           if (receivedDone) { done(() => resolve()); return; }
           if (streamError) { done(() => reject(streamError)); return; }
@@ -2120,6 +2126,12 @@ async function runConversationTurn(text, appendUserMsg = true) {
             };
             wsRetry.onerror = () => { done2(() => reject(new Error('network error'))); };
             wsRetry.onclose = () => {
+              if (abortCtrl && abortCtrl.signal && abortCtrl.signal.aborted) {
+                const err = new Error('AbortError');
+                err.name = 'AbortError';
+                done2(() => reject(err));
+                return;
+              }
               if (receivedDone || (acc && acc.replace(/[\u200b\s]/g, '').length > 0)) {
                 receivedDone = true;
                 done2(() => resolve());
@@ -3401,6 +3413,9 @@ function tryReconnectToOngoingRun() {
   const conv = activeConv();
   if (!conv) return;
   if (state.streaming) return; // 正在发消息时不要干扰
+  // 乐观设 streaming=true:刷新后等待 server 回复期间,按钮先显示"停止"
+  state.streaming = true;
+  updateSendButton();
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/ws/chat`;
