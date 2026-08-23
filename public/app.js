@@ -1899,10 +1899,6 @@ async function runConversationTurn(text, appendUserMsg = true) {
         };
 
         const resetSilenceWatchdog = (fromDelta = false) => {
-          const clean = (acc || '').replace(/[\u200b\s]/g, '');
-          if (clean.length > 10 && !fromDelta) {
-            return; // 已经有正文输出时，心跳绝对不能打断/延长看门狗
-          }
           if (silenceWatchdog) clearTimeout(silenceWatchdog);
           silenceWatchdog = setTimeout(() => {
             const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
@@ -1920,7 +1916,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
               }
               done(() => resolve());
             }
-          }, 1200);
+          }, 3500);
         };
 
         ws.onopen = () => {
@@ -1976,7 +1972,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 `;
                 if (!cleanAcc) {
                   targetNode.bubble.innerHTML = indicatorHtml;
-                } else {
+                } else if (data.toolName) {
                   targetNode.bubble.innerHTML = formatMarkdown(acc, true) + indicatorHtml;
                 }
                 refreshIcons();
