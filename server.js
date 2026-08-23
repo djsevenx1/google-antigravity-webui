@@ -1900,10 +1900,13 @@ wss.on('connection', (ws, req) => {
     let lastDataAt = Date.now();
 
     const heartbeat = setInterval(() => {
-      if (Date.now() - lastDataAt >= 1500) {
-        const waited = Math.round((Date.now() - t0) / 1000);
-        broadcast({ progress: true, waited, tip: '正在思考…' });
-        lastDataAt = Date.now();
+      // 只有在还没有产生正文输出时（模型前期深度思考阶段），才发送心跳进度；一旦开始吐字，绝不反复干扰
+      if (!run.accumulated || run.accumulated.replace(/[\u200b\s]/g, '').length === 0) {
+        if (Date.now() - lastDataAt >= 1500) {
+          const waited = Math.round((Date.now() - t0) / 1000);
+          broadcast({ progress: true, waited, tip: '正在思考…' });
+          lastDataAt = Date.now();
+        }
       }
     }, 1000);
 
