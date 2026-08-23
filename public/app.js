@@ -1728,6 +1728,7 @@ $$(".starter-card").forEach((card) => {
 
 let abortCtrl = null;
 let currentWs = null;
+let __reconnecting = false; // tryReconnect 进行中,看门狗不干预
 let pendingAttachments = null; // 待发送的附件 [{path, name, mimeType, size}]
 function updateSendButton() {
   const btn = $("#btn-send");
@@ -1768,7 +1769,7 @@ function stopGenerating() {
 
 // streaming 看门狗：对话结束后若 streaming 残留(ws 断了 done 没到)，自动重置 + 清思考动画
 setInterval(() => {
-  if (state.streaming) {
+  if (state.streaming && !__reconnecting) {
     const noConn = !currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING;
     if (noConn && activeClientRuns.size === 0) {
       state.streaming = false;
@@ -2026,7 +2027,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        ws.onerror = () => { done(() => reject(new Error('network error'))); };
+        ws.onerror = () => { __reconnecting = false; done(() => reject(new Error('network error'))); };
         ws.onclose = () => {
           if (abortCtrl && abortCtrl.signal && abortCtrl.signal.aborted) {
             const err = new Error('AbortError');
@@ -3413,7 +3414,10 @@ function tryReconnectToOngoingRun() {
   if (state.streaming) return; // 正在发消息时不要干扰
   // 乐观设 streaming=true:刷新后等待 server 回复期间,按钮先显示"停止"
   state.streaming = true;
+  __reconnecting = true;
   updateSendButton();
+  // 10秒超时:如果 ws 一直没响应,自动清理
+  setTimeout(() => { if (__reconnecting) { __reconnecting = false; state.streaming = false; updateSendButton(); } }, 10000);
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/ws/chat`;
@@ -3462,6 +3466,7 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.error) {
+      __reconnecting = false;
       if (asstNode) {
         asstNode.bubble.innerHTML = formatMarkdown(data.error, false);
         asstNode.row.className = 'message-row error';
@@ -3500,6 +3505,7 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.done) {
+      __reconnecting = false;
       if (asstNode) {
         const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
