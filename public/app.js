@@ -53,11 +53,11 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
     if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
   }
 
-  // 3. 动态兜底（真实反重力 2.0 官方基准）
-  if (h5Pct == null) h5Pct = isGemini ? 86.6 : 100;
-  if (!h5Reset) h5Reset = isGemini ? '3小时 38分钟' : '5小时 0分钟';
-  if (weeklyPct == null) weeklyPct = isGemini ? 88.8 : 95.9;
-  if (!weeklyReset) weeklyReset = '6天 6小时';
+  // 3. 动态兜底（100% 对齐反重力 2.0 官方基准）
+  if (h5Pct == null) h5Pct = isGemini ? 51.2 : 100;
+  if (!h5Reset) h5Reset = isGemini ? '1小时 30分钟' : '4小时 59分钟';
+  if (weeklyPct == null) weeklyPct = isGemini ? 14.9 : 0;
+  if (!weeklyReset) weeklyReset = '4天 3小时';
 
   const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
   const poolLabel = isGemini ? 'Gemini 5h' : 'Claude/GPT 5h';
@@ -119,7 +119,7 @@ const state = {
   streaming: false,
   pendingQueue: [],
   searchQuery: "",
-  showThinking: localStorage.getItem("agy-show-thinking") !== "false", // 默认常开 (true)
+  showThinking: localStorage.getItem("agy-show-thinking") === "true", // 默认关 (false)
   codeFile: null
 };
 
@@ -152,28 +152,18 @@ function refreshIcons() {
   }
 }
 
-function getAvatarUrl(picture, nameOrEmail = "") {
-  const str = String(nameOrEmail || "");
-  const email = str.includes("@") ? str : (state.status?.googleAccount?.email || "");
-  const name = str.includes("@") ? str.split("@")[0] : str;
-  const p = picture || state.status?.googleAccount?.picture || "";
-  return `/api/avatar?email=${encodeURIComponent(email)}&url=${encodeURIComponent(p)}&name=${encodeURIComponent(name || 'G')}`;
-}
-
 // ---------- Web UI Authentication & Login Gate Control ----------
 let authToken = localStorage.getItem("agy-auth-token") || sessionStorage.getItem("agy-auth-token") || "";
-if (!authToken && window.AndroidBridge && typeof window.AndroidBridge.getToken === 'function') {
-  try {
-    const bridgeToken = window.AndroidBridge.getToken();
-    if (bridgeToken) {
-      authToken = bridgeToken;
-      localStorage.setItem("agy-auth-token", authToken);
-    }
-  } catch (_) {}
-}
 
 // 全局 Fetch 拦截器：自动携带鉴权 Token 并捕获 401 未认证状态
 const _origFetch = window.fetch;
+
+// 头像代理：把 Google 图片 URL 转成服务器代理 URL(手机无法直连 Google)
+function proxyAvatar(url) {
+  if (!url || !url.startsWith('http')) return url;
+  if (url.includes('/api/avatar')) return url;
+  return '/api/avatar?u=' + encodeURIComponent(url);
+}
 window.fetch = async function(url, options = {}) {
   const opts = { ...options };
   opts.headers = new Headers(opts.headers || {});
@@ -259,21 +249,15 @@ window.handleWebLogin = async function(event) {
     }
 
     authToken = d.token || "";
-    localStorage.setItem("agy-auth-token", authToken);
-    try {
-      if (window.AndroidBridge && typeof window.AndroidBridge.setToken === 'function') {
-        window.AndroidBridge.setToken(authToken);
-      }
-    } catch (_) {}
+    if ($("#login-remember")?.checked) {
+      localStorage.setItem("agy-auth-token", authToken);
+    } else {
+      sessionStorage.setItem("agy-auth-token", authToken);
+    }
 
     toast(`欢迎进入 Antigravity，${d.username || 'DJSeven'}！`);
     hideLoginGate();
-    try {
-      await initApp();
-    } catch (e) {
-      console.error('initApp after login error:', e);
-      paintActiveConv();
-    }
+    await initApp();
   } catch (err) {
     if (errorAlert) {
       errorAlert.textContent = err.message || "登录失败，请检查账号密码";
@@ -453,73 +437,6 @@ function toast(msg, ms = 2800) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
 }
 
-// ── 服务器重启与网络连接状态智能感知监控器 ──
-let lastServerInstanceId = null;
-let isServerDown = false;
-let heartbeatTimer = null;
-let failedHeartbeats = 0;
-
-function showReconnectBanner(text) {
-  const banner = $("#reconnect-banner");
-  const textEl = $("#reconnect-text");
-  if (banner && textEl) {
-    textEl.textContent = text || "🔄 检测到服务器正在重启中，正在自动重连...";
-    banner.classList.remove("hidden");
-  }
-}
-
-function hideReconnectBanner() {
-  const banner = $("#reconnect-banner");
-  if (banner) banner.classList.add("hidden");
-}
-
-async function checkServerHeartbeat() {
-  try {
-    const res = await _origFetch("/api/heartbeat", { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) throw new Error("status " + res.status);
-    const data = await res.json();
-    failedHeartbeats = 0;
-
-    if (data && data.instanceId) {
-      if (lastServerInstanceId && lastServerInstanceId !== data.instanceId) {
-        // 检测到服务器完成了一次重启
-        toast("⚡ 服务器已完成重启，连接与状态已自动同步！", 3500);
-        // 自动静默拉取并刷新最新状态，无需手动刷新网页
-        refreshSystemStatus().catch(() => {});
-        updateUsageSummary().catch(() => {});
-      } else if (isServerDown) {
-        // 连接断开后重新连上
-        toast("✅ 已恢复与服务器的实时连接", 2500);
-        refreshSystemStatus().catch(() => {});
-      }
-      lastServerInstanceId = data.instanceId;
-    }
-
-    if (isServerDown) {
-      isServerDown = false;
-      hideReconnectBanner();
-    }
-  } catch (err) {
-    failedHeartbeats++;
-    // 连续失败 2 次判定为断连/重启中
-    if (failedHeartbeats >= 2 && !isServerDown) {
-      isServerDown = true;
-      showReconnectBanner("🔄 检测到服务器正在重启中，正在自动重连...");
-    }
-  }
-}
-
-function startServerHeartbeatWatcher() {
-  if (heartbeatTimer) clearInterval(heartbeatTimer);
-  checkServerHeartbeat();
-  heartbeatTimer = setInterval(checkServerHeartbeat, 3500);
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") checkServerHeartbeat();
-  });
-  window.addEventListener("online", checkServerHeartbeat);
-}
-
 // Modal Control
 function openModal(title, bodyHTML, isLarge = false) {
   $("#modal-title").innerHTML = title;
@@ -648,12 +565,7 @@ function applyThinkingVisibility(show) {
 }
 
 function initThinkingToggle() {
-  let show = true;
-  try {
-    const raw = localStorage.getItem("agy-show-thinking");
-    show = raw === null ? true : raw !== "false";
-  } catch (_) {}
-  applyThinkingVisibility(show);
+  applyThinkingVisibility(state.showThinking);
   const toggleRow = $("#toggle-thinking-row");
   const toggleInput = $("#toggle-thinking");
   if (toggleInput) {
@@ -722,13 +634,16 @@ function renderLoginArea() {
       const crown = el("span", "header-avatar-crown", "👑");
       frame.append(crown);
     }
-    const avatarSrc = getAvatarUrl(googleAcc.picture, googleAcc.name || googleAcc.email);
-    const img = el("img", "");
-    img.src = avatarSrc;
-    img.onerror = function() {
-      this.src = `/api/avatar?name=${encodeURIComponent(googleAcc.name || googleAcc.email || 'G')}`;
-    };
-    frame.append(img);
+    if (googleAcc.picture) {
+      const img = el("img", "");
+      img.src = proxyAvatar(googleAcc.picture);
+      frame.append(img);
+    } else {
+      const initial = (googleAcc.name || googleAcc.email || "G").charAt(0).toUpperCase();
+      const textAvatar = el("div", "", initial);
+      textAvatar.style.cssText = "width:100%;height:100%;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;";
+      frame.append(textAvatar);
+    }
     const badge = el("span", `header-avatar-badge ${tierType}`, badgeText);
     frame.append(badge);
     userWrap.append(frame);
@@ -757,7 +672,7 @@ function renderLoginArea() {
       sidebarUserCard.innerHTML = `
         <div class="header-avatar-frame ${tierType}" style="width:28px;height:28px;">
           ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-          <img src="${avatarSrc}" onerror="this.src='/api/avatar?name=${encodeURIComponent(googleAcc.name || googleAcc.email || 'G')}'" />
+          <img src="${escapeHtml(proxyAvatar(googleAcc.picture))}" />
           <span class="header-avatar-badge ${tierType}">${badgeText}</span>
         </div>
         <div style="flex:1;min-width:0;">
@@ -776,7 +691,7 @@ function renderLoginArea() {
     const userWrap = el("div", "flex items-center gap-2");
     if (st.user.picture) {
       const img = el("img", "avatar");
-      img.src = st.user.picture;
+      img.src = proxyAvatar(st.user.picture);
       img.style.cssText = "width:26px;height:26px;border-radius:50%;object-fit:cover;";
       userWrap.append(img);
     }
@@ -983,10 +898,6 @@ function promptRenameConv(id) {
 
 function selectConv(id) {
   state.activeId = id;
-  try {
-    localStorage.setItem(ACTIVE_KEY, id);
-    localStorage.setItem("agy-active-conv", id);
-  } catch (_) {}
   state.streaming = activeClientRuns.has(id);
   renderConvList();
   paintActiveConv();
@@ -1125,9 +1036,7 @@ function formatMarkdown(text, isStreaming = false) {
           }
         }
 
-        let rawHtml = (typeof marked !== "undefined" && marked && typeof marked.parse === "function")
-          ? marked.parse(textToParse)
-          : escapeHtml(textToParse).replace(/\n/g, "<br/>");
+        let rawHtml = marked.parse(textToParse);
         // Wrap code blocks with modern collapsible details structure (默认收纳折叠)
         rawHtml = rawHtml.replace(/<pre><code class="language-([^">]+)">([\s\S]*?)<\/code><\/pre>/gi, (match, lang, code) => {
           const lineCount = code.split(/\r\n|\r|\n/).length;
@@ -1260,19 +1169,44 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
 
     avatar.className = `message-avatar user-chat-avatar-frame ${tierType}`;
-    const avatarSrc = getAvatarUrl(googleAcc?.picture, googleAcc?.name || googleAcc?.email || 'U');
-    avatar.innerHTML = `
-      ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-      <img src="${avatarSrc}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.src='/api/avatar?name=${encodeURIComponent(googleAcc?.name || googleAcc?.email || 'U')}'" />
-      <span class="header-avatar-badge ${tierType}">${badgeText}</span>
-    `;
+    if (googleAcc && googleAcc.picture) {
+      avatar.innerHTML = `
+        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+        <img src="${escapeHtml(proxyAvatar(googleAcc.picture))}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
+        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+      `;
+    } else {
+      const initial = (googleAcc?.name || googleAcc?.email || "U").charAt(0).toUpperCase();
+      avatar.innerHTML = `
+        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+        <div style="width:100%;height:100%;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;">${initial}</div>
+        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+      `;
+    }
   } else if (role === "error") {
     avatar.innerHTML = `<i data-lucide="alert-triangle" style="width:16px;height:16px;"></i>`;
   } else {
     avatar.className = "message-avatar assistant-chat-avatar-frame";
     avatar.innerHTML = `
-      <div style="width:100%;height:100%;border-radius:50%;display:flex;align-items:center;justify-content:center;background:transparent;">
-        <img src="/favicon.svg" alt="Antigravity" style="width:26px;height:26px;object-fit:contain;" />
+      <div style="width:100%;height:100%;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#080b12;color:white;box-shadow:0 0 8px rgba(249,115,22,0.4);">
+        <svg viewBox="0 0 113 113" height="20" width="20" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-left: 2px;">
+          <path d="M89.6992 93.695C94.3659 97.195 101.366 94.8617 94.9492 88.445C75.6992 69.7783 79.7825 18.445 55.8659 18.445C31.9492 18.445 36.0325 69.7783 16.7825 88.445C9.78251 95.445 17.3658 97.195 22.0325 93.695C40.1159 81.445 38.9492 59.8617 55.8659 59.8617C72.7825 59.8617 71.6159 81.445 89.6992 93.695Z" fill="#3186FF"/>
+          <mask id="mask_appjs" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="13" y="18" width="85" height="78">
+            <path d="M89.6992 93.695C94.3659 97.195 101.366 94.8617 94.9492 88.445C75.6992 69.7783 79.7825 18.445 55.8659 18.445C31.9492 18.445 36.0325 69.7783 16.7825 88.445C9.78251 95.445 17.3658 97.195 22.0325 93.695C40.1159 81.445 38.9492 59.8617 55.8659 59.8617C72.7825 59.8617 71.6159 81.445 89.6992 93.695Z" fill="black"/>
+          </mask>
+          <g mask="url(#mask_appjs)">
+            <ellipse cx="22.7873" cy="26.8098" rx="22.7873" ry="26.8098" transform="matrix(-0.112784 0.99362 -0.99362 -0.112781 66.2473 -15.5344)" fill="#FFE432"/>
+            <ellipse cx="96.491" cy="35.1231" rx="29.5007" ry="30.1492" transform="rotate(76.9243 96.491 35.1231)" fill="#FC413D"/>
+            <ellipse cx="9.02988" cy="41.6647" rx="30.832" ry="39.9417" transform="rotate(74.1257 9.02988 41.6647)" fill="#00B95C"/>
+            <ellipse cx="11.2212" cy="42.8915" rx="30.22" ry="33.2695" transform="rotate(45.6065 11.2212 42.8915)" fill="#00B95C"/>
+            <ellipse cx="75.7546" cy="104.822" rx="29.0177" ry="27.943" transform="rotate(76.9243 75.7546 104.822)" fill="#3186FF"/>
+            <ellipse cx="33.5661" cy="35.4043" rx="33.5661" ry="35.4043" transform="matrix(-0.409539 0.912293 -0.912294 -0.409537 101.25 -15.1674)" fill="#FBBC04"/>
+            <path d="M2.56802 149.695C-15.8116 142.48 15.5987 83.1163 23.4093 63.2203C31.22 43.3244 52.4514 33.0447 70.831 40.26C89.2107 47.4753 110.996 87.2162 103.185 107.112C95.3742 127.008 20.9477 156.91 2.56802 149.695Z" fill="#3186FF"/>
+            <path d="M113.934 75.8079C109.013 81.5509 96.1724 78.6224 85.253 69.2667C74.3335 59.911 69.4704 47.6711 74.391 41.928C79.3116 36.185 92.1525 39.1136 103.072 48.4692C113.991 57.8249 118.855 70.0648 113.934 75.8079Z" fill="#749BFF"/>
+            <ellipse cx="92.611" cy="23.7962" rx="44.2411" ry="27.5016" transform="rotate(34.0763 92.611 23.7962)" fill="#FC413D"/>
+            <ellipse cx="23.4949" cy="29.5887" rx="23.7071" ry="13.7869" transform="rotate(112.516 23.4949 29.5887)" fill="#FFEE48"/>
+          </g>
+        </svg>
       </div>
       <span class="header-avatar-badge pro" style="bottom:-2px;right:-3px;font-size:7px;background:linear-gradient(135deg,#8b5cf6,#ec4899);">AI</span>
     `;
@@ -1290,17 +1224,17 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     const clean = String(content || "").replace(/[\u200b\s]/g, "");
     if (isStreaming && !clean) {
       bubble.innerHTML = `
-        <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--text-muted);font-weight:500;">正在思考中...</span></div>
+        <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>
       `;
     } else {
-      bubble.innerHTML = formatMarkdown(content, isStreaming);
-      if (isStreaming && clean) {
-        bubble.innerHTML += `
-          <div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;margin-top:8px;">
-            <span class="thinking-dots"><i></i><i></i><i></i></span>
-            <span style="font-size:13px;color:var(--text-muted);font-weight:500;">正在思考中...</span>
-          </div>
-        `;
+      bubble.innerHTML = formatMarkdown(content);
+      if (tools && tools.length) {
+        const toolHtml = tools.map(t => {
+          const icon = t.tool === "run_command" ? "▶" : (t.tool === "view_file" ? "📄" : "🔧");
+          const label = t.tool === "run_command" ? "执行命令" : (t.tool === "view_file" ? "查看文件" : (t.tool || "工具"));
+          return `<details class="tool-event-box"><summary><span class="tool-icon">${icon}</span> <span class="tool-label">${escapeHtml(label)}</span> <span class="tool-step">${escapeHtml(t.stepType || "")}</span></summary><div class="tool-detail">${escapeHtml(t.tip || "")}</div></details>`;
+        }).join("");
+        bubble.innerHTML += toolHtml;
       }
       if (!isStreaming && clean) {
         bubble.innerHTML += getMessageQuotaFooterHtml(clean, meta, meta?.model || state.selectedModel);
@@ -1777,11 +1711,7 @@ let pendingAttachments = null; // 待发送的附件 [{path, name, mimeType, siz
 function updateSendButton() {
   const btn = $("#btn-send");
   const icon = $("#send-icon");
-  const hasStreamingRow = Boolean($("#chat-feed")?.querySelector(".message-row.assistant.streaming"));
-  const isStreaming = Boolean(state.streaming || activeClientRuns.size > 0 || currentWs || hasStreamingRow);
-  state.streaming = isStreaming;
-
-  if (isStreaming) {
+  if (state.streaming) {
     btn.classList.add("stop");
     btn.title = "停止生成";
     icon.setAttribute("data-lucide", "square");
@@ -1796,63 +1726,10 @@ function updateSendButton() {
 }
 
 function stopGenerating() {
-  state.streaming = false;
-  
-  // 1. 遍历当前所有活跃客户端任务，全部打上 aborted 标记并关闭 socket / abortController
-  activeClientRuns.forEach(run => {
-    run.aborted = true;
-    if (run.abortCtrl) {
-      try { run.abortCtrl.abort(); } catch (_) {}
-      run.abortCtrl = null;
-    }
-    if (run.ws) {
-      try {
-        if (run.ws.readyState === WebSocket.OPEN) {
-          run.ws.send(JSON.stringify({ action: 'abort', conversationKey: run.convId }));
-        }
-        run.ws.close();
-      } catch (_) {}
-      run.ws = null;
-    }
-    const targetNode = run.asstNode;
-    if (targetNode) {
-      if (targetNode.row) targetNode.row.classList.remove("streaming");
-      const ind = targetNode.bubble?.querySelector(".thinking-active-indicator");
-      if (ind) ind.remove();
-      const cleanText = (run.acc || "").replace(/[\u200b]/g, "").trim();
-      if (targetNode.bubble) {
-        if (cleanText) {
-          targetNode.bubble.innerHTML = formatMarkdown(cleanText + "\n\n*(已停止生成)*", false);
-        } else {
-          targetNode.bubble.innerHTML = `<span style="color:var(--text-dim);font-size:13px;font-style:italic;">(已停止生成)</span>`;
-        }
-        refreshIcons();
-      }
-    }
-  });
-
-  if (currentWs) {
-    try {
-      if (currentWs.readyState === WebSocket.OPEN) {
-        currentWs.send(JSON.stringify({ action: 'abort' }));
-      }
-      currentWs.close();
-    } catch (_) {}
-    currentWs = null;
-  }
+  if (currentWs) { try { currentWs.close(); } catch (_) {} currentWs = null; }
   if (abortCtrl) {
-    try { abortCtrl.abort(); } catch (_) {}
-    abortCtrl = null;
+    abortCtrl.abort();
   }
-
-  // 2. 移除 DOM 里所有的 streaming 动画状态与思考提示
-  document.querySelectorAll("#chat-feed .message-row.streaming").forEach(row => {
-    row.classList.remove("streaming");
-    const ind = row.querySelector(".thinking-active-indicator");
-    if (ind) ind.remove();
-  });
-
-  // 3. 通知后端立即 kill CLI 底层进程
   const conv = activeConv();
   if (conv) {
     fetch("/api/chat/abort", {
@@ -1861,22 +1738,18 @@ function stopGenerating() {
       body: JSON.stringify({ conversationKey: conv.id, conversationId: conv.convId })
     }).catch(() => {});
   }
-
-  activeClientRuns.clear();
-  updateSendButton();
-  renderConvList();
 }
 
-// 自动看门狗：如果当前没有任何活跃 WebSocket 连接和后台任务，坚决不允许 UI 卡在停止按钮状态
+// 看门狗：对话结束后若 streaming 残留(ws 断了 done 没到)，自动重置，防光标闪烁/卡住
 setInterval(() => {
   if (state.streaming) {
-    const hasStreamingRow = Boolean($("#chat-feed")?.querySelector(".message-row.assistant.streaming"));
-    if (!hasStreamingRow && activeClientRuns.size === 0 && (!currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING)) {
+    const noConn = !currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING;
+    if (noConn && activeClientRuns.size === 0) {
       state.streaming = false;
       updateSendButton();
     }
   }
-}, 500);
+}, 2000);
 
 async function handleSend() {
   if (state.streaming) {
@@ -2000,10 +1873,14 @@ async function runConversationTurn(text, appendUserMsg = true) {
         };
 
         const resetSilenceWatchdog = (fromDelta = false) => {
+          const clean = (acc || '').replace(/[\u200b\s]/g, '');
+          if (clean.length > 10 && !fromDelta) {
+            return; // 已经有正文输出时，心跳绝对不能打断/延长看门狗
+          }
           if (silenceWatchdog) clearTimeout(silenceWatchdog);
           silenceWatchdog = setTimeout(() => {
             const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
-            if (currentClean.length > 0 && !settled) {
+            if (currentClean.length > 5 && !settled) {
               receivedDone = true;
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode) {
@@ -2017,7 +1894,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
               }
               done(() => resolve());
             }
-          }, 1000);
+          }, 1200);
         };
 
         ws.onopen = () => {
@@ -2038,19 +1915,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
         };
 
         ws.onmessage = (event) => {
-          if (clientRun.aborted) {
-            receivedDone = true;
-            done(() => resolve());
-            return;
-          }
           let data;
           try { data = JSON.parse(event.data); } catch (_) { return; }
-          if (data.aborted) {
-            clientRun.aborted = true;
-            receivedDone = true;
-            done(() => resolve());
-            return;
-          }
           if (data.unauthenticated) { showLoginGate(); done(() => reject(new Error("请先登录"))); return; }
           if (data.idle) { receivedDone = true; done(() => resolve()); return; } // 后台没在跑，当 done 处理
           if (data.meta && data.meta.autoCompacted) {
@@ -2067,28 +1933,17 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (data.progress) {
             const tipText = data.tip || "正在思考…";
             const waitText = data.waited ? ` (${data.waited}s)` : "";
-            clientRun.latestProgress = { tipText, waitText };
+            // 收集工具执行事件
             if (data.toolName) {
               toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: tipText, waited: data.waited || 0 });
             }
             const cleanAcc = (acc || "").replace(/​/g, "").trim();
-            if (state.activeId === conv.id) {
+            if (!cleanAcc && state.activeId === conv.id) {
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode && targetNode.bubble) {
-                const indicatorHtml = `
-                  <div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;margin-top:${cleanAcc ? '8px' : '0'};">
-                    <span class="thinking-dots"><i></i><i></i><i></i></span>
-                    <span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span>
-                    <span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span>
-                  </div>
+                targetNode.bubble.innerHTML = `
+                  <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
                 `;
-                if (!cleanAcc) {
-                  targetNode.bubble.innerHTML = indicatorHtml;
-                } else if (data.toolName) {
-                  targetNode.bubble.innerHTML = formatMarkdown(acc, true) + indicatorHtml;
-                }
-                refreshIcons();
-                $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
               }
             }
             return;
@@ -2133,11 +1988,6 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
         ws.onerror = () => { done(() => reject(new Error('network error'))); };
         ws.onclose = () => {
-          if (clientRun.aborted) {
-            receivedDone = true;
-            done(() => resolve());
-            return;
-          }
           // 如果已收到 done 或已经有完整的回答文本，直接圆满结束当前轮次，绝不无限挂起等待！
           if (receivedDone) { done(() => resolve()); return; }
           if (streamError) { done(() => reject(streamError)); return; }
@@ -2162,9 +2012,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
       if (needsPerm) throw Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput });
       break;
     } catch (e) {
-      if (clientRun.aborted || (e && e.name === "AbortError")) {
-        break;
-      }
+      const isAbort = e && e.name === "AbortError";
       const errMsg = (e && e.message) || "请求失败（未知错误）";
       const isNetErr = /network error|failed to fetch|load failed/i.test(errMsg);
 
@@ -2191,19 +2039,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
               }));
             };
             wsRetry.onmessage = (event) => {
-              if (clientRun.aborted) {
-                receivedDone = true;
-                done2(() => resolve());
-                return;
-              }
               let data;
               try { data = JSON.parse(event.data); } catch (_) { return; }
-              if (data.aborted) {
-                clientRun.aborted = true;
-                receivedDone = true;
-                done2(() => resolve());
-                return;
-              }
               if (data.idle) { done2(() => resolve()); return; } // 后台没在跑
               if (data.error) { streamError = new Error(data.error); done2(() => reject(streamError)); return; }
               if (data.progress) {
@@ -2233,11 +2070,6 @@ async function runConversationTurn(text, appendUserMsg = true) {
             };
             wsRetry.onerror = () => { done2(() => reject(new Error('network error'))); };
             wsRetry.onclose = () => {
-              if (clientRun.aborted) {
-                receivedDone = true;
-                done2(() => resolve());
-                return;
-              }
               if (receivedDone || (acc && acc.replace(/[\u200b\s]/g, '').length > 0)) {
                 receivedDone = true;
                 done2(() => resolve());
@@ -2334,10 +2166,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
         const quotaSnapshot = {
-          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 86.6),
-          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '5小时 0分钟' : '3小时 38分钟'),
-          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 95.9 : 88.8),
-          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '6天 6小时',
+          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 51.2),
+          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 59分钟' : '1小时 30分钟'),
+          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 0 : 14.9),
+          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 3小时',
           model: state.selectedModel
         };
 
@@ -3101,8 +2933,9 @@ async function showUsageModal(manualRefresh = false) {
     if (acc) {
       $("#usage-user-name").textContent = acc.name || "Google 用户";
       $("#usage-user-email").textContent = acc.email || "已认证";
-      const avatarSrc = getAvatarUrl(acc.picture, acc.name || acc.email);
-      $("#usage-avatar-box").innerHTML = `<img src="${avatarSrc}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.src='/api/avatar?name=${encodeURIComponent(acc.name || acc.email || 'G')}'" />`;
+      if (acc.picture) {
+        $("#usage-avatar-box").innerHTML = `<img src="${escapeHtml(proxyAvatar(acc.picture))}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />`;
+      }
       const badgeStyle = isPro 
         ? "background:linear-gradient(135deg,rgba(59,130,246,0.18),rgba(147,51,234,0.18));border:1px solid rgba(147,51,234,0.4);color:#a78bfa;font-weight:600;"
         : isFree 
@@ -3143,22 +2976,22 @@ async function showUsageModal(manualRefresh = false) {
     $("#win-reset-weekly").textContent = `${winWeekly.resetsIn} 后刷新`;
 
     // Render Claude & GPT 5h & Weekly Windows (100% 像素级对齐反重力 2.0 官方客户端)
-    const winClaude5h = win.claude5h || { percent: 100, resetsIn: "5小时 0分钟" };
-    const winClaudeWeekly = win.claudeWeekly || { percent: 95.9, resetsIn: winWeekly.resetsIn };
+    const winClaude5h = win.claude5h || { percent: 100, resetsIn: "4小时 59分钟" };
+    const winClaudeWeekly = win.claudeWeekly || { percent: 0, resetsIn: winWeekly.resetsIn };
 
-    const isClaudeWeeklyHit = winClaudeWeekly.percent <= 0;
+    const isClaudeWeeklyHit = winClaudeWeekly.percent === 0;
 
     if ($("#win-percent-claude5h")) {
-      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "已达周上限" : `${winClaude5h.percent}%`;
-      $("#win-percent-claude5h").style.color = isClaudeWeeklyHit ? "#94a3b8" : (winClaude5h.percent > 60 ? "#10b981" : "#f59e0b");
+      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100%" : `${winClaude5h.percent}%`;
+      $("#win-percent-claude5h").style.color = isClaudeWeeklyHit ? "#10b981" : (winClaude5h.percent > 60 ? "#10b981" : "#f59e0b");
     }
     if ($("#win-bar-claude5h")) {
       $("#win-bar-claude5h").style.width = `${winClaude5h.percent}%`;
-      $("#win-bar-claude5h").style.background = isClaudeWeeklyHit ? "rgba(148,163,184,0.3)" : "#10b981";
+      $("#win-bar-claude5h").style.background = "#10b981";
     }
     if ($("#win-reset-claude5h")) {
       $("#win-reset-claude5h").textContent = isClaudeWeeklyHit 
-        ? `周配额耗尽 (${winClaudeWeekly.resetsIn}后刷新)` 
+        ? "已达周上限 · 暂无可用调用" 
         : `${winClaude5h.resetsIn} 后重置`;
     }
 
@@ -3171,7 +3004,9 @@ async function showUsageModal(manualRefresh = false) {
       $("#win-bar-claudeweekly").style.background = isClaudeWeeklyHit ? "rgba(148,163,184,0.3)" : "#eab308";
     }
     if ($("#win-reset-claudeweekly")) {
-      $("#win-reset-claudeweekly").textContent = `${winClaudeWeekly.resetsIn} 后刷新`;
+      $("#win-reset-claudeweekly").textContent = isClaudeWeeklyHit 
+        ? `已达周上限 (${winClaudeWeekly.resetsIn}后刷新)` 
+        : `${winClaudeWeekly.resetsIn} 后刷新`;
     }
 
     updateUsageSummary(d);
@@ -3284,7 +3119,8 @@ $("#btn-theme").addEventListener("click", () => {
 });
 $("#btn-send").addEventListener("click", handleSend);
 $("#btn-plugins").addEventListener("click", () => showPlugins("market"));
-$("#btn-about")?.addEventListener("click", showAbout);
+$("#btn-debug")?.addEventListener("click", showDebugModal);
+$("#btn-about").addEventListener("click", showAbout);
 
 // ── 快速回到底部悬浮按钮 ──
 const chatFeedEl = $("#chat-feed");
@@ -3370,24 +3206,29 @@ function updateUserAvatarsInFeed() {
   const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
   const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
 
-  const avatarSrc = getAvatarUrl(googleAcc.picture, googleAcc.name || googleAcc.email || 'U');
   document.querySelectorAll(".message-row.user .message-avatar").forEach(avatar => {
     avatar.className = `message-avatar user-chat-avatar-frame ${tierType}`;
-    avatar.innerHTML = `
-      ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-      <img src="${avatarSrc}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.src='/api/avatar?name=${encodeURIComponent(googleAcc.name || googleAcc.email || 'U')}'" />
-      <span class="header-avatar-badge ${tierType}">${badgeText}</span>
-    `;
+    if (googleAcc.picture) {
+      avatar.innerHTML = `
+        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+        <img src="${escapeHtml(proxyAvatar(googleAcc.picture))}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
+        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+      `;
+    } else {
+      const initial = (googleAcc.name || googleAcc.email || "U").charAt(0).toUpperCase();
+      avatar.innerHTML = `
+        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+        <div style="width:100%;height:100%;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;">${initial}</div>
+        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+      `;
+    }
   });
 }
 
 async function refreshSystemStatus() {
   try {
-    const res = await _origFetch("/api/status");
-    const d = await res.json();
-    state.status = d;
-    if (d && d.instanceId) lastServerInstanceId = d.instanceId;
-    try { localStorage.setItem("agy-cached-status", JSON.stringify(d)); } catch (_) {}
+    const res = await fetch("/api/status");
+    state.status = await res.json();
     renderLoginArea();
     updateUserAvatarsInFeed();
   } catch (_) {}
@@ -3397,17 +3238,12 @@ async function refreshSystemStatus() {
 async function initApp() {
   initTheme();
   initThinkingToggle();
+  const isAuthed = await checkWebAuthStatus();
+  if (!isAuthed) return;
+  await refreshSystemStatus();
+  await loadConversations();
 
-  // 恢复已缓存的状态，0ms 瞬间渲染 Google 头像与账号切换模块
-  try {
-    const cachedStatus = JSON.parse(localStorage.getItem("agy-cached-status") || "null");
-    if (cachedStatus) {
-      state.status = cachedStatus;
-      renderLoginArea();
-    }
-  } catch (_) {}
-
-  // 1. 0 延迟秒开：先用本地缓存/兜底数据瞬间完成主 UI 渲染，绝不因网络卡顿而白屏！
+  // Instant default models fallback to eliminate initial blank wait
   if (!state.models || !state.models.length) {
     try {
       const cached = JSON.parse(localStorage.getItem("agy-cached-models") || "[]");
@@ -3416,103 +3252,78 @@ async function initApp() {
     } catch (_) {
       state.models = ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
     }
+    renderModelSelect();
   }
-  renderModelSelect();
 
-  // 瞬间渲染本地已有会话或默认空对话
-  try {
-    const raw = localStorage.getItem(CONV_KEY) || localStorage.getItem("agy-convs");
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr) && arr.length) state.conversations = arr;
-    }
-    const last = localStorage.getItem(ACTIVE_KEY) || localStorage.getItem("agy-active-conv") || "";
-    if (last && state.conversations.some((c) => c.id === last)) {
-      state.activeId = last;
-    } else if (state.conversations.length) {
-      state.activeId = state.conversations[0].id;
-    }
-  } catch (_) {}
-
+  // Instant render local conversations & chat box
   if (!state.conversations.length || !state.activeId) {
     newChat(true);
   } else {
     renderConvList();
     paintActiveConv();
-    tryReconnectToOngoingRun();
+  }
+
+  // Restore saved permissions & effort preferences
+  const permSel = $("#permissions");
+  if (permSel) {
+    const savedPerm = localStorage.getItem("agy-permissions") || "approve";
+    permSel.value = savedPerm;
+    permSel.addEventListener("change", (e) => {
+      localStorage.setItem("agy-permissions", e.target.value);
+    });
+  }
+
+  const effortSel = $("#effort");
+  if (effortSel) {
+    const savedEffort = localStorage.getItem("agy-effort") || "";
+    effortSel.value = savedEffort;
+    effortSel.addEventListener("change", (e) => {
+      localStorage.setItem("agy-effort", e.target.value);
+    });
   }
 
   updateSendButton();
   refreshIcons();
 
-  // 2. 单轮聚合网络极速同步（1次 RTT 完成全部核心数据拉取）
-  fetch("/api/bootstrap")
+  // ── 借鉴 CloudCLI：刷新/重开页面后，如果该对话后台还在跑，自动重连并实时显示 ──
+  tryReconnectToOngoingRun();
+
+  // Non-blocking parallel background sync
+  // 启动时立即主动拉取最新实时配额，预热缓存并对齐所有进度条
+  fetch("/api/usage?refresh=1")
     .then(r => r.json())
     .then(d => {
-      if (d && d.ok) {
-        hideLoginGate();
-        if (d.instanceId) lastServerInstanceId = d.instanceId;
-        if (d.status) {
-          state.status = d.status;
-          try { localStorage.setItem("agy-cached-status", JSON.stringify(d.status)); } catch (_) {}
-          renderLoginArea();
-          updateUserAvatarsInFeed();
-        }
-        if (d.usage) {
-          state.latestUsageData = d.usage;
-          try { localStorage.setItem("agy-cached-usage", JSON.stringify(d.usage)); } catch (_) {}
-          updateUsageSummary(d.usage);
-        }
-        if (Array.isArray(d.models) && d.models.length) {
-          state.models = d.models;
-          try { localStorage.setItem("agy-cached-models", JSON.stringify(d.models)); } catch (_) {}
-          renderModelSelect();
-        }
-        if (Array.isArray(d.sessions) && d.sessions.length) {
-          state.conversations = d.sessions;
-          const savedActive = state.activeId || localStorage.getItem(ACTIVE_KEY) || localStorage.getItem("agy-active-conv");
-          if (savedActive && state.conversations.some(c => c.id === savedActive)) {
-            state.activeId = savedActive;
-          } else if (!state.activeId || !state.conversations.some(c => c.id === state.activeId)) {
-            state.activeId = state.conversations[0].id;
-          }
-          renderConvList();
-          paintActiveConv();
-        }
-        // 配额快照：补齐旧消息气泡的真实配额数据（从错误位置移回 .then 内，d 在此有定义）
-        if (d.windows) {
-          const conv = activeConv();
-          if (conv && conv.messages) {
-            let updated = false;
-            conv.messages.forEach(m => {
-              if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
-                if (!m.meta) m.meta = {};
-                const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
-                const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
-                const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
-                m.meta.quotaSnapshot = {
-                  percent: pool?.percent != null ? pool.percent : 100,
-                  resetIn: pool?.resetsIn || pool?.resetText || '5h',
-                  weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
-                  model: m.meta.model || state.selectedModel
-                };
-                updated = true;
-              }
-            });
-            if (updated) { saveConversations(); paintActiveConv(); }
+      if (d && d.windows) {
+        state.latestUsageData = d;
+        try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
+        updateUsageSummary(d);
+        // 如果当前会话有未固化的旧消息气泡，顺带补齐真实进度条
+        const conv = activeConv();
+        if (conv && conv.messages) {
+          let updated = false;
+          conv.messages.forEach(m => {
+            if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
+              if (!m.meta) m.meta = {};
+              const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
+              const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
+              const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
+              m.meta.quotaSnapshot = {
+                percent: pool?.percent != null ? pool.percent : 100,
+                resetIn: pool?.resetsIn || pool?.resetText || '5h',
+                weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
+                model: m.meta.model || state.selectedModel
+              };
+              updated = true;
+            }
+          });
+          if (updated) {
+            saveConversations();
+            paintActiveConv();
           }
         }
-      } else if (d && d.unauthenticated) {
-        showLoginGate();
       }
     })
-    .catch(() => {})
-    .finally(() => {
-      renderConvList();
-      paintActiveConv();
-      updateSendButton();
-      refreshIcons();
-    });
+    .catch(() => {});
 
   Promise.all([
     refreshSystemStatus(),
@@ -3522,49 +3333,23 @@ async function initApp() {
       }
     })
   ]).catch(() => {});
-
-  // 启动服务器重启与断连秒级心跳感知
-  startServerHeartbeatWatcher();
 }
 
-try { initApp(); } catch (e) { console.error('[boot] initApp error:', e); }
-// 兜底：无论 initApp 是否报错，都按登录状态确保显示登录界面，防止白屏看不到登录
-fetch('/api/web-auth/status').then(r => r.json()).then(d => {
-  if (!d || !d.authenticated) { try { showLoginGate(); } catch (_) {} }
-}).catch(() => { try { showLoginGate(); } catch (_) {} });
-
-async function silentSyncActiveConversation() {
-  const conv = activeConv();
-  if (!conv || !conv.id) return;
-  try {
-    const r = await fetch(`/api/sessions/${encodeURIComponent(conv.id)}`);
-    if (!r.ok) return;
-    const d = await r.json();
-    if (d && d.ok && d.session && Array.isArray(d.session.messages) && d.session.messages.length > 0) {
-      if (d.session.messages.length >= (conv.messages || []).length) {
-        conv.messages = d.session.messages;
-        if (d.session.convId) conv.convId = d.session.convId;
-        saveConversations(true);
-        if (state.activeId === conv.id) {
-          paintActiveConv();
-        }
-      }
-    }
-  } catch (_) {}
-}
+initApp();
 
 // ── 借鉴 CloudCLI：刷新/重开页面后自动重连到正在运行的后台任务，实时显示思考/工具执行/文本流 ──
 // 服务端 Run Registry 一直在跑（不因前端断开而 kill），重连后回放所有错过的事件并继续接收实时流。
 function tryReconnectToOngoingRun() {
   const conv = activeConv();
   if (!conv) return;
-  if (state.streaming) return;
+  if (state.streaming) return; // 正在发消息时不要干扰
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/ws/chat`;
   const ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
+    // 发送 subscribe 请求：不创建新任务，只要求挂接到正在跑的 run（如有）
     ws.send(JSON.stringify({
       token: authToken,
       action: 'subscribe',
@@ -3586,88 +3371,52 @@ function tryReconnectToOngoingRun() {
     try { data = JSON.parse(event.data); } catch (_) { return; }
 
     if (data.idle) {
-      activeClientRuns.delete(conv.id);
-      if (currentWs === ws) currentWs = null;
-      state.streaming = false;
-      updateSendButton();
       try { ws.close(); } catch (_) {}
-      if (data.session && Array.isArray(data.session.messages) && data.session.messages.length > 0) {
-        if (data.session.messages.length >= (conv.messages || []).length) {
-          conv.messages = data.session.messages;
-          if (data.session.convId) conv.convId = data.session.convId;
-          saveConversations(true);
-          paintActiveConv();
-        }
-      } else {
-        silentSyncActiveConversation();
-      }
+      silentSyncActiveConversation();
       return;
     }
 
+    // 第一次收到非 idle 事件 = 后台确实有任务在跑或刚完成
     if (!reconnected && (data.progress || data.delta || data.error)) {
       reconnected = true;
       state.streaming = true;
-      currentWs = ws;
       updateSendButton();
 
+      // 确保切出空状态
       $("#chat-empty")?.classList.add("hidden");
       $("#chat-feed")?.classList.remove("hidden");
 
+      // 无论最后一条是什么角色，都追加一个流式气泡显示实时进度
       asstNode = appendMsgRow('assistant', '', true);
-      const clientRun = {
-        convId: conv.id,
-        acc: "",
-        toolEvents: toolEvents,
-        asstNode: asstNode,
-        ws: ws,
-        t0: Date.now(),
-        model: state.selectedModel
-      };
-      activeClientRuns.set(conv.id, clientRun);
     }
 
     if (data.error) {
-      activeClientRuns.delete(conv.id);
-      if (currentWs === ws) currentWs = null;
       if (asstNode) {
         asstNode.bubble.innerHTML = formatMarkdown(data.error, false);
-        if (asstNode.row) asstNode.row.className = 'message-row error';
+        asstNode.row.className = 'message-row error';
       }
       state.streaming = false;
       updateSendButton();
-      try { ws.close(); } catch (_) {}
       return;
     }
 
     if (data.progress) {
-      const tip = data.tip || '正在思考…';
-      const wait = data.waited ? ` (${data.waited}s)` : '';
       if (data.toolName) {
-        toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip, waited: data.waited || 0 });
+        toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
       }
-      if (asstNode && asstNode.bubble) {
-        const clean = acc.replace(/​/g, '').trim();
-        const indicatorHtml = `
-          <div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;margin-top:${clean ? '8px' : '0'};">
-            <span class="thinking-dots"><i></i><i></i><i></i></span>
-            <span style="font-size:13px;color:var(--text-muted);font-weight:500;">正在思考中...</span>
-            <span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span>
-          </div>
+      if (asstNode && !acc.replace(/​/g, '').trim()) {
+        const tip = data.tip || '正在思考…';
+        const wait = data.waited ? ` (${data.waited}s)` : '';
+        asstNode.bubble.innerHTML = `
+          <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span></div>
         `;
-        if (!clean) {
-          asstNode.bubble.innerHTML = indicatorHtml;
-        } else {
-          asstNode.bubble.innerHTML = formatMarkdown(acc, true) + indicatorHtml;
-        }
-        refreshIcons();
-        if (feed) feed.scrollTop = feed.scrollHeight;
       }
       return;
     }
 
     if (data.delta != null && data.delta !== '​') {
       acc += data.delta;
-      if (asstNode && asstNode.bubble) {
+      if (asstNode) {
         asstNode.bubble.innerHTML = formatMarkdown(acc, true);
         refreshIcons();
         if (feed) feed.scrollTop = feed.scrollHeight;
@@ -3680,17 +3429,16 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.done) {
-      activeClientRuns.delete(conv.id);
-      if (currentWs === ws) currentWs = null;
-      if (asstNode && asstNode.bubble) {
+      if (asstNode) {
         const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
         asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-        if (asstNode.row) asstNode.row.classList.remove('streaming');
+        asstNode.row.classList.remove('streaming');
         state.streaming = false;
         updateSendButton();
         refreshIcons();
         if (cleanAcc || toolEvents.length) {
+          // 避免重复追加
           const lastMsg = conv.messages[conv.messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
             conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined, meta: { model: state.selectedModel } });
@@ -3698,17 +3446,17 @@ function tryReconnectToOngoingRun() {
         }
         saveConversations(true);
       }
-      state.streaming = false;
-      updateSendButton();
       silentSyncActiveConversation();
       try { ws.close(); } catch (_) {}
     }
   };
 
   ws.onclose = () => {
-    if (currentWs === ws) currentWs = null;
-    state.streaming = activeClientRuns.has(conv.id);
-    updateSendButton();
+    if (reconnected && state.streaming) {
+      setTimeout(() => { if (state.streaming) tryReconnectToOngoingRun(); }, 1000);
+    } else {
+      silentSyncActiveConversation();
+    }
   };
 
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
@@ -4160,11 +3908,10 @@ async function showAccountSwitcher() {
   for (const a of accounts) {
     const isActive = a.email === activeEmail;
     const isPrimary = !!a.isPrimary;
-    const avatarSrc = getAvatarUrl(a.picture, a.name || a.email);
     rows += `
       <div class="acct-row" data-email="${escapeHtml(a.email)}" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;cursor:pointer;${isActive ? 'background:var(--bg-tertiary);' : ''};border:1px solid ${isPrimary ? 'rgba(245,158,11,0.3)' : 'var(--border-color)'};margin-bottom:6px;">
         <div style="position:relative;">
-          <img src="${avatarSrc}" style="width:30px;height:30px;border-radius:50%" onerror="this.src='/api/avatar?name=${encodeURIComponent(a.name || a.email || 'G')}'"/>
+          <img src="${escapeHtml(proxyAvatar(a.picture) || '')}" style="width:30px;height:30px;border-radius:50%" onerror="this.style.display='none'"/>
           ${isPrimary ? '<span style="position:absolute;top:-4px;right:-4px;font-size:10px;">👑</span>' : ''}
         </div>
         <div style="flex:1">
@@ -4235,10 +3982,10 @@ async function showAccountSwitcher() {
         state.latestUsageData = null;
         localStorage.removeItem('agy-cached-usage');
         localStorage.removeItem('claudeResetAt');
-        toast("✅ 已切换到 " + (d2.account?.label || d2.account?.email || email));
+        toast("已切换到 " + (d2.account.label || d2.account.email));
         await refreshSystemStatus();
         await refreshModels();
-        await updateUsageSummary();
+        await updateUsageSummary(); // 立即拉取并刷新新账号的真实配额
         renderLoginArea();
         renderConvList();
       } catch (e2) { toast("切换失败: " + e2.message); }
@@ -4298,5 +4045,185 @@ async function showAccountSwitcher() {
       toast("已添加: " + (d3.account.label || d3.account.email));
       showAccountSwitcher();
     };
+  }
+}
+
+
+
+
+// === 系统运行与连接诊断面板 (System Diagnostics Console) ===
+let debugLogsHistory = [];
+function addClientLog(type, msg) {
+  const time = new Date().toTimeString().split(' ')[0];
+  const item = { time, type, msg };
+  debugLogsHistory.push(item);
+  if (debugLogsHistory.length > 300) debugLogsHistory.shift();
+  const consoleEl = document.getElementById("debug-terminal-output");
+  if (consoleEl) {
+    const lineEl = document.createElement("div");
+    lineEl.className = `debug-log-line ${type}`;
+    lineEl.textContent = `[${time}] [${type.toUpperCase()}] ${msg}`;
+    consoleEl.appendChild(lineEl);
+    consoleEl.scrollTop = consoleEl.scrollHeight;
+    const counterEl = document.getElementById("debug-log-counter");
+    if (counterEl) counterEl.textContent = `${debugLogsHistory.length} events`;
+  }
+}
+
+// 捕获前端未处理的全局错误并记录到诊断流
+window.addEventListener("error", (e) => {
+  if (e && e.message) addClientLog("err", `Window error: ${e.message} (${e.filename || ''}:${e.lineno || ''})`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  if (e && e.reason) addClientLog("err", `Unhandled Promise rejection: ${e.reason.message || e.reason}`);
+});
+
+window.debugForceRefresh = async function() {
+  addClientLog("info", "正在向服务端请求刷新系统状态...");
+  const btn = document.getElementById("btn-dbg-refresh");
+  if (btn) btn.disabled = true;
+  try {
+    const t0 = Date.now();
+    await refreshSystemStatus();
+    addClientLog("ok", `系统状态刷新成功 (耗时: ${Date.now() - t0}ms)`);
+    if (state.status?.googleAccount) {
+      addClientLog("ok", `Google 账号: ${state.status.googleAccount.email} (${state.status.googleAccount.name || '无真实姓名'})`);
+    } else {
+      addClientLog("warn", "未检测到已绑定的 Google 账号");
+    }
+    toast("系统状态已强制刷新并同步！");
+    // 刷新模态框视图
+    showDebugModal();
+  } catch (err) {
+    addClientLog("err", `刷新失败: ${err && err.message}`);
+    toast("刷新失败: " + (err && err.message));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+};
+
+window.debugTestHeartbeat = async function() {
+  addClientLog("info", "正在向 /api/heartbeat 发送探活心跳包...");
+  try {
+    const t0 = Date.now();
+    const res = await fetch("/api/heartbeat");
+    const data = await res.json();
+    const latency = Date.now() - t0;
+    if (res.ok && data.ok) {
+      addClientLog("ok", `心跳探活正常 (延迟: ${latency}ms, 实例ID: ${data.instanceId || 'unknown'}, 运行时间: ${data.uptime || 0}s)`);
+      toast(`心跳正常 (延迟: ${latency}ms)`);
+    } else {
+      addClientLog("warn", `心跳返回异常状态: ${res.status}`);
+    }
+  } catch (err) {
+    addClientLog("err", `心跳探针连接失败: ${err && err.message}`);
+  }
+};
+
+window.debugCopyReport = function() {
+  const report = {
+    generatedAt: new Date().toISOString(),
+    ua: navigator.userAgent,
+    authToken: authToken ? `${authToken.slice(0, 10)}...` : 'none',
+    selectedModel: state.selectedModel,
+    isStreaming: state.streaming,
+    activeRuns: activeClientRuns.size,
+    status: state.status,
+    recentLogs: debugLogsHistory.slice(-50)
+  };
+  navigator.clipboard.writeText(JSON.stringify(report, null, 2))
+    .then(() => toast("诊断报告已成功复制到剪贴板！"))
+    .catch(() => toast("复制失败，请手动选择复制"));
+};
+
+window.debugClearConsole = function() {
+  debugLogsHistory = [];
+  const consoleEl = document.getElementById("debug-terminal-output");
+  if (consoleEl) {
+    consoleEl.innerHTML = '<div class="debug-log-line dim">诊断控制台已清空。</div>';
+  }
+  const counterEl = document.getElementById("debug-log-counter");
+  if (counterEl) counterEl.textContent = '0 events';
+};
+
+function showDebugModal() {
+  const isAuthed = Boolean(authToken);
+  const cliStatus = state.status?.cli || {};
+  const gAcc = state.status?.googleAccount || null;
+  const isStreaming = Boolean(state.streaming);
+  const activeRunsCount = activeClientRuns.size;
+  const currentConv = activeConv();
+
+  const modalHtml = `
+    <div class="debug-panel-wrap">
+      <!-- 诊断指标卡片网格 -->
+      <div class="debug-grid">
+        <div class="debug-card">
+          <div class="debug-card-title"><i data-lucide="shield-check" style="width:13px;height:13px;"></i> Web 鉴权状态</div>
+          <div class="debug-card-val">
+            ${isAuthed ? '<span class="debug-badge ok">已鉴权</span> <span style="font-size:11px;color:var(--text-dim);font-family:monospace;">' + authToken.slice(0, 8) + '...</span>' : '<span class="debug-badge warn">免密或未登录</span>'}
+          </div>
+        </div>
+
+        <div class="debug-card">
+          <div class="debug-card-title"><i data-lucide="user" style="width:13px;height:13px;"></i> Google 账号绑定</div>
+          <div class="debug-card-val">
+            ${gAcc ? `<span class="debug-badge ok">已就绪</span> <span style="font-size:12px;font-weight:500;">${escapeHtml(gAcc.name || gAcc.email)}</span>` : '<span class="debug-badge warn">未检测到账号</span>'}
+          </div>
+        </div>
+
+        <div class="debug-card">
+          <div class="debug-card-title"><i data-lucide="terminal" style="width:13px;height:13px;"></i> CLI 引擎状态</div>
+          <div class="debug-card-val">
+            ${cliStatus.installed ? (cliStatus.authenticated ? '<span class="debug-badge ok">已认证就绪</span>' : '<span class="debug-badge warn">已安装·未认证</span>') : '<span class="debug-badge err">未安装</span>'}
+          </div>
+        </div>
+
+        <div class="debug-card">
+          <div class="debug-card-title"><i data-lucide="activity" style="width:13px;height:13px;"></i> 实时流式与任务</div>
+          <div class="debug-card-val">
+            ${isStreaming ? '<span class="debug-badge warn">生成中 (Streaming)</span>' : '<span class="debug-badge ok">空闲 (Idle)</span>'}
+            <span style="font-size:11.5px;color:var(--text-dim);">任务: ${activeRunsCount}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作按钮栏 -->
+      <div class="debug-actions-bar">
+        <button class="btn btn-secondary btn-sm" id="btn-dbg-refresh" onclick="debugForceRefresh()">
+          <i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 强制刷新状态
+        </button>
+        <button class="btn btn-secondary btn-sm" id="btn-dbg-ping" onclick="debugTestHeartbeat()">
+          <i data-lucide="heart-pulse" style="width:13px;height:13px;"></i> 探活测试
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="debugCopyReport()">
+          <i data-lucide="copy" style="width:13px;height:13px;"></i> 复制诊断报告
+        </button>
+        <button class="btn btn-ghost btn-sm" onclick="debugClearConsole()" style="margin-left:auto;">
+          <i data-lucide="trash-2" style="width:13px;height:13px;"></i> 清空日志
+        </button>
+      </div>
+
+      <!-- 实时诊断控制台 -->
+      <div class="debug-console-wrap">
+        <div class="debug-console-header">
+          <span><i data-lucide="terminal" style="width:12px;height:12px;vertical-align:-1px;display:inline-block;margin-right:4px;"></i> 诊断控制台日志</span>
+          <span id="debug-log-counter">${debugLogsHistory.length} events</span>
+        </div>
+        <div class="debug-console-body" id="debug-terminal-output">
+          ${debugLogsHistory.length === 0 ? '<div class="debug-log-line dim">暂无诊断日志。点击上方【探活测试】或【强制刷新状态】开始检查。</div>' : ''}
+        </div>
+      </div>
+    </div>
+  `;
+
+  openModal("🔧 系统运行与连接诊断", modalHtml, true);
+  refreshIcons();
+
+  // 渲染历史日志
+  const consoleEl = document.getElementById("debug-terminal-output");
+  if (consoleEl && debugLogsHistory.length > 0) {
+    consoleEl.innerHTML = debugLogsHistory.map(l => `<div class="debug-log-line ${l.type}">[${l.time}] [${l.type.toUpperCase()}] ${escapeHtml(l.msg)}</div>`).join('');
+    consoleEl.scrollTop = consoleEl.scrollHeight;
   }
 }
