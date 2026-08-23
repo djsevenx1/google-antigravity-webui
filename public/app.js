@@ -1751,7 +1751,7 @@ function stopGenerating() {
   if (abortCtrl) {
     abortCtrl.abort();
   }
-  toast("⏹️ 对话已停止");
+  toast("context canceled");
   const conv = activeConv();
   if (conv) {
     fetch("/api/chat/abort", {
@@ -2125,9 +2125,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
         if (targetNode && targetNode.bubble) {
           const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
           if (cleanAcc) {
-            targetNode.bubble.innerHTML = formatMarkdown(acc, false) + `<div style="margin-top:8px;font-size:12.5px;color:var(--text-muted);display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#f59e0b;"></span> 对话已停止</div>`;
+            targetNode.bubble.innerHTML = formatMarkdown(acc, false) + `<div style="margin-top:8px;font-size:12.5px;color:var(--text-muted);font-style:italic;">context canceled</div>`;
           } else {
-            targetNode.bubble.innerHTML = `<div style="font-size:13px;color:var(--text-muted);display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#f59e0b;"></span> 对话已停止</div>`;
+            targetNode.bubble.innerHTML = `<div style="font-size:13px;color:var(--text-muted);font-style:italic;">context canceled</div>`;
           }
         }
       } else {
