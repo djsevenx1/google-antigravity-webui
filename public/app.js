@@ -53,11 +53,11 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
     if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
   }
 
-  // 3. 动态兜底（100% 对齐反重力 2.0 官方基准）
-  if (h5Pct == null) h5Pct = isGemini ? 51.2 : 100;
-  if (!h5Reset) h5Reset = isGemini ? '1小时 30分钟' : '4小时 59分钟';
-  if (weeklyPct == null) weeklyPct = isGemini ? 14.9 : 0;
-  if (!weeklyReset) weeklyReset = '4天 3小时';
+  // 3. 动态兜底（真实反重力 2.0 官方基准）
+  if (h5Pct == null) h5Pct = isGemini ? 86.6 : 100;
+  if (!h5Reset) h5Reset = isGemini ? '3小时 38分钟' : '5小时 0分钟';
+  if (weeklyPct == null) weeklyPct = isGemini ? 88.8 : 95.9;
+  if (!weeklyReset) weeklyReset = '6天 6小时';
 
   const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
   const poolLabel = isGemini ? 'Gemini 5h' : 'Claude/GPT 5h';
@@ -119,7 +119,7 @@ const state = {
   streaming: false,
   pendingQueue: [],
   searchQuery: "",
-  showThinking: localStorage.getItem("agy-show-thinking") === "true", // 默认关 (false)
+  showThinking: localStorage.getItem("agy-show-thinking") !== "false", // 默认常开 (true)
   codeFile: null
 };
 
@@ -152,8 +152,25 @@ function refreshIcons() {
   }
 }
 
+function getAvatarUrl(picture, nameOrEmail = "") {
+  const str = String(nameOrEmail || "");
+  const email = str.includes("@") ? str : (state.status?.googleAccount?.email || "");
+  const name = str.includes("@") ? str.split("@")[0] : str;
+  const p = picture || state.status?.googleAccount?.picture || "";
+  return `/api/avatar?email=${encodeURIComponent(email)}&url=${encodeURIComponent(p)}&name=${encodeURIComponent(name || 'G')}`;
+}
+
 // ---------- Web UI Authentication & Login Gate Control ----------
 let authToken = localStorage.getItem("agy-auth-token") || sessionStorage.getItem("agy-auth-token") || "";
+if (!authToken && window.AndroidBridge && typeof window.AndroidBridge.getToken === 'function') {
+  try {
+    const bridgeToken = window.AndroidBridge.getToken();
+    if (bridgeToken) {
+      authToken = bridgeToken;
+      localStorage.setItem("agy-auth-token", authToken);
+    }
+  } catch (_) {}
+}
 
 // 全局 Fetch 拦截器：自动携带鉴权 Token 并捕获 401 未认证状态
 const _origFetch = window.fetch;
@@ -242,15 +259,21 @@ window.handleWebLogin = async function(event) {
     }
 
     authToken = d.token || "";
-    if ($("#login-remember")?.checked) {
-      localStorage.setItem("agy-auth-token", authToken);
-    } else {
-      sessionStorage.setItem("agy-auth-token", authToken);
-    }
+    localStorage.setItem("agy-auth-token", authToken);
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.setToken === 'function') {
+        window.AndroidBridge.setToken(authToken);
+      }
+    } catch (_) {}
 
     toast(`欢迎进入 Antigravity，${d.username || 'DJSeven'}！`);
     hideLoginGate();
-    await initApp();
+    try {
+      await initApp();
+    } catch (e) {
+      console.error('initApp after login error:', e);
+      paintActiveConv();
+    }
   } catch (err) {
     if (errorAlert) {
       errorAlert.textContent = err.message || "登录失败，请检查账号密码";
@@ -558,7 +581,12 @@ function applyThinkingVisibility(show) {
 }
 
 function initThinkingToggle() {
-  applyThinkingVisibility(state.showThinking);
+  let show = true;
+  try {
+    const raw = localStorage.getItem("agy-show-thinking");
+    show = raw === null ? true : raw !== "false";
+  } catch (_) {}
+  applyThinkingVisibility(show);
   const toggleRow = $("#toggle-thinking-row");
   const toggleInput = $("#toggle-thinking");
   if (toggleInput) {
@@ -627,16 +655,13 @@ function renderLoginArea() {
       const crown = el("span", "header-avatar-crown", "👑");
       frame.append(crown);
     }
-    if (googleAcc.picture) {
-      const img = el("img", "");
-      img.src = googleAcc.picture;
-      frame.append(img);
-    } else {
-      const initial = (googleAcc.name || googleAcc.email || "G").charAt(0).toUpperCase();
-      const textAvatar = el("div", "", initial);
-      textAvatar.style.cssText = "width:100%;height:100%;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;";
-      frame.append(textAvatar);
-    }
+    const avatarSrc = getAvatarUrl(googleAcc.picture, googleAcc.name || googleAcc.email);
+    const img = el("img", "");
+    img.src = avatarSrc;
+    img.onerror = function() {
+      this.src = `/api/avatar?name=${encodeURIComponent(googleAcc.name || googleAcc.email || 'G')}`;
+    };
+    frame.append(img);
     const badge = el("span", `header-avatar-badge ${tierType}`, badgeText);
     frame.append(badge);
     userWrap.append(frame);
@@ -665,7 +690,7 @@ function renderLoginArea() {
       sidebarUserCard.innerHTML = `
         <div class="header-avatar-frame ${tierType}" style="width:28px;height:28px;">
           ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-          <img src="${escapeHtml(googleAcc.picture)}" />
+          <img src="${avatarSrc}" onerror="this.src='/api/avatar?name=${encodeURIComponent(googleAcc.name || googleAcc.email || 'G')}'" />
           <span class="header-avatar-badge ${tierType}">${badgeText}</span>
         </div>
         <div style="flex:1;min-width:0;">
@@ -891,6 +916,10 @@ function promptRenameConv(id) {
 
 function selectConv(id) {
   state.activeId = id;
+  try {
+    localStorage.setItem(ACTIVE_KEY, id);
+    localStorage.setItem("agy-active-conv", id);
+  } catch (_) {}
   state.streaming = activeClientRuns.has(id);
   renderConvList();
   paintActiveConv();
@@ -1029,7 +1058,9 @@ function formatMarkdown(text, isStreaming = false) {
           }
         }
 
-        let rawHtml = marked.parse(textToParse);
+        let rawHtml = (typeof marked !== "undefined" && marked && typeof marked.parse === "function")
+          ? marked.parse(textToParse)
+          : escapeHtml(textToParse).replace(/\n/g, "<br/>");
         // Wrap code blocks with modern collapsible details structure (默认收纳折叠)
         rawHtml = rawHtml.replace(/<pre><code class="language-([^">]+)">([\s\S]*?)<\/code><\/pre>/gi, (match, lang, code) => {
           const lineCount = code.split(/\r\n|\r|\n/).length;
@@ -1162,20 +1193,12 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
 
     avatar.className = `message-avatar user-chat-avatar-frame ${tierType}`;
-    if (googleAcc && googleAcc.picture) {
-      avatar.innerHTML = `
-        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-        <img src="${escapeHtml(googleAcc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
-        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
-      `;
-    } else {
-      const initial = (googleAcc?.name || googleAcc?.email || "U").charAt(0).toUpperCase();
-      avatar.innerHTML = `
-        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-        <div style="width:100%;height:100%;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;">${initial}</div>
-        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
-      `;
-    }
+    const avatarSrc = getAvatarUrl(googleAcc?.picture, googleAcc?.name || googleAcc?.email || 'U');
+    avatar.innerHTML = `
+      ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+      <img src="${avatarSrc}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.src='/api/avatar?name=${encodeURIComponent(googleAcc?.name || googleAcc?.email || 'U')}'" />
+      <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+    `;
   } else if (role === "error") {
     avatar.innerHTML = `<i data-lucide="alert-triangle" style="width:16px;height:16px;"></i>`;
   } else {
@@ -1217,17 +1240,17 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     const clean = String(content || "").replace(/[\u200b\s]/g, "");
     if (isStreaming && !clean) {
       bubble.innerHTML = `
-        <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>
+        <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--text-muted);font-weight:500;">正在思考中...</span></div>
       `;
     } else {
-      bubble.innerHTML = formatMarkdown(content);
-      if (tools && tools.length) {
-        const toolHtml = tools.map(t => {
-          const icon = t.tool === "run_command" ? "▶" : (t.tool === "view_file" ? "📄" : "🔧");
-          const label = t.tool === "run_command" ? "执行命令" : (t.tool === "view_file" ? "查看文件" : (t.tool || "工具"));
-          return `<details class="tool-event-box"><summary><span class="tool-icon">${icon}</span> <span class="tool-label">${escapeHtml(label)}</span> <span class="tool-step">${escapeHtml(t.stepType || "")}</span></summary><div class="tool-detail">${escapeHtml(t.tip || "")}</div></details>`;
-        }).join("");
-        bubble.innerHTML += toolHtml;
+      bubble.innerHTML = formatMarkdown(content, isStreaming);
+      if (isStreaming && clean) {
+        bubble.innerHTML += `
+          <div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;margin-top:8px;">
+            <span class="thinking-dots"><i></i><i></i><i></i></span>
+            <span style="font-size:13px;color:var(--text-muted);font-weight:500;">正在思考中...</span>
+          </div>
+        `;
       }
       if (!isStreaming && clean) {
         bubble.innerHTML += getMessageQuotaFooterHtml(clean, meta, meta?.model || state.selectedModel);
@@ -1704,6 +1727,10 @@ let pendingAttachments = null; // 待发送的附件 [{path, name, mimeType, siz
 function updateSendButton() {
   const btn = $("#btn-send");
   const icon = $("#send-icon");
+  // 严格校准 streaming 状态：若无运行中任务，强制重置
+  if (activeClientRuns.size === 0 && !currentWs) {
+    state.streaming = false;
+  }
   if (state.streaming) {
     btn.classList.add("stop");
     btn.title = "停止生成";
@@ -1721,17 +1748,33 @@ function updateSendButton() {
 function stopGenerating() {
   if (currentWs) { try { currentWs.close(); } catch (_) {} currentWs = null; }
   if (abortCtrl) {
-    abortCtrl.abort();
+    try { abortCtrl.abort(); } catch (_) {}
+    abortCtrl = null;
   }
   const conv = activeConv();
   if (conv) {
+    activeClientRuns.delete(conv.id);
     fetch("/api/chat/abort", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversationKey: conv.id, conversationId: conv.convId })
     }).catch(() => {});
   }
+  activeClientRuns.clear();
+  state.streaming = false;
+  updateSendButton();
+  renderConvList();
 }
+
+// 自动看门狗：如果当前没有任何活跃 WebSocket 连接和后台任务，坚决不允许 UI 卡在停止按钮状态
+setInterval(() => {
+  if (state.streaming) {
+    if (activeClientRuns.size === 0 && (!currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING)) {
+      state.streaming = false;
+      updateSendButton();
+    }
+  }
+}, 800);
 
 async function handleSend() {
   if (state.streaming) {
@@ -1915,17 +1958,28 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (data.progress) {
             const tipText = data.tip || "正在思考…";
             const waitText = data.waited ? ` (${data.waited}s)` : "";
-            // 收集工具执行事件
+            clientRun.latestProgress = { tipText, waitText };
             if (data.toolName) {
               toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: tipText, waited: data.waited || 0 });
             }
             const cleanAcc = (acc || "").replace(/​/g, "").trim();
-            if (!cleanAcc && state.activeId === conv.id) {
+            if (state.activeId === conv.id) {
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode && targetNode.bubble) {
-                targetNode.bubble.innerHTML = `
-                  <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
+                const indicatorHtml = `
+                  <div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;margin-top:${cleanAcc ? '8px' : '0'};">
+                    <span class="thinking-dots"><i></i><i></i><i></i></span>
+                    <span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span>
+                    <span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span>
+                  </div>
                 `;
+                if (!cleanAcc) {
+                  targetNode.bubble.innerHTML = indicatorHtml;
+                } else {
+                  targetNode.bubble.innerHTML = formatMarkdown(acc, true) + indicatorHtml;
+                }
+                refreshIcons();
+                $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
               }
             }
             return;
@@ -2148,10 +2202,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
         const quotaSnapshot = {
-          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 51.2),
-          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 59分钟' : '1小时 30分钟'),
-          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 0 : 14.9),
-          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 3小时',
+          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 86.6),
+          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '5小时 0分钟' : '3小时 38分钟'),
+          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 95.9 : 88.8),
+          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '6天 6小时',
           model: state.selectedModel
         };
 
@@ -2915,9 +2969,8 @@ async function showUsageModal(manualRefresh = false) {
     if (acc) {
       $("#usage-user-name").textContent = acc.name || "Google 用户";
       $("#usage-user-email").textContent = acc.email || "已认证";
-      if (acc.picture) {
-        $("#usage-avatar-box").innerHTML = `<img src="${escapeHtml(acc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />`;
-      }
+      const avatarSrc = getAvatarUrl(acc.picture, acc.name || acc.email);
+      $("#usage-avatar-box").innerHTML = `<img src="${avatarSrc}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.src='/api/avatar?name=${encodeURIComponent(acc.name || acc.email || 'G')}'" />`;
       const badgeStyle = isPro 
         ? "background:linear-gradient(135deg,rgba(59,130,246,0.18),rgba(147,51,234,0.18));border:1px solid rgba(147,51,234,0.4);color:#a78bfa;font-weight:600;"
         : isFree 
@@ -2958,22 +3011,22 @@ async function showUsageModal(manualRefresh = false) {
     $("#win-reset-weekly").textContent = `${winWeekly.resetsIn} 后刷新`;
 
     // Render Claude & GPT 5h & Weekly Windows (100% 像素级对齐反重力 2.0 官方客户端)
-    const winClaude5h = win.claude5h || { percent: 100, resetsIn: "4小时 59分钟" };
-    const winClaudeWeekly = win.claudeWeekly || { percent: 0, resetsIn: winWeekly.resetsIn };
+    const winClaude5h = win.claude5h || { percent: 100, resetsIn: "5小时 0分钟" };
+    const winClaudeWeekly = win.claudeWeekly || { percent: 95.9, resetsIn: winWeekly.resetsIn };
 
-    const isClaudeWeeklyHit = winClaudeWeekly.percent === 0;
+    const isClaudeWeeklyHit = winClaudeWeekly.percent <= 0;
 
     if ($("#win-percent-claude5h")) {
-      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100%" : `${winClaude5h.percent}%`;
-      $("#win-percent-claude5h").style.color = isClaudeWeeklyHit ? "#10b981" : (winClaude5h.percent > 60 ? "#10b981" : "#f59e0b");
+      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "已达周上限" : `${winClaude5h.percent}%`;
+      $("#win-percent-claude5h").style.color = isClaudeWeeklyHit ? "#94a3b8" : (winClaude5h.percent > 60 ? "#10b981" : "#f59e0b");
     }
     if ($("#win-bar-claude5h")) {
       $("#win-bar-claude5h").style.width = `${winClaude5h.percent}%`;
-      $("#win-bar-claude5h").style.background = "#10b981";
+      $("#win-bar-claude5h").style.background = isClaudeWeeklyHit ? "rgba(148,163,184,0.3)" : "#10b981";
     }
     if ($("#win-reset-claude5h")) {
       $("#win-reset-claude5h").textContent = isClaudeWeeklyHit 
-        ? "已达周上限 · 暂无可用调用" 
+        ? `周配额耗尽 (${winClaudeWeekly.resetsIn}后刷新)` 
         : `${winClaude5h.resetsIn} 后重置`;
     }
 
@@ -2986,9 +3039,7 @@ async function showUsageModal(manualRefresh = false) {
       $("#win-bar-claudeweekly").style.background = isClaudeWeeklyHit ? "rgba(148,163,184,0.3)" : "#eab308";
     }
     if ($("#win-reset-claudeweekly")) {
-      $("#win-reset-claudeweekly").textContent = isClaudeWeeklyHit 
-        ? `已达周上限 (${winClaudeWeekly.resetsIn}后刷新)` 
-        : `${winClaudeWeekly.resetsIn} 后刷新`;
+      $("#win-reset-claudeweekly").textContent = `${winClaudeWeekly.resetsIn} 后刷新`;
     }
 
     updateUsageSummary(d);
@@ -3101,7 +3152,7 @@ $("#btn-theme").addEventListener("click", () => {
 });
 $("#btn-send").addEventListener("click", handleSend);
 $("#btn-plugins").addEventListener("click", () => showPlugins("market"));
-$("#btn-about").addEventListener("click", showAbout);
+$("#btn-about")?.addEventListener("click", showAbout);
 
 // ── 快速回到底部悬浮按钮 ──
 const chatFeedEl = $("#chat-feed");
@@ -3187,29 +3238,23 @@ function updateUserAvatarsInFeed() {
   const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
   const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
 
+  const avatarSrc = getAvatarUrl(googleAcc.picture, googleAcc.name || googleAcc.email || 'U');
   document.querySelectorAll(".message-row.user .message-avatar").forEach(avatar => {
     avatar.className = `message-avatar user-chat-avatar-frame ${tierType}`;
-    if (googleAcc.picture) {
-      avatar.innerHTML = `
-        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-        <img src="${escapeHtml(googleAcc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
-        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
-      `;
-    } else {
-      const initial = (googleAcc.name || googleAcc.email || "U").charAt(0).toUpperCase();
-      avatar.innerHTML = `
-        ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-        <div style="width:100%;height:100%;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;">${initial}</div>
-        <span class="header-avatar-badge ${tierType}">${badgeText}</span>
-      `;
-    }
+    avatar.innerHTML = `
+      ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
+      <img src="${avatarSrc}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.src='/api/avatar?name=${encodeURIComponent(googleAcc.name || googleAcc.email || 'U')}'" />
+      <span class="header-avatar-badge ${tierType}">${badgeText}</span>
+    `;
   });
 }
 
 async function refreshSystemStatus() {
   try {
     const res = await fetch("/api/status");
-    state.status = await res.json();
+    const d = await res.json();
+    state.status = d;
+    try { localStorage.setItem("agy-cached-status", JSON.stringify(d)); } catch (_) {}
     renderLoginArea();
     updateUserAvatarsInFeed();
   } catch (_) {}
@@ -3219,12 +3264,17 @@ async function refreshSystemStatus() {
 async function initApp() {
   initTheme();
   initThinkingToggle();
-  const isAuthed = await checkWebAuthStatus();
-  if (!isAuthed) return;
-  await refreshSystemStatus();
-  await loadConversations();
 
-  // Instant default models fallback to eliminate initial blank wait
+  // 恢复已缓存的状态，0ms 瞬间渲染 Google 头像与账号切换模块
+  try {
+    const cachedStatus = JSON.parse(localStorage.getItem("agy-cached-status") || "null");
+    if (cachedStatus) {
+      state.status = cachedStatus;
+      renderLoginArea();
+    }
+  } catch (_) {}
+
+  // 1. 0 延迟秒开：先用本地缓存/兜底数据瞬间完成主 UI 渲染，绝不因网络卡顿而白屏！
   if (!state.models || !state.models.length) {
     try {
       const cached = JSON.parse(localStorage.getItem("agy-cached-models") || "[]");
@@ -3233,78 +3283,102 @@ async function initApp() {
     } catch (_) {
       state.models = ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
     }
-    renderModelSelect();
   }
+  renderModelSelect();
 
-  // Instant render local conversations & chat box
+  // 瞬间渲染本地已有会话或默认空对话
+  try {
+    const raw = localStorage.getItem(CONV_KEY) || localStorage.getItem("agy-convs");
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) state.conversations = arr;
+    }
+    const last = localStorage.getItem(ACTIVE_KEY) || localStorage.getItem("agy-active-conv") || "";
+    if (last && state.conversations.some((c) => c.id === last)) {
+      state.activeId = last;
+    } else if (state.conversations.length) {
+      state.activeId = state.conversations[0].id;
+    }
+  } catch (_) {}
+
   if (!state.conversations.length || !state.activeId) {
     newChat(true);
   } else {
     renderConvList();
     paintActiveConv();
-  }
-
-  // Restore saved permissions & effort preferences
-  const permSel = $("#permissions");
-  if (permSel) {
-    const savedPerm = localStorage.getItem("agy-permissions") || "approve";
-    permSel.value = savedPerm;
-    permSel.addEventListener("change", (e) => {
-      localStorage.setItem("agy-permissions", e.target.value);
-    });
-  }
-
-  const effortSel = $("#effort");
-  if (effortSel) {
-    const savedEffort = localStorage.getItem("agy-effort") || "";
-    effortSel.value = savedEffort;
-    effortSel.addEventListener("change", (e) => {
-      localStorage.setItem("agy-effort", e.target.value);
-    });
+    tryReconnectToOngoingRun();
   }
 
   updateSendButton();
   refreshIcons();
 
-  // ── 借鉴 CloudCLI：刷新/重开页面后，如果该对话后台还在跑，自动重连并实时显示 ──
-  tryReconnectToOngoingRun();
-
-  // Non-blocking parallel background sync
-  // 启动时立即主动拉取最新实时配额，预热缓存并对齐所有进度条
-  fetch("/api/usage?refresh=1")
+  // 2. 单轮聚合网络极速同步（1次 RTT 完成全部核心数据拉取）
+  fetch("/api/bootstrap")
     .then(r => r.json())
     .then(d => {
-      if (d && d.windows) {
-        state.latestUsageData = d;
-        try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
-        updateUsageSummary(d);
-        // 如果当前会话有未固化的旧消息气泡，顺带补齐真实进度条
-        const conv = activeConv();
-        if (conv && conv.messages) {
-          let updated = false;
-          conv.messages.forEach(m => {
-            if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
-              if (!m.meta) m.meta = {};
-              const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
-              const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
-              const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
-              m.meta.quotaSnapshot = {
-                percent: pool?.percent != null ? pool.percent : 100,
-                resetIn: pool?.resetsIn || pool?.resetText || '5h',
-                weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
-                model: m.meta.model || state.selectedModel
-              };
-              updated = true;
-            }
-          });
-          if (updated) {
-            saveConversations();
-            paintActiveConv();
+      if (d && d.ok) {
+        hideLoginGate();
+        if (d.status) {
+          state.status = d.status;
+          try { localStorage.setItem("agy-cached-status", JSON.stringify(d.status)); } catch (_) {}
+          renderLoginArea();
+          updateUserAvatarsInFeed();
+        }
+        if (d.usage) {
+          state.latestUsageData = d.usage;
+          try { localStorage.setItem("agy-cached-usage", JSON.stringify(d.usage)); } catch (_) {}
+          updateUsageSummary(d.usage);
+        }
+        if (Array.isArray(d.models) && d.models.length) {
+          state.models = d.models;
+          try { localStorage.setItem("agy-cached-models", JSON.stringify(d.models)); } catch (_) {}
+          renderModelSelect();
+        }
+        if (Array.isArray(d.sessions) && d.sessions.length) {
+          state.conversations = d.sessions;
+          const savedActive = state.activeId || localStorage.getItem(ACTIVE_KEY) || localStorage.getItem("agy-active-conv");
+          if (savedActive && state.conversations.some(c => c.id === savedActive)) {
+            state.activeId = savedActive;
+          } else if (!state.activeId || !state.conversations.some(c => c.id === state.activeId)) {
+            state.activeId = state.conversations[0].id;
+          }
+          renderConvList();
+          paintActiveConv();
+        }
+        // 配额快照：补齐旧消息气泡的真实配额数据（从错误位置移回 .then 内，d 在此有定义）
+        if (d.windows) {
+          const conv = activeConv();
+          if (conv && conv.messages) {
+            let updated = false;
+            conv.messages.forEach(m => {
+              if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
+                if (!m.meta) m.meta = {};
+                const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
+                const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
+                const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
+                m.meta.quotaSnapshot = {
+                  percent: pool?.percent != null ? pool.percent : 100,
+                  resetIn: pool?.resetsIn || pool?.resetText || '5h',
+                  weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
+                  model: m.meta.model || state.selectedModel
+                };
+                updated = true;
+              }
+            });
+            if (updated) { saveConversations(); paintActiveConv(); }
           }
         }
+      } else if (d && d.unauthenticated) {
+        showLoginGate();
       }
     })
-    .catch(() => {});
+    .catch(() => {})
+    .finally(() => {
+      renderConvList();
+      paintActiveConv();
+      updateSendButton();
+      refreshIcons();
+    });
 
   Promise.all([
     refreshSystemStatus(),
@@ -3316,21 +3390,44 @@ async function initApp() {
   ]).catch(() => {});
 }
 
-initApp();
+try { initApp(); } catch (e) { console.error('[boot] initApp error:', e); }
+// 兜底：无论 initApp 是否报错，都按登录状态确保显示登录界面，防止白屏看不到登录
+fetch('/api/web-auth/status').then(r => r.json()).then(d => {
+  if (!d || !d.authenticated) { try { showLoginGate(); } catch (_) {} }
+}).catch(() => { try { showLoginGate(); } catch (_) {} });
+
+async function silentSyncActiveConversation() {
+  const conv = activeConv();
+  if (!conv || !conv.id) return;
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(conv.id)}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d && d.ok && d.session && Array.isArray(d.session.messages) && d.session.messages.length > 0) {
+      if (d.session.messages.length >= (conv.messages || []).length) {
+        conv.messages = d.session.messages;
+        if (d.session.convId) conv.convId = d.session.convId;
+        saveConversations(true);
+        if (state.activeId === conv.id) {
+          paintActiveConv();
+        }
+      }
+    }
+  } catch (_) {}
+}
 
 // ── 借鉴 CloudCLI：刷新/重开页面后自动重连到正在运行的后台任务，实时显示思考/工具执行/文本流 ──
 // 服务端 Run Registry 一直在跑（不因前端断开而 kill），重连后回放所有错过的事件并继续接收实时流。
 function tryReconnectToOngoingRun() {
   const conv = activeConv();
   if (!conv) return;
-  if (state.streaming) return; // 正在发消息时不要干扰
+  if (state.streaming) return;
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/ws/chat`;
   const ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    // 发送 subscribe 请求：不创建新任务，只要求挂接到正在跑的 run（如有）
     ws.send(JSON.stringify({
       token: authToken,
       action: 'subscribe',
@@ -3352,52 +3449,85 @@ function tryReconnectToOngoingRun() {
     try { data = JSON.parse(event.data); } catch (_) { return; }
 
     if (data.idle) {
+      activeClientRuns.delete(conv.id);
+      state.streaming = false;
+      updateSendButton();
       try { ws.close(); } catch (_) {}
-      silentSyncActiveConversation();
+      if (data.session && Array.isArray(data.session.messages) && data.session.messages.length > 0) {
+        if (data.session.messages.length >= (conv.messages || []).length) {
+          conv.messages = data.session.messages;
+          if (data.session.convId) conv.convId = data.session.convId;
+          saveConversations(true);
+          paintActiveConv();
+        }
+      } else {
+        silentSyncActiveConversation();
+      }
       return;
     }
 
-    // 第一次收到非 idle 事件 = 后台确实有任务在跑或刚完成
     if (!reconnected && (data.progress || data.delta || data.error)) {
       reconnected = true;
       state.streaming = true;
       updateSendButton();
 
-      // 确保切出空状态
       $("#chat-empty")?.classList.add("hidden");
       $("#chat-feed")?.classList.remove("hidden");
 
-      // 无论最后一条是什么角色，都追加一个流式气泡显示实时进度
       asstNode = appendMsgRow('assistant', '', true);
+      const clientRun = {
+        convId: conv.id,
+        acc: "",
+        toolEvents: toolEvents,
+        asstNode: asstNode,
+        ws: ws,
+        t0: Date.now(),
+        model: state.selectedModel
+      };
+      activeClientRuns.set(conv.id, clientRun);
     }
 
     if (data.error) {
+      activeClientRuns.delete(conv.id);
       if (asstNode) {
         asstNode.bubble.innerHTML = formatMarkdown(data.error, false);
-        asstNode.row.className = 'message-row error';
+        if (asstNode.row) asstNode.row.className = 'message-row error';
       }
       state.streaming = false;
       updateSendButton();
+      try { ws.close(); } catch (_) {}
       return;
     }
 
     if (data.progress) {
+      const tip = data.tip || '正在思考…';
+      const wait = data.waited ? ` (${data.waited}s)` : '';
       if (data.toolName) {
-        toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
+        toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip, waited: data.waited || 0 });
       }
-      if (asstNode && !acc.replace(/​/g, '').trim()) {
-        const tip = data.tip || '正在思考…';
-        const wait = data.waited ? ` (${data.waited}s)` : '';
-        asstNode.bubble.innerHTML = `
-          <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span></div>
+      if (asstNode && asstNode.bubble) {
+        const clean = acc.replace(/​/g, '').trim();
+        const indicatorHtml = `
+          <div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;margin-top:${clean ? '8px' : '0'};">
+            <span class="thinking-dots"><i></i><i></i><i></i></span>
+            <span style="font-size:13px;color:var(--text-muted);font-weight:500;">正在思考中...</span>
+            <span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span>
+          </div>
         `;
+        if (!clean) {
+          asstNode.bubble.innerHTML = indicatorHtml;
+        } else {
+          asstNode.bubble.innerHTML = formatMarkdown(acc, true) + indicatorHtml;
+        }
+        refreshIcons();
+        if (feed) feed.scrollTop = feed.scrollHeight;
       }
       return;
     }
 
     if (data.delta != null && data.delta !== '​') {
       acc += data.delta;
-      if (asstNode) {
+      if (asstNode && asstNode.bubble) {
         asstNode.bubble.innerHTML = formatMarkdown(acc, true);
         refreshIcons();
         if (feed) feed.scrollTop = feed.scrollHeight;
@@ -3410,16 +3540,16 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.done) {
-      if (asstNode) {
+      activeClientRuns.delete(conv.id);
+      if (asstNode && asstNode.bubble) {
         const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
         asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-        asstNode.row.classList.remove('streaming');
+        if (asstNode.row) asstNode.row.classList.remove('streaming');
         state.streaming = false;
         updateSendButton();
         refreshIcons();
         if (cleanAcc || toolEvents.length) {
-          // 避免重复追加
           const lastMsg = conv.messages[conv.messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
             conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined, meta: { model: state.selectedModel } });
@@ -3427,17 +3557,16 @@ function tryReconnectToOngoingRun() {
         }
         saveConversations(true);
       }
+      state.streaming = false;
+      updateSendButton();
       silentSyncActiveConversation();
       try { ws.close(); } catch (_) {}
     }
   };
 
   ws.onclose = () => {
-    if (reconnected && state.streaming) {
-      setTimeout(() => { if (state.streaming) tryReconnectToOngoingRun(); }, 1000);
-    } else {
-      silentSyncActiveConversation();
-    }
+    state.streaming = activeClientRuns.has(conv.id);
+    updateSendButton();
   };
 
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
@@ -3889,10 +4018,11 @@ async function showAccountSwitcher() {
   for (const a of accounts) {
     const isActive = a.email === activeEmail;
     const isPrimary = !!a.isPrimary;
+    const avatarSrc = getAvatarUrl(a.picture, a.name || a.email);
     rows += `
       <div class="acct-row" data-email="${escapeHtml(a.email)}" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;cursor:pointer;${isActive ? 'background:var(--bg-tertiary);' : ''};border:1px solid ${isPrimary ? 'rgba(245,158,11,0.3)' : 'var(--border-color)'};margin-bottom:6px;">
         <div style="position:relative;">
-          <img src="${escapeHtml(a.picture || '')}" style="width:30px;height:30px;border-radius:50%" onerror="this.style.display='none'"/>
+          <img src="${avatarSrc}" style="width:30px;height:30px;border-radius:50%" onerror="this.src='/api/avatar?name=${encodeURIComponent(a.name || a.email || 'G')}'"/>
           ${isPrimary ? '<span style="position:absolute;top:-4px;right:-4px;font-size:10px;">👑</span>' : ''}
         </div>
         <div style="flex:1">
@@ -3963,10 +4093,10 @@ async function showAccountSwitcher() {
         state.latestUsageData = null;
         localStorage.removeItem('agy-cached-usage');
         localStorage.removeItem('claudeResetAt');
-        toast("已切换到 " + (d2.account.label || d2.account.email));
+        toast("✅ 已切换到 " + (d2.account?.label || d2.account?.email || email));
         await refreshSystemStatus();
         await refreshModels();
-        await updateUsageSummary(); // 立即拉取并刷新新账号的真实配额
+        await updateUsageSummary();
         renderLoginArea();
         renderConvList();
       } catch (e2) { toast("切换失败: " + e2.message); }

@@ -45,14 +45,9 @@ html[data-theme="light"] {
 }
 
 html, body {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
   width: 100%;
   height: 100%;
-  height: 100dvh;
+  min-height: 100%;
   margin: 0;
   padding: 0;
   overflow: hidden;
@@ -663,11 +658,9 @@ html, body {
   transform: translateX(14px);
 }
 
-/* Hide completed thinking blocks & completed tool execution details in final response when toggle is off (default) */
-/* Real-time active status (e.g. 正在思考..., 正在修改文件...) will always display normally during generation */
-body.hide-thinking-tools .thinking-block:not(.active),
-body.hide-thinking-tools .tool-event-box {
-  display: none !important;
+/* Thinking blocks & tools display smoothly with collapsible details */
+.thinking-block {
+  display: block !important;
 }
 
 .thinking-active-indicator {
@@ -2738,6 +2731,7 @@ html[data-theme="dark"] .code-content-body {
   transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .login-gate-overlay.hidden {
+  display: none !important;
   opacity: 0 !important;
   visibility: hidden !important;
   pointer-events: none !important;
