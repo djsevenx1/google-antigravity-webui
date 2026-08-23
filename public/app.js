@@ -1950,7 +1950,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
               }
               done(() => resolve());
             }
-          }, 3500);
+          }, 1500);
         };
 
         ws.onopen = () => {
