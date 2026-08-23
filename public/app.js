@@ -3260,6 +3260,7 @@ async function refreshSystemStatus() {
 async function initApp() {
   initTheme();
   initThinkingToggle();
+  initVoiceInput();
   const isAuthed = await checkWebAuthStatus();
   if (!isAuthed) return;
   await refreshSystemStatus();
@@ -3558,6 +3559,102 @@ function renderAttachmentPreview() {
       renderAttachmentPreview();
     });
   });
+}
+
+// ── 语音输入 (Web Speech API 实时听写) ──
+let voiceRecognition = null;
+let isVoiceRecording = false;
+
+function initVoiceInput() {
+  const btnMic = $("#btn-mic");
+  if (!btnMic) return;
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    btnMic.addEventListener("click", () => {
+      toast("当前浏览器暂不支持 Web Speech API，建议使用 Chrome/Edge 浏览器或手机输入法自带语音");
+    });
+    return;
+  }
+
+  try {
+    voiceRecognition = new SpeechRecognition();
+    voiceRecognition.continuous = true;
+    voiceRecognition.interimResults = true;
+    voiceRecognition.lang = navigator.language || "zh-CN";
+
+    let prefixText = "";
+
+    voiceRecognition.onstart = () => {
+      isVoiceRecording = true;
+      btnMic.classList.add("recording");
+      btnMic.setAttribute("title", "正在录音，点击停止");
+      const inputEl = $("#input");
+      prefixText = inputEl ? inputEl.value : "";
+      if (prefixText && !prefixText.endsWith(" ") && !prefixText.endsWith("\n")) {
+        prefixText += " ";
+      }
+      toast("🎙️ 正在倾听中... 说完后点击麦克风停止");
+    };
+
+    voiceRecognition.onresult = (event) => {
+      let finalTranscript = "";
+      let interimTranscript = "";
+
+      for (let i = 0; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+
+      const inputEl = $("#input");
+      if (inputEl) {
+        inputEl.value = prefixText + finalTranscript + interimTranscript;
+        inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+        inputEl.scrollTop = inputEl.scrollHeight;
+      }
+    };
+
+    voiceRecognition.onerror = (event) => {
+      console.warn("[Voice Input]", event.error);
+      if (event.error === "not-allowed") {
+        toast("麦克风权限已被禁止，请在浏览器地址栏允许麦克风权限");
+      } else if (event.error !== "no-speech") {
+        toast(`语音输入提示: ${event.error}`);
+      }
+      stopVoiceRecording();
+    };
+
+    voiceRecognition.onend = () => {
+      stopVoiceRecording();
+    };
+
+    btnMic.addEventListener("click", () => {
+      if (isVoiceRecording) {
+        try { voiceRecognition.stop(); } catch (_) {}
+        stopVoiceRecording();
+      } else {
+        try {
+          voiceRecognition.start();
+        } catch (err) {
+          console.warn("Speech recognition start failed:", err);
+          stopVoiceRecording();
+        }
+      }
+    });
+
+    function stopVoiceRecording() {
+      isVoiceRecording = false;
+      if (btnMic) {
+        btnMic.classList.remove("recording");
+        btnMic.setAttribute("title", "语音输入 (按一下开始/结束)");
+      }
+    }
+  } catch (err) {
+    console.warn("SpeechRecognition init error:", err);
+  }
 }
 
 // ── 现代化工作区文件管理与代码编辑器（路径导航模式）──
@@ -4366,4 +4463,81 @@ window.showDebugModal = async function showDebugModal() {
     consoleEl.innerHTML = debugLogsHistory.map(l => `<div class="debug-log-line ${l.type}">[${l.time}] [${l.type.toUpperCase()}] ${escapeHtml(l.msg)}</div>`).join('');
     consoleEl.scrollTop = consoleEl.scrollHeight;
   }
+};
+
+// === 调试增强: 服务端日志 + 一键操作 ===
+window.__fetchServerLog = async function(type) {
+  try {
+    const res = await fetch('/api/debug-log?type=' + type);
+    const data = await res.json();
+    return data.lines || [];
+  } catch(e) { return ['[获取失败: ' + e.message + ']']; }
+};
+
+window.__forceResetStreaming = function() {
+  state.streaming = false;
+  if (currentWs) { try { currentWs.close(); } catch(e){} currentWs = null; }
+  if (abortCtrl) { try { abortCtrl.abort(); } catch(e){} abortCtrl = null; }
+  activeClientRuns.clear();
+  updateSendButton();
+  paintActiveConv();
+  addClientLog('ok', '已强制重置流式状态 (streaming=false)');
+  toast('已强制重置，发送按钮已恢复');
+};
+
+window.__testStatus = async function() {
+  addClientLog('info', '正在测试 /api/status...');
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (data.googleAccount) {
+      addClientLog('ok', '/api/status ✅ googleAccount有 picture:' + (data.googleAccount.picture ? '有' : '无'));
+    } else {
+      addClientLog('err', '/api/status ❌ 无 googleAccount');
+    }
+    if (data.cli) {
+      addClientLog('ok', 'cli: installed=' + data.cli.installed + ' authed=' + data.cli.authenticated);
+    }
+  } catch(e) { addClientLog('err', '/api/status 报错: ' + e.message); }
+};
+
+window.__testHeartbeat = async function() {
+  addClientLog('info', '正在测试 /api/heartbeat...');
+  try {
+    const res = await fetch('/api/heartbeat');
+    const data = await res.json();
+    addClientLog('ok', '/api/heartbeat ✅ uptime=' + data.uptime + 'ms');
+  } catch(e) { addClientLog('err', '/api/heartbeat ❌ ' + e.message); }
+};
+
+window.__showServerLogs = async function() {
+  addClientLog('info', '正在获取服务端日志...');
+  const lines = await __fetchServerLog('server');
+  addClientLog('info', '--- server.log 尾部 ---');
+  lines.slice(-20).forEach(l => addClientLog('info', l.slice(0,200)));
+};
+
+window.__showChatDebug = async function() {
+  addClientLog('info', '正在获取对话调试日志...');
+  const lines = await __fetchServerLog('chat');
+  addClientLog('info', '--- chat-debug.log 尾部 ---');
+  lines.slice(-15).forEach(l => addClientLog('info', l.slice(0,200)));
+};
+
+window.__dumpState = function() {
+  addClientLog('info', '=== 全量状态转储 ===');
+  addClientLog('info', 'authToken: ' + (authToken ? authToken.slice(0,10)+'...' : '空'));
+  addClientLog('info', 'state.streaming: ' + state.streaming);
+  addClientLog('info', 'state.selectedModel: ' + state.selectedModel);
+  addClientLog('info', 'state.status: ' + (state.status ? '有' : 'null'));
+  if (state.status) {
+    addClientLog('info', '  googleAccount: ' + (state.status.googleAccount ? '有' : 'null'));
+    addClientLog('info', '  cli.authed: ' + state.status?.cli?.authenticated);
+  }
+  addClientLog('info', 'activeClientRuns.size: ' + activeClientRuns.size);
+  addClientLog('info', 'currentWs: ' + (currentWs ? ('readyState=' + currentWs.readyState) : 'null'));
+  addClientLog('info', 'conversations: ' + (state.conversations?.length || 0));
+  const conv = state.conversations?.find(c => c.id === state.activeId);
+  addClientLog('info', 'activeConv: ' + (conv ? (conv.id + ' msgs=' + (conv.messages?.length||0) + ' convId=' + (conv.convId||'null')) : 'null'));
+  addClientLog('ok', '状态转储完成');
 };
