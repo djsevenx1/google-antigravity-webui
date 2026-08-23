@@ -2466,9 +2466,19 @@ html[data-theme="dark"] .code-content-body {
   border-radius: 0 12px 12px 12px;
 }
 
-/* 附件上传按钮 */
-.attach-btn { display:flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:8px; color:var(--text-muted); cursor:pointer; transition:background 0.15s; background:transparent; border:none; flex-shrink:0; }
-.attach-btn:hover { background:var(--bg-secondary); color:var(--accent); }
+/* 附件上传按钮与语音录音按钮 */
+.attach-btn, .mic-btn { display:flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:8px; color:var(--text-muted); cursor:pointer; transition:all 0.15s ease; background:transparent; border:none; flex-shrink:0; }
+.attach-btn:hover, .mic-btn:hover { background:var(--bg-secondary); color:var(--accent); }
+.mic-btn.recording {
+  color: #ef4444 !important;
+  background: rgba(239, 68, 68, 0.12) !important;
+  animation: mic-recording-pulse 1.4s infinite ease-in-out;
+}
+@keyframes mic-recording-pulse {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50% { transform: scale(1.08); box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
 .attachment-preview { display:flex; flex-wrap:wrap; gap:4px; padding:4px 0; }
 .attach-chip { display:inline-flex; align-items:center; gap:4px; }
 .attach-chip:hover { border-color:var(--accent) !important; }
