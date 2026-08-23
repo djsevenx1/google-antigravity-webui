@@ -1729,22 +1729,73 @@ function updateSendButton() {
 }
 
 function stopGenerating() {
-  if (currentWs) { try { currentWs.close(); } catch (_) {} currentWs = null; }
+  state.streaming = false;
+  
+  // 1. 遍历当前所有活跃客户端任务，全部打上 aborted 标记并关闭 socket / abortController
+  activeClientRuns.forEach(run => {
+    run.aborted = true;
+    if (run.abortCtrl) {
+      try { run.abortCtrl.abort(); } catch (_) {}
+      run.abortCtrl = null;
+    }
+    if (run.ws) {
+      try {
+        if (run.ws.readyState === WebSocket.OPEN) {
+          run.ws.send(JSON.stringify({ action: 'abort', conversationKey: run.convId }));
+        }
+        run.ws.close();
+      } catch (_) {}
+      run.ws = null;
+    }
+    const targetNode = run.asstNode;
+    if (targetNode) {
+      if (targetNode.row) targetNode.row.classList.remove("streaming");
+      const ind = targetNode.bubble?.querySelector(".thinking-active-indicator");
+      if (ind) ind.remove();
+      const cleanText = (run.acc || "").replace(/[\u200b]/g, "").trim();
+      if (targetNode.bubble) {
+        if (cleanText) {
+          targetNode.bubble.innerHTML = formatMarkdown(cleanText + "\n\n*(已停止生成)*", false);
+        } else {
+          targetNode.bubble.innerHTML = `<span style="color:var(--text-dim);font-size:13px;font-style:italic;">(已停止生成)</span>`;
+        }
+        refreshIcons();
+      }
+    }
+  });
+
+  if (currentWs) {
+    try {
+      if (currentWs.readyState === WebSocket.OPEN) {
+        currentWs.send(JSON.stringify({ action: 'abort' }));
+      }
+      currentWs.close();
+    } catch (_) {}
+    currentWs = null;
+  }
   if (abortCtrl) {
     try { abortCtrl.abort(); } catch (_) {}
     abortCtrl = null;
   }
+
+  // 2. 移除 DOM 里所有的 streaming 动画状态与思考提示
+  document.querySelectorAll("#chat-feed .message-row.streaming").forEach(row => {
+    row.classList.remove("streaming");
+    const ind = row.querySelector(".thinking-active-indicator");
+    if (ind) ind.remove();
+  });
+
+  // 3. 通知后端立即 kill CLI 底层进程
   const conv = activeConv();
   if (conv) {
-    activeClientRuns.delete(conv.id);
     fetch("/api/chat/abort", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversationKey: conv.id, conversationId: conv.convId })
     }).catch(() => {});
   }
+
   activeClientRuns.clear();
-  state.streaming = false;
   updateSendButton();
   renderConvList();
 }
@@ -1758,7 +1809,7 @@ setInterval(() => {
       updateSendButton();
     }
   }
-}, 800);
+}, 500);
 
 async function handleSend() {
   if (state.streaming) {
@@ -1920,8 +1971,19 @@ async function runConversationTurn(text, appendUserMsg = true) {
         };
 
         ws.onmessage = (event) => {
+          if (clientRun.aborted) {
+            receivedDone = true;
+            done(() => resolve());
+            return;
+          }
           let data;
           try { data = JSON.parse(event.data); } catch (_) { return; }
+          if (data.aborted) {
+            clientRun.aborted = true;
+            receivedDone = true;
+            done(() => resolve());
+            return;
+          }
           if (data.unauthenticated) { showLoginGate(); done(() => reject(new Error("请先登录"))); return; }
           if (data.idle) { receivedDone = true; done(() => resolve()); return; } // 后台没在跑，当 done 处理
           if (data.meta && data.meta.autoCompacted) {
@@ -2004,6 +2066,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
         ws.onerror = () => { done(() => reject(new Error('network error'))); };
         ws.onclose = () => {
+          if (clientRun.aborted) {
+            receivedDone = true;
+            done(() => resolve());
+            return;
+          }
           // 如果已收到 done 或已经有完整的回答文本，直接圆满结束当前轮次，绝不无限挂起等待！
           if (receivedDone) { done(() => resolve()); return; }
           if (streamError) { done(() => reject(streamError)); return; }
@@ -2028,7 +2095,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
       if (needsPerm) throw Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput });
       break;
     } catch (e) {
-      const isAbort = e && e.name === "AbortError";
+      if (clientRun.aborted || (e && e.name === "AbortError")) {
+        break;
+      }
       const errMsg = (e && e.message) || "请求失败（未知错误）";
       const isNetErr = /network error|failed to fetch|load failed/i.test(errMsg);
 
@@ -2055,8 +2124,19 @@ async function runConversationTurn(text, appendUserMsg = true) {
               }));
             };
             wsRetry.onmessage = (event) => {
+              if (clientRun.aborted) {
+                receivedDone = true;
+                done2(() => resolve());
+                return;
+              }
               let data;
               try { data = JSON.parse(event.data); } catch (_) { return; }
+              if (data.aborted) {
+                clientRun.aborted = true;
+                receivedDone = true;
+                done2(() => resolve());
+                return;
+              }
               if (data.idle) { done2(() => resolve()); return; } // 后台没在跑
               if (data.error) { streamError = new Error(data.error); done2(() => reject(streamError)); return; }
               if (data.progress) {
@@ -2086,6 +2166,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
             };
             wsRetry.onerror = () => { done2(() => reject(new Error('network error'))); };
             wsRetry.onclose = () => {
+              if (clientRun.aborted) {
+                receivedDone = true;
+                done2(() => resolve());
+                return;
+              }
               if (receivedDone || (acc && acc.replace(/[\u200b\s]/g, '').length > 0)) {
                 receivedDone = true;
                 done2(() => resolve());
