@@ -1749,11 +1749,25 @@ function updateSendButton() {
 function stopGenerating() {
   if (currentWs) { try { currentWs.close(); } catch (_) {} currentWs = null; }
   if (abortCtrl) {
-    abortCtrl.abort();
+    try { abortCtrl.abort(); } catch (_) {}
+    abortCtrl = null;
   }
-  toast("context canceled");
+  activeClientRuns.clear();
+  state.streaming = false;
+  updateSendButton();
+  // 清除思考动画:把最后一个助手气泡的思考指示器去掉
   const conv = activeConv();
   if (conv) {
+    const lastMsg = conv.messages[conv.messages.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant') {
+      // 如果没有实质内容,移除这条空助手消息
+      if (!lastMsg.content || !lastMsg.content.replace(/\u200b/g,'').trim()) {
+        conv.messages.pop();
+      }
+    }
+    saveConversations(true);
+    paintActiveConv();
+    renderConvList();
     fetch("/api/chat/abort", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1762,13 +1776,26 @@ function stopGenerating() {
   }
 }
 
-// streaming 看门狗：对话结束后若 streaming 残留(ws 断了 done 没到)，自动重置
+// streaming 看门狗：对话结束后若 streaming 残留(ws 断了 done 没到)，自动重置 + 清思考动画
 setInterval(() => {
   if (state.streaming) {
     const noConn = !currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING;
     if (noConn && activeClientRuns.size === 0) {
       state.streaming = false;
       updateSendButton();
+      // 清除思考动画:重绘当前对话
+      try {
+        const conv = activeConv();
+        if (conv) {
+          const lastMsg = conv.messages[conv.messages.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant' && (!lastMsg.content || !lastMsg.content.replace(/\u200b/g,'').trim())) {
+            conv.messages.pop();
+            saveConversations(true);
+          }
+        }
+        paintActiveConv();
+        renderConvList();
+      } catch(_) {}
     }
   }
 }, 2000);
@@ -2125,9 +2152,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
         if (targetNode && targetNode.bubble) {
           const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
           if (cleanAcc) {
-            targetNode.bubble.innerHTML = formatMarkdown(acc, false) + `<div style="margin-top:8px;font-size:12.5px;color:var(--text-muted);font-style:italic;">context canceled</div>`;
+            targetNode.bubble.innerHTML = formatMarkdown(acc, false) + `<div style="margin-top:8px;font-size:12.5px;color:var(--text-muted);font-style:italic;">(已中止)</div>`;
           } else {
-            targetNode.bubble.innerHTML = `<div style="font-size:13px;color:var(--text-muted);font-style:italic;">context canceled</div>`;
+            targetNode.bubble.innerHTML = `<div style="font-size:13px;color:var(--text-muted);font-style:italic;">(已中止)</div>`;
           }
         }
       } else {
