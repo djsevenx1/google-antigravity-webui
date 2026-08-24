@@ -2269,10 +2269,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
         const quotaSnapshot = {
-          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 49.9),
-          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 25分钟' : '1小时 10分钟'),
-          weeklyPercent: (weeklyWindow?.percent != null && weeklyWindow.percent > 0) ? weeklyWindow.percent : (isClaude ? 59.2 : 50.3),
-          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 23小时',
+          percent: poolWindow?.percent != null ? poolWindow.percent : null,
+          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || null,
+          weeklyPercent: (weeklyWindow?.percent != null && weeklyWindow.percent >= 0) ? weeklyWindow.percent : null,
+          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || null,
           model: state.selectedModel
         };
 
@@ -3436,18 +3436,21 @@ async function initApp() {
           if (conv && conv.messages && !state.streaming && !__reconnecting && !activeClientRuns.has(conv.id)) {
             let updated = false;
             conv.messages.forEach(m => {
-              if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot || !m.meta.quotaSnapshot.weeklyPercent || m.meta.quotaSnapshot.weeklyPercent === 0)) {
+              if (m.role === 'assistant') {
                 if (!m.meta) m.meta = {};
                 const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
                 const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
                 const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
-                m.meta.quotaSnapshot = {
-                  percent: pool?.percent != null ? pool.percent : 100,
-                  resetIn: pool?.resetsIn || pool?.resetText || '4小时 25分钟',
-                  weeklyPercent: (weekly?.percent != null && weekly.percent > 0) ? weekly.percent : (isClaude ? 59.2 : 50.3),
-                  model: m.meta.model || state.selectedModel
-                };
-                updated = true;
+                if (pool?.percent != null || weekly?.percent != null) {
+                  m.meta.quotaSnapshot = {
+                    percent: pool?.percent != null ? pool.percent : m.meta?.quotaSnapshot?.percent,
+                    resetIn: pool?.resetsIn || pool?.resetText || m.meta?.quotaSnapshot?.resetIn,
+                    weeklyPercent: weekly?.percent != null ? weekly.percent : m.meta?.quotaSnapshot?.weeklyPercent,
+                    weeklyResetIn: weekly?.resetsIn || weekly?.resetText || m.meta?.quotaSnapshot?.weeklyResetIn,
+                    model: m.meta.model || state.selectedModel
+                  };
+                  updated = true;
+                }
               }
             });
             if (updated) {
