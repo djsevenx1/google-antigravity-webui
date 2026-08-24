@@ -197,7 +197,7 @@ import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
-import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, ensurePrimaryAccount, readActiveToken } from './lib/accounts.js';
+import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts } from './lib/accounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -1975,11 +1975,16 @@ wss.on('connection', (ws, req) => {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
 
-      // 2. 核心修复：立刻向前端发送 done 信号与当前最新配额快照，毫秒级收尾
+      // 2. 核心修复：对话完成后立即刷新 Google 云端最新真实配额并广播最新快照
       run.done = true;
-      const immediateQuotaData = buildLiveWindowsData();
-      broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: immediateQuotaData });
-      refreshGoogleProfileInBackground(true).catch(() => {});
+      try {
+        const freshProfile = await refreshGoogleProfileInBackground(true);
+        const immediateQuotaData = buildLiveWindowsData(freshProfile);
+        broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: immediateQuotaData });
+      } catch (_) {
+        const fallbackQuota = buildLiveWindowsData();
+        broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: fallbackQuota });
+      }
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
