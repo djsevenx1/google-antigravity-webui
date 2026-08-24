@@ -2855,7 +2855,7 @@ async function showUsageModal(manualRefresh = false) {
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           <div id="usage-tier-badge" class="usage-tier-pill" style="background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(147,51,234,0.15));border:1px solid rgba(147,51,234,0.3);color:#818cf8;font-weight:600;">Google AI Pro</div>
-          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:5px;color:var(--accent);cursor:pointer;border-radius:12px;background:var(--bg-secondary);border:1px solid var(--border-color);" onclick="showUsageModal()">
+          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:5px;color:var(--accent);cursor:pointer;border-radius:12px;background:var(--bg-secondary);border:1px solid var(--border-color);" onclick="showUsageModal(true)">
             <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i>
             <span>实时刷新</span>
           </button>
@@ -3313,22 +3313,7 @@ async function initApp() {
     renderModelSelect();
   }
 
-  // 1b. 同步从 localStorage 恢复历史对话（fix: 防止每次刷新都新建对话）
-  try {
-    const raw = localStorage.getItem("agy-conversations-v2") || localStorage.getItem("agy-convs");
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr) && arr.length) state.conversations = arr;
-    }
-    const last = localStorage.getItem("agy-active-conv-v2") || localStorage.getItem("agy-active-conv") || "";
-    if (last && state.conversations.some(c => c.id === last)) {
-      state.activeId = last;
-    } else if (state.conversations.length) {
-      state.activeId = state.conversations[0].id;
-    }
-  } catch (_) {}
-
-  // 1c. 同步从 localStorage 恢复账号缓存（fix: 防止刷新时闪 Google 登录按钮）
+  // 1b. 从 localStorage 恢复账号缓存(防刷新闪登录按钮)
   try {
     const cachedStatus = JSON.parse(localStorage.getItem("agy-cached-status") || "null");
     if (cachedStatus) state.status = cachedStatus;
