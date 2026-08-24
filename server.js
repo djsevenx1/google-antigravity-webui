@@ -1,9 +1,14 @@
 
-export function buildLiveWindowsData() {
-  const summary = cachedGoogleProfile?.liveQuotaSummary;
-  const buckets = cachedGoogleProfile?.liveQuotaBuckets || [];
-  const apiModels = cachedGoogleProfile?.liveModelsQuota || {};
-  const tierData = cachedGoogleProfile?.tierData || parseGoogleAccountTier(null, null);
+export function buildLiveWindowsData(profile = cachedGoogleProfile) {
+  const activeToken = readActiveToken();
+  const activeRt = activeToken?.token?.refresh_token;
+  const accounts = listAccounts();
+  const acc = (activeRt ? accounts.find(a => a.tokenData?.token?.refresh_token === activeRt) : null) || accounts.find(a => a.email === profile?.email) || accounts[0];
+
+  const summary = profile?.liveQuotaSummary || acc?.quotaSummary;
+  const buckets = profile?.liveQuotaBuckets || acc?.quotaBuckets || [];
+  const apiModels = profile?.liveModelsQuota || {};
+  const tierData = profile?.tierData || acc?.tierData || parseGoogleAccountTier(null, activeToken);
 
   const now = new Date();
   const fiveHourMs = 5 * 3600 * 1000;
@@ -440,103 +445,126 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
 }
 
 export async function refreshGoogleProfileInBackground(force = false) {
-  if (!force && Date.now() - profileFetchedAt < 30000 && cachedGoogleProfile?.liveQuotaSummary && cachedGoogleProfile?.liveQuotaBuckets) return cachedGoogleProfile;
-  const tokenPaths = [
-    path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
-    '/vol5/@apphome/claude code/.gemini/antigravity-cli/antigravity-oauth-token'
-  ];
-  for (const tp of tokenPaths) {
+  const activeToken = readActiveToken();
+  const activeRt = activeToken?.token?.refresh_token;
+  const accounts = listAccounts();
+  const currentAcc = (activeRt ? accounts.find(a => a.tokenData?.token?.refresh_token === activeRt) : null) || accounts.find(a => a.email === cachedGoogleProfile?.email) || accounts[0];
+
+  if (!force && Date.now() - profileFetchedAt < 30000 && cachedGoogleProfile?.liveQuotaSummary && cachedGoogleProfile?.email === currentAcc?.email) {
+    return cachedGoogleProfile;
+  }
+
+  let raw = activeToken || currentAcc?.tokenData;
+  if (!raw) return cachedGoogleProfile;
+
+  // 确保 Token 未过期
+  raw = await ensureValidToken(raw);
+  let token = raw?.token?.access_token;
+  if (!token) return cachedGoogleProfile;
+
+  const projectId = raw.projectId || 'corded-weaver-gq6d2';
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'User-Agent': 'antigravity/1.1.19'
+  };
+
+  let [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
+    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) }),
+    fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
+    fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) }),
+    fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) }),
+    fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) })
+  ]);
+
+  // 如果遇到 401，立即强制刷新 Token 并重试一次
+  if (quotaSummaryRes.status === 'fulfilled' && quotaSummaryRes.value.status === 401) {
+    raw = await refreshAccessToken(raw);
+    token = raw?.token?.access_token;
+    if (token) {
+      writeActiveToken(raw);
+      headers.Authorization = `Bearer ${token}`;
+      [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
+        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) }),
+        fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
+        fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) }),
+        fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) }),
+        fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) })
+      ]);
+    }
+  }
+
+  let profile = {};
+  if (userinfoRes.status === 'fulfilled' && userinfoRes.value.ok) {
+    try { profile = await userinfoRes.value.json(); } catch (_) {}
+  }
+
+  let liveTierInfo = null;
+  if (tierRes.status === 'fulfilled' && tierRes.value.ok) {
+    try { liveTierInfo = await tierRes.value.json(); } catch (_) {}
+  }
+
+  let liveQuotaSummary = null;
+  if (quotaSummaryRes.status === 'fulfilled' && quotaSummaryRes.value.ok) {
     try {
-      if (fs.existsSync(tp)) {
-        let raw = JSON.parse(fs.readFileSync(tp, 'utf-8'));
-        let token = raw?.token?.access_token;
-        if (!token) continue;
-
-        const projectId = raw.projectId || 'corded-weaver-gq6d2';
-        const headers = {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'antigravity/1.1.19'
-        };
-
-        const [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-          fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) }),
-          fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
-          fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) }),
-          fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) }),
-          fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify(projectId ? { project: projectId } : {}), signal: AbortSignal.timeout(4000) })
-        ]);
-
-        let profile = {};
-        if (userinfoRes.status === 'fulfilled' && userinfoRes.value.ok) {
-          try { profile = await userinfoRes.value.json(); } catch (_) {}
-        }
-
-        let liveTierInfo = null;
-        if (tierRes.status === 'fulfilled' && tierRes.value.ok) {
-          try { liveTierInfo = await tierRes.value.json(); } catch (_) {}
-        }
-
-        let liveQuotaSummary = null;
-        if (quotaSummaryRes.status === 'fulfilled' && quotaSummaryRes.value.ok) {
-          try {
-            const sData = await quotaSummaryRes.value.json();
-            if (Array.isArray(sData?.groups)) liveQuotaSummary = sData;
-          } catch (_) {}
-        }
-
-        let liveQuotaBuckets = null;
-        if (quotaRes.status === 'fulfilled' && quotaRes.value.ok) {
-          try {
-            const qData = await quotaRes.value.json();
-            if (Array.isArray(qData?.buckets)) liveQuotaBuckets = qData.buckets;
-          } catch (_) {}
-        } else if (quotaRes.status === 'fulfilled' && quotaRes.value.status === 401) {
-          // Token expired, trigger CLI refresh asynchronously
-          fetchModels().catch(() => {});
-        }
-
-        let liveModelsQuota = null;
-        if (modelsRes.status === 'fulfilled' && modelsRes.value.ok) {
-          try {
-            const mData = await modelsRes.value.json();
-            if (mData?.models) liveModelsQuota = mData.models;
-          } catch (_) {}
-        }
-
-        const tierData = parseGoogleAccountTier(liveTierInfo, raw);
-        const accounts = listAccounts();
-        const activeRt = raw?.token?.refresh_token;
-        const matchedAcc = accounts.find(a => a.tokenData?.token?.refresh_token === activeRt) || (profile.email ? accounts.find(a => a.email === profile.email) : null);
-        const currentEmail = profile.email || matchedAcc?.email || (await getActiveAccountEmail()) || 'Google 用户';
-        const currentName = profile.name || matchedAcc?.name || (currentEmail ? currentEmail.split('@')[0] : 'Google 用户');
-        const currentPicture = profile.picture || matchedAcc?.picture || 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c';
-
-        cachedGoogleProfile = {
-          email: currentEmail,
-          name: currentName,
-          picture: currentPicture,
-          tier: tierData.name,
-          tierType: tierData.type,
-          tierBadge: tierData.badge,
-          tierData,
-          tierDetails: liveTierInfo?.allowedTiers?.[0] || null,
-          liveApiConnected: !!liveTierInfo,
-          liveQuotaSummary: liveQuotaSummary || cachedGoogleProfile?.liveQuotaSummary || null,
-          liveModelsQuota: liveModelsQuota || cachedGoogleProfile?.liveModelsQuota || null,
-          liveQuotaBuckets: liveQuotaBuckets || cachedGoogleProfile?.liveQuotaBuckets || null,
-          authMethod: raw.auth_method || 'consumer',
-          expiry: raw.token?.expiry || null,
-          useG1Credits: tierData.useG1Credits
-        };
-        profileFetchedAt = Date.now();
-        try {
-          fs.writeFileSync(PROFILE_CACHE_FILE, JSON.stringify(cachedGoogleProfile, null, 2));
-        } catch (_) {}
-        return cachedGoogleProfile;
-      }
+      const sData = await quotaSummaryRes.value.json();
+      if (Array.isArray(sData?.groups)) liveQuotaSummary = sData;
     } catch (_) {}
   }
+
+  let liveQuotaBuckets = null;
+  if (quotaRes.status === 'fulfilled' && quotaRes.value.ok) {
+    try {
+      const qData = await quotaRes.value.json();
+      if (Array.isArray(qData?.buckets)) liveQuotaBuckets = qData.buckets;
+    } catch (_) {}
+  }
+
+  let liveModelsQuota = null;
+  if (modelsRes.status === 'fulfilled' && modelsRes.value.ok) {
+    try {
+      const mData = await modelsRes.value.json();
+      if (mData?.models) liveModelsQuota = mData.models;
+    } catch (_) {}
+  }
+
+  const tierData = parseGoogleAccountTier(liveTierInfo, raw);
+  const currentEmail = profile.email || currentAcc?.email || 'Google 用户';
+  const currentName = profile.name || currentAcc?.name || (currentEmail ? currentEmail.split('@')[0] : 'Google 用户');
+  const currentPicture = profile.picture || currentAcc?.picture || 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c';
+
+  // 同步写回 accounts.json
+  if (liveQuotaSummary || liveQuotaBuckets) {
+    const accList = listAccounts();
+    const idx = accList.findIndex(a => a.email === currentEmail);
+    if (idx >= 0) {
+      if (liveQuotaSummary) accList[idx].quotaSummary = liveQuotaSummary;
+      if (liveQuotaBuckets) accList[idx].quotaBuckets = liveQuotaBuckets;
+      saveAccounts(accList);
+    }
+  }
+
+  cachedGoogleProfile = {
+    email: currentEmail,
+    name: currentName,
+    picture: currentPicture,
+    tier: tierData.name,
+    tierType: tierData.type,
+    tierBadge: tierData.badge,
+    tierData,
+    tierDetails: liveTierInfo?.allowedTiers?.[0] || null,
+    liveApiConnected: !!liveTierInfo,
+    liveQuotaSummary: liveQuotaSummary || currentAcc?.quotaSummary || null,
+    liveModelsQuota: liveModelsQuota || cachedGoogleProfile?.liveModelsQuota || null,
+    liveQuotaBuckets: liveQuotaBuckets || currentAcc?.quotaBuckets || null,
+    authMethod: raw.auth_method || 'consumer',
+    expiry: raw.token?.expiry || null,
+    useG1Credits: tierData.useG1Credits
+  };
+  profileFetchedAt = Date.now();
+  try {
+    fs.writeFileSync(PROFILE_CACHE_FILE, JSON.stringify(cachedGoogleProfile, null, 2));
+  } catch (_) {}
   return cachedGoogleProfile;
 }
 
@@ -567,7 +595,9 @@ export function getActiveGoogleProfile() {
       tierBadge: tierData.badge,
       tierData,
       tierDetails: null,
-      liveApiConnected: false,
+      liveApiConnected: !!acc.quotaSummary,
+      liveQuotaSummary: acc.quotaSummary || null,
+      liveQuotaBuckets: acc.quotaBuckets || null,
       authMethod: acc.authMethod || 'consumer',
       expiry: acc.tokenData?.token?.expiry || null,
       useG1Credits: tierData.useG1Credits
