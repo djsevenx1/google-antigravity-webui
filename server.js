@@ -1972,15 +1972,17 @@ wss.on('connection', (ws, req) => {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
 
-      // 2. 先立即发 done，让前端解锁输入框，然后后台强制刷新 Google 上游真实配额再推送
+      // 2. 关键修复：先从 Google 上游拉取最新扣减配额，再封装进 done 包广播（确保前端收到最新的实时配额）
       run.done = true;
-      broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: buildLiveWindowsData() });
-      // 后台异步强制从 Google 拉最新数据，完成后再推一次最新 liveQuota
       profileFetchedAt = 0;
-      refreshGoogleProfileInBackground(true).then(freshProfile => {
+      try {
+        const freshProfile = await refreshGoogleProfileInBackground(true);
         const freshQuota = buildLiveWindowsData(freshProfile);
-        broadcast({ liveQuotaUpdate: true, liveQuota: freshQuota });
-      }).catch(() => {});
+        broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: freshQuota });
+      } catch (_) {
+        const fallbackQuota = buildLiveWindowsData();
+        broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: fallbackQuota });
+      }
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
