@@ -88,6 +88,43 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   `;
 }
 
+function updateAllQuotaPillsOnScreen(liveQuota = state.latestUsageData) {
+  if (!liveQuota || !liveQuota.windows) return;
+  const pills = $$(".msg-usage-pill");
+  pills.forEach((pill) => {
+    const modelTag = pill.querySelector(".msg-model-tag span");
+    const modelText = modelTag ? modelTag.textContent.toLowerCase() : "";
+    const isClaudeOrGpt = modelText.includes("claude") || modelText.includes("gpt") || modelText.includes("oss");
+    const pool = isClaudeOrGpt ? liveQuota.windows.claude5h : liveQuota.windows.fiveHour;
+    const weekly = isClaudeOrGpt ? liveQuota.windows.claudeWeekly : liveQuota.windows.weekly;
+
+    if (pool && weekly) {
+      const bars = pill.querySelectorAll(".msg-mini-bar-item");
+      if (bars.length >= 2) {
+        // Pool bar (5h)
+        const poolFill = bars[0].querySelector(".msg-bar-fill");
+        const poolPctSpan = bars[0].querySelector("span[style*='font-weight:600']");
+        const poolResetSpan = bars[0].querySelector("span[style*='font-family:monospace']");
+        if (poolFill) {
+          poolFill.style.width = Math.max(4, pool.percent) + "%";
+          if (pool.percent <= 10) poolFill.classList.add("danger");
+          else poolFill.classList.remove("danger");
+        }
+        if (poolPctSpan) poolPctSpan.textContent = `${pool.percent}%`;
+        if (poolResetSpan) poolResetSpan.textContent = `(${formatPreciseTimeTag(pool.resetsIn || pool.resetText)})`;
+
+        // Weekly bar
+        const weeklyFill = bars[1].querySelector(".msg-bar-fill");
+        const weeklyPctSpan = bars[1].querySelector("span[style*='font-weight:600']");
+        const weeklyResetSpan = bars[1].querySelector("span[style*='font-family:monospace']");
+        if (weeklyFill) weeklyFill.style.width = Math.max(4, weekly.percent) + "%";
+        if (weeklyPctSpan) weeklyPctSpan.textContent = `${weekly.percent}%`;
+        if (weeklyResetSpan) weeklyResetSpan.textContent = `(${formatPreciseTimeTag(weekly.resetsIn || weekly.resetText)})`;
+      }
+    }
+  });
+}
+
 // Google Antigravity Web UI - Modernized Frontend Application
 
 const $ = (s) => document.querySelector(s);
@@ -613,7 +650,10 @@ function updateUsageSummary(quotaData = null) {
       badgeEl.title = `${d.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
     }
 
-    // 2. 如果当前有打开的会话，且未在流式生成中，重刷所有气泡底部的配额条
+    // 2. 直接即时更新屏幕上所有气泡底部的配额卡片
+    updateAllQuotaPillsOnScreen(d);
+
+    // 3. 如果当前有打开的会话，且未在流式生成中，重刷所有气泡底部的配额条
     if (!state.streaming && activeClientRuns.size === 0 && $("#chat-feed") && $("#chat-feed").children.length > 0) {
       paintActiveConv();
     }
