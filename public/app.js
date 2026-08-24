@@ -33,30 +33,18 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
-  // 1. 优先读取已固化的历史快照
-  let h5Pct = meta?.quotaSnapshot?.percent;
-  let h5Reset = meta?.quotaSnapshot?.resetIn;
-  let weeklyPct = (meta?.quotaSnapshot?.weeklyPercent != null && meta.quotaSnapshot.weeklyPercent >= 0) ? meta.quotaSnapshot.weeklyPercent : null;
-  let weeklyReset = meta?.quotaSnapshot?.weeklyResetIn;
-
-  // 2. 实时从 state.latestUsageData 或 localStorage 抓取真实数据
+  // 1. 优先读取当前激活账号的实时配额（state.latestUsageData），确保切换账号或对话结束后气泡底部的额度实时变动
   const quota = state.latestUsageData?.windows || {};
   const isThirdParty = isClaude || isGpt; // Claude 和 GPT 都读三方池
-  if (!isThirdParty) {
-    // Gemini 读 Gemini 配额池
-    const w = quota.fiveHour;
-    if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
-    const ww = quota.weekly;
-    if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
-  } else {
-    // Claude / GPT 都读三方配额池
-    const w = quota.claude5h;
-    if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
-    const ww = quota.claudeWeekly;
-    if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
-  }
+  const livePoolWindow = isThirdParty ? quota.claude5h : quota.fiveHour;
+  const liveWeeklyWindow = isThirdParty ? quota.claudeWeekly : quota.weekly;
 
-  // 3. 动态兜底（100% 对齐官方真实基准）
+  let h5Pct = livePoolWindow?.percent != null ? livePoolWindow.percent : meta?.quotaSnapshot?.percent;
+  let h5Reset = livePoolWindow?.resetsIn || livePoolWindow?.resetText || meta?.quotaSnapshot?.resetIn;
+  let weeklyPct = (liveWeeklyWindow?.percent != null && liveWeeklyWindow.percent >= 0) ? liveWeeklyWindow.percent : ((meta?.quotaSnapshot?.weeklyPercent != null && meta.quotaSnapshot.weeklyPercent >= 0) ? meta.quotaSnapshot.weeklyPercent : null);
+  let weeklyReset = liveWeeklyWindow?.resetsIn || liveWeeklyWindow?.resetText || meta?.quotaSnapshot?.weeklyResetIn;
+
+  // 2. 动态兜底（100% 对齐官方真实基准）
   if (h5Pct == null) h5Pct = isGemini ? 56.9 : 0.0;
   if (!h5Reset) h5Reset = isGemini ? '45分钟' : '3小时 39分钟';
   if (weeklyPct == null) weeklyPct = isGemini ? 0.2 : 57.3;
@@ -4200,6 +4188,7 @@ async function showAccountSwitcher() {
         await updateUsageSummary(); // 立即拉取并刷新新账号的真实配额
         renderLoginArea();
         renderConvList();
+        paintActiveConv(); // 立即重新渲染当前会话，气泡底部的额度瞬间跟随新账号变动！
       } catch (e2) { toast("切换失败: " + e2.message); }
     };
   });
