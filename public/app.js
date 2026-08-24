@@ -675,9 +675,7 @@ function renderLoginArea() {
 
     if (tierType) {
       const pillText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
-      const pillBg = tierType === 'pro' ? 'linear-gradient(135deg,#f59e0b,#8b5cf6)' : tierType === 'enterprise' ? 'linear-gradient(135deg,#06b6d4,#3b82f6)' : '#64748b';
-      const tierPill = el("span", "", pillText);
-      tierPill.style.cssText = `font-size:9.5px;font-weight:800;background:${pillBg};color:white;padding:1px 5px;border-radius:10px;line-height:1.2;box-shadow:0 1px 3px rgba(0,0,0,0.2);`;
+      const tierPill = el("span", `tier-pill tier-pill-${tierType}`, pillText);
       userWrap.append(tierPill);
     }
 
@@ -2843,12 +2841,12 @@ async function showUsageModal(manualRefresh = false) {
       <!-- 账号信息卡片 -->
       <div id="usage-account-card" class="usage-account-card">
         <div style="display:flex;align-items:center;gap:14px;">
-          <div id="usage-avatar-frame-wrap" class="usage-avatar-frame ${tierType}">
-            <span id="usage-avatar-crown" class="modal-avatar-crown" style="display:${tierType === 'pro' ? 'block' : 'none'}">👑</span>
+          <div id="usage-avatar-frame-wrap" class="usage-avatar-frame pro">
+            <span id="usage-avatar-crown" class="modal-avatar-crown">👑</span>
             <div id="usage-avatar-box" class="usage-avatar-box">
               <span class="usage-default-avatar">◇</span>
             </div>
-            <span id="usage-avatar-corner-badge" class="usage-avatar-corner-badge ${tierType}">${badgeText}</span>
+            <span id="usage-avatar-corner-badge" class="usage-avatar-corner-badge pro">PRO</span>
           </div>
           <div>
             <div id="usage-user-name" style="font-weight:600;font-size:14.5px;color:var(--text-primary);">${googleAcc.name || '加载中...'}</div>
@@ -2982,21 +2980,21 @@ async function showUsageModal(manualRefresh = false) {
     
     // Fill Account
     const acc = d.account;
-    const isPro = d.tierType === 'pro' || d.tierType === 'enterprise';
-    const isFree = d.tierType === 'free';
-    const tierType = d.tierType || (isPro ? 'pro' : isFree ? 'free' : 'unauthed');
-    const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : tierType === 'free' ? 'FREE' : '';
-
-    const frameEl = $("#usage-avatar-frame-wrap");
-    const cornerBadgeEl = $("#usage-avatar-corner-badge");
-    if (frameEl) frameEl.className = `usage-avatar-frame ${tierType}`;
-    if (cornerBadgeEl) {
-      cornerBadgeEl.className = `usage-avatar-corner-badge ${tierType}`;
-      cornerBadgeEl.textContent = badgeText;
-      cornerBadgeEl.style.display = badgeText ? "block" : "none";
+    // 默认保持 Pro 样式，如果检测到降级或特殊变动，再通过 JS 去覆盖
+    if (d.tierType && d.tierType !== 'pro') {
+      const frameEl = $("#usage-avatar-frame-wrap");
+      const cornerBadgeEl = $("#usage-avatar-corner-badge");
+      const crownEl = $("#usage-avatar-crown");
+      const badgeEl = $("#usage-tier-badge");
+      
+      if (frameEl) frameEl.className = `usage-avatar-frame ${d.tierType}`;
+      if (cornerBadgeEl) {
+        cornerBadgeEl.className = `usage-avatar-corner-badge ${d.tierType}`;
+        cornerBadgeEl.textContent = d.tierType === 'enterprise' ? 'ENT' : 'FREE';
+      }
+      if (crownEl) crownEl.style.display = 'none';
+      if (badgeEl) badgeEl.className = `tier-badge tier-badge-${d.tierType}`;
     }
-    const crownEl = $("#usage-avatar-crown");
-    if (crownEl) crownEl.style.display = tierType === 'pro' ? 'block' : 'none';
 
     if (acc) {
       $("#usage-user-name").textContent = acc.name || "Google 用户";
@@ -3004,15 +3002,9 @@ async function showUsageModal(manualRefresh = false) {
       if (acc.picture) {
         $("#usage-avatar-box").innerHTML = `<img src="${escapeHtml(proxyAvatar(acc.picture))}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />`;
       }
-      const badgeStyle = isPro 
-        ? "background:linear-gradient(135deg,rgba(59,130,246,0.18),rgba(147,51,234,0.18));border:1px solid rgba(147,51,234,0.4);color:#a78bfa;font-weight:600;"
-        : isFree 
-        ? "background:rgba(245,158,11,0.15);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;font-weight:600;"
-        : "background:var(--bg-secondary);border:1px solid var(--border-color);color:var(--text-muted);";
       
       const badgeEl = $("#usage-tier-badge");
-      badgeEl.textContent = d.tier || acc.tier || "Google AI 账号";
-      badgeEl.style.cssText = badgeStyle;
+      if (badgeEl) badgeEl.textContent = d.tier || acc.tier || "Google AI 账号";
     } else {
       $("#usage-user-name").textContent = "未登录 Google 账号";
       $("#usage-user-email").textContent = "请点击右上角登录以激活云端配额";
