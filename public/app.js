@@ -4119,6 +4119,12 @@ async function showAccountSwitcher() {
   for (const a of accounts) {
     const isActive = a.email === activeEmail;
     const isPrimary = !!a.isPrimary;
+    const q = a.quotaSnapshot || {};
+    const qBadges = [];
+    if (q.gemini5h != null) qBadges.push(`<span style="font-size:10px;background:rgba(59,130,246,0.12);color:var(--accent);padding:1px 5px;border-radius:4px;">Gemini 5h: ${q.gemini5h}%</span>`);
+    if (q.geminiWeekly != null) qBadges.push(`<span style="font-size:10px;background:rgba(245,158,11,0.12);color:#f59e0b;padding:1px 5px;border-radius:4px;">周度: ${q.geminiWeekly}%</span>`);
+    if (q.claudeWeekly != null) qBadges.push(`<span style="font-size:10px;background:rgba(168,85,247,0.12);color:#a855f7;padding:1px 5px;border-radius:4px;">Claude周: ${q.claudeWeekly}%</span>`);
+
     rows += `
       <div class="acct-row" data-email="${escapeHtml(a.email)}" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;cursor:pointer;${isActive ? 'background:var(--bg-tertiary);' : ''};border:1px solid ${isPrimary ? 'rgba(245,158,11,0.3)' : 'var(--border-color)'};margin-bottom:6px;">
         <div style="position:relative;">
@@ -4130,7 +4136,10 @@ async function showAccountSwitcher() {
             <span style="font-size:13px;font-weight:600">${escapeHtml(a.name || a.label || a.email)}</span>
             ${isPrimary ? '<span style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:10px;padding:1px 5px;border-radius:4px;font-weight:600;">默认主账号</span>' : ''}
           </div>
-          <div style="font-size:11px;color:var(--text-muted)">${escapeHtml(a.email)}</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap;">
+            <span style="font-size:11px;color:var(--text-muted)">${escapeHtml(a.email)}</span>
+            ${qBadges.join('')}
+          </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           ${isActive ? '<span style="color:#10b981;font-weight:600;font-size:11.5px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,0.1);">当前生效</span>' : '<span style="color:var(--accent);font-size:11.5px;">点击切换</span>'}
@@ -4191,21 +4200,23 @@ async function showAccountSwitcher() {
         if (d2.error) { toast(d2.error); return; }
         if (d2.account) {
           if (!state.status) state.status = {};
-          const tierType = d2.account.authMethod === 'consumer' ? 'pro' : 'free';
+          const tierType = d2.profile?.tierType || (d2.account.authMethod === 'consumer' ? 'pro' : 'free');
           state.status.googleAccount = {
             email: d2.account.email,
             name: d2.account.name || (d2.account.email ? d2.account.email.split('@')[0] : 'Google 用户'),
             picture: d2.account.picture,
-            tier: tierType === 'pro' ? 'Google AI Pro' : 'Antigravity Free Tier',
+            tier: d2.profile?.tier || (tierType === 'pro' ? 'Google AI Pro' : 'Antigravity Free Tier'),
             tierType: tierType
           };
           renderLoginArea();
         }
-        // 彻底清空旧账号的配额缓存与冷却锁
-        state.latestUsageData = null;
+        if (d2.quota) {
+          state.latestUsageData = d2.quota;
+          updateUsageSummary(d2.quota);
+        }
         localStorage.removeItem('agy-cached-usage');
         localStorage.removeItem('claudeResetAt');
-        toast("已切换到 " + (d2.account.name || d2.account.label || d2.account.email));
+        toast("已切换到 " + (d2.account.name || d2.account.label || d2.account.email) + "，实时配额已同步！");
         await refreshSystemStatus();
         await refreshModels();
         await updateUsageSummary(); // 立即拉取并刷新新账号的真实配额
