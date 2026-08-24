@@ -40,9 +40,9 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const liveWeeklyWindow = isThirdParty ? quota.claudeWeekly : quota.weekly;
 
   let h5Pct = livePoolWindow?.percent != null ? livePoolWindow.percent : meta?.quotaSnapshot?.percent;
-  let h5Reset = livePoolWindow?.resetsIn || livePoolWindow?.resetText || meta?.quotaSnapshot?.resetIn;
+  let h5Reset = (livePoolWindow?.resetsIn || livePoolWindow?.resetText) || meta?.quotaSnapshot?.resetIn;
   let weeklyPct = (liveWeeklyWindow?.percent != null && liveWeeklyWindow.percent >= 0) ? liveWeeklyWindow.percent : ((meta?.quotaSnapshot?.weeklyPercent != null && meta.quotaSnapshot.weeklyPercent >= 0) ? meta.quotaSnapshot.weeklyPercent : null);
-  let weeklyReset = liveWeeklyWindow?.resetsIn || liveWeeklyWindow?.resetText || meta?.quotaSnapshot?.weeklyResetIn;
+  let weeklyReset = (liveWeeklyWindow?.resetsIn || liveWeeklyWindow?.resetText) || meta?.quotaSnapshot?.weeklyResetIn;
 
   // 2. 动态兜底（100% 对齐官方真实基准）
   if (h5Pct == null) h5Pct = isGemini ? 56.9 : 0.0;
@@ -90,39 +90,31 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
 
 function updateAllQuotaPillsOnScreen(liveQuota = state.latestUsageData) {
   if (!liveQuota || !liveQuota.windows) return;
-  const pills = $$(".msg-usage-pill");
-  pills.forEach((pill) => {
-    const modelTag = pill.querySelector(".msg-model-tag span");
-    const modelText = modelTag ? modelTag.textContent.toLowerCase() : "";
-    const isClaudeOrGpt = modelText.includes("claude") || modelText.includes("gpt") || modelText.includes("oss");
-    const pool = isClaudeOrGpt ? liveQuota.windows.claude5h : liveQuota.windows.fiveHour;
-    const weekly = isClaudeOrGpt ? liveQuota.windows.claudeWeekly : liveQuota.windows.weekly;
+  const feed = document.querySelector('#chat-feed');
+  if (!feed) return;
+  const pills = feed.querySelectorAll('.msg-usage-pill');
+  if (pills.length === 0) return;
 
-    if (pool && weekly) {
-      const bars = pill.querySelectorAll(".msg-mini-bar-item");
-      if (bars.length >= 2) {
-        // Pool bar (5h)
-        const poolFill = bars[0].querySelector(".msg-bar-fill");
-        const poolPctSpan = bars[0].querySelector("span[style*='font-weight:600']");
-        const poolResetSpan = bars[0].querySelector("span[style*='font-family:monospace']");
-        if (poolFill) {
-          poolFill.style.width = Math.max(4, pool.percent) + "%";
-          if (pool.percent <= 10) poolFill.classList.add("danger");
-          else poolFill.classList.remove("danger");
-        }
-        if (poolPctSpan) poolPctSpan.textContent = `${pool.percent}%`;
-        if (poolResetSpan) poolResetSpan.textContent = `(${formatPreciseTimeTag(pool.resetsIn || pool.resetText)})`;
+  const conv = activeConv();
+  if (!conv || !conv.messages) return;
+  const asstMsgs = conv.messages.filter(m => m.role === 'assistant');
+  const rows = feed.querySelectorAll('.message-row.assistant');
 
-        // Weekly bar
-        const weeklyFill = bars[1].querySelector(".msg-bar-fill");
-        const weeklyPctSpan = bars[1].querySelector("span[style*='font-weight:600']");
-        const weeklyResetSpan = bars[1].querySelector("span[style*='font-family:monospace']");
-        if (weeklyFill) weeklyFill.style.width = Math.max(4, weekly.percent) + "%";
-        if (weeklyPctSpan) weeklyPctSpan.textContent = `${weekly.percent}%`;
-        if (weeklyResetSpan) weeklyResetSpan.textContent = `(${formatPreciseTimeTag(weekly.resetsIn || weekly.resetText)})`;
+  rows.forEach((row, i) => {
+    const existingPill = row.querySelector('.msg-usage-pill');
+    if (existingPill) {
+      const msgMeta = asstMsgs[i]?.meta || {};
+      const model = msgMeta.model || state.selectedModel;
+      const cleanContent = (asstMsgs[i]?.content || '').replace(/[\u200b\s]/g, '');
+      const newPillHtml = getMessageQuotaFooterHtml(cleanContent, msgMeta, model);
+      const temp = document.createElement('div');
+      temp.innerHTML = newPillHtml.trim();
+      if (temp.firstElementChild) {
+        existingPill.replaceWith(temp.firstElementChild);
       }
     }
   });
+  refreshIcons();
 }
 
 // Google Antigravity Web UI - Modernized Frontend Application
@@ -2104,6 +2096,14 @@ async function runConversationTurn(text, appendUserMsg = true) {
               };
               targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, freshMeta, state.selectedModel);
               refreshIcons();
+              if (conv && conv.messages && conv.messages.length > 0) {
+                const last = conv.messages[conv.messages.length - 1];
+                if (last && last.role === 'assistant') {
+                  if (!last.meta) last.meta = {};
+                  last.meta.quotaSnapshot = freshSnapshot;
+                  saveConversations();
+                }
+              }
             }
           }
         };

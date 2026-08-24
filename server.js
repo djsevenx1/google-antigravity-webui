@@ -449,18 +449,19 @@ export async function refreshGoogleProfileInBackground(force = false) {
   const activeRt = activeToken?.token?.refresh_token;
   const accounts = listAccounts();
   const currentAcc = (activeRt ? accounts.find(a => a.tokenData?.token?.refresh_token === activeRt) : null) || accounts.find(a => a.email === cachedGoogleProfile?.email) || accounts[0];
+  const fallbackEmail = currentAcc?.email || cachedGoogleProfile?.email || 'Google 用户';
 
   if (!force && Date.now() - profileFetchedAt < 30000 && cachedGoogleProfile?.liveQuotaSummary && cachedGoogleProfile?.email === currentAcc?.email) {
-    return cachedGoogleProfile;
+    return cachedGoogleProfile || { email: fallbackEmail, error: "Token expired, please reconnect" };
   }
 
   let raw = activeToken || currentAcc?.tokenData;
-  if (!raw) return cachedGoogleProfile;
+  if (!raw) return cachedGoogleProfile || { email: fallbackEmail, error: "Token expired, please reconnect" };
 
   // 确保 Token 未过期
   raw = await ensureValidToken(raw);
   let token = raw?.token?.access_token;
-  if (!token) return cachedGoogleProfile;
+  if (!token) return cachedGoogleProfile || { email: fallbackEmail, error: "Token expired, please reconnect" };
 
   const headers = {
     'Authorization': `Bearer ${token}`,
@@ -469,11 +470,11 @@ export async function refreshGoogleProfileInBackground(force = false) {
   };
 
   let [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) }),
-    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
-    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
-    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
-    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) })
+    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }),
+    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) })
   ]);
 
   // 如果遇到 401，立即强制刷新 Token 并重试一次
@@ -484,11 +485,11 @@ export async function refreshGoogleProfileInBackground(force = false) {
       writeActiveToken(raw);
       headers.Authorization = `Bearer ${token}`;
       [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) }),
-        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
-        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
-        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) }),
-        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(4000) })
+        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }),
+        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) })
       ]);
     }
   }
@@ -528,7 +529,7 @@ export async function refreshGoogleProfileInBackground(force = false) {
   }
 
   const tierData = parseGoogleAccountTier(liveTierInfo, raw);
-  const currentEmail = profile.email || currentAcc?.email || 'Google 用户';
+  const currentEmail = profile.email || currentAcc?.email || fallbackEmail;
   const currentName = profile.name || currentAcc?.name || (currentEmail ? currentEmail.split('@')[0] : 'Google 用户');
   const currentPicture = profile.picture || currentAcc?.picture || 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c';
 
@@ -564,7 +565,7 @@ export async function refreshGoogleProfileInBackground(force = false) {
   try {
     fs.writeFileSync(PROFILE_CACHE_FILE, JSON.stringify(cachedGoogleProfile, null, 2));
   } catch (_) {}
-  return cachedGoogleProfile;
+  return cachedGoogleProfile || { email: currentEmail, error: "Token expired, please reconnect" };
 }
 
 export function getActiveGoogleProfile() {
@@ -580,7 +581,7 @@ export function getActiveGoogleProfile() {
     if (acc.picture && !cachedGoogleProfile.picture) {
       cachedGoogleProfile.picture = acc.picture;
     }
-    return cachedGoogleProfile;
+    return cachedGoogleProfile || { email: currentEmail, error: "Token expired, please reconnect" };
   }
 
   if (acc) {
@@ -602,7 +603,7 @@ export function getActiveGoogleProfile() {
       useG1Credits: tierData.useG1Credits
     };
   }
-  return cachedGoogleProfile;
+  return cachedGoogleProfile || { email: currentEmail, error: "Token expired, please reconnect" };
 }
 
 // ---------- API ----------
@@ -1971,17 +1972,23 @@ wss.on('connection', (ws, req) => {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
 
-      // 2. 关键修复：先从 Google 上游拉取最新扣减配额，再封装进 done 包广播（确保前端收到最新的实时配额）
+      // 2. 立即广播 done 事件，附带当前最新配额（保证前端界面秒级响应）
       run.done = true;
       profileFetchedAt = 0;
-      try {
-        const freshProfile = await refreshGoogleProfileInBackground(true);
-        const freshQuota = buildLiveWindowsData(freshProfile);
-        broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: freshQuota });
-      } catch (_) {
-        const fallbackQuota = buildLiveWindowsData();
-        broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: fallbackQuota });
-      }
+      const immediateQuota = buildLiveWindowsData(cachedGoogleProfile);
+      broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: immediateQuota });
+
+      // 后台立刻从 Google 上游拉取最新扣减后的真实配额，并推送 liveQuotaUpdate
+      (async () => {
+        try {
+          await new Promise(r => setTimeout(r, 600));
+          const freshProfile = await refreshGoogleProfileInBackground(true);
+          const freshQuota = buildLiveWindowsData(freshProfile);
+          broadcast({ liveQuotaUpdate: true, liveQuota: freshQuota });
+        } catch (e) {
+          debugLog('[ws/chat] background quota refresh error:', e && e.message);
+        }
+      })();
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
