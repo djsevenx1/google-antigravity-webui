@@ -3683,100 +3683,237 @@ function renderAttachmentPreview() {
   });
 }
 
-// ── 语音输入 (Web Speech API 实时听写) ──
+// ── 语音输入 (多重智能降级架构：Web Speech API + MediaRecorder 录音直传 + 手机键盘快捷引导) ──
 let voiceRecognition = null;
 let isVoiceRecording = false;
+let mediaRecorderInstance = null;
+let audioChunks = [];
+
+function showVoiceGuideModal() {
+  openModal("🎙️ 语音输入使用指南", `
+    <div style="padding:4px 0;">
+      <div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.25);border-radius:10px;padding:14px;margin-bottom:16px;">
+        <div style="font-weight:600;font-size:14px;color:var(--accent);margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+          <span>💡 提示：为什么无法直接网页录音？</span>
+        </div>
+        <div style="font-size:13px;color:var(--text-secondary);line-height:1.6;">
+          由于当前网页采用 HTTP 访问（<code>${escapeHtml(location.origin)}</code>），iOS / Android / Chrome 等主流浏览器基于安全规范，默认<strong>禁止非 HTTPS 页面直接调用麦克风硬件</strong>。
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:10px;padding:12px 14px;">
+          <div style="font-weight:600;font-size:13.5px;color:var(--text-primary);margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+            <span>📱 方案一：使用手机键盘自带语音按键（最推荐）</span>
+            <span style="background:rgba(16,185,129,0.15);color:#10b981;font-size:10px;padding:1px 6px;border-radius:4px;">无需权限·秒识别</span>
+          </div>
+          <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5;">
+            点击下方输入框弹出手机键盘，直接按输入法自带的 <strong>🎤 麦克风图标</strong>（如微信键盘、搜狗、百度、iOS系统语音），说话即可自动实时上屏。
+          </div>
+        </div>
+
+        <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:10px;padding:12px 14px;">
+          <div style="font-weight:600;font-size:13.5px;color:var(--text-primary);margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+            <span>🔒 方案二：配置 HTTPS 访问</span>
+          </div>
+          <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5;">
+            为您的服务器域名（如 <code>fn0.xx.kg</code>）配置 Nginx / Caddy SSL 证书并开启 HTTPS，浏览器将全面解除麦克风限制，网页端麦克风按键即可一键直录。
+          </div>
+        </div>
+
+        <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:10px;padding:12px 14px;">
+          <div style="font-weight:600;font-size:13.5px;color:var(--text-primary);margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+            <span>🛠️ 方案三：Chrome 浏览器白名单豁免</span>
+          </div>
+          <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5;">
+            在 Chrome 地址栏打开 <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>，将 <code>${escapeHtml(location.origin)}</code> 加入白名单并重启浏览器即可。
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;text-align:right;">
+        <button class="btn btn-primary" onclick="closeModal()" style="padding:7px 18px;font-size:13px;">我知道了</button>
+      </div>
+    </div>
+  `);
+}
 
 function initVoiceInput() {
   const btnMic = $("#btn-mic");
   if (!btnMic) return;
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    btnMic.addEventListener("click", () => {
-      toast("当前浏览器暂不支持 Web Speech API，建议使用 Chrome/Edge 浏览器或手机输入法自带语音");
-    });
-    return;
-  }
 
-  try {
-    voiceRecognition = new SpeechRecognition();
-    voiceRecognition.continuous = true;
-    voiceRecognition.interimResults = true;
-    voiceRecognition.lang = navigator.language || "zh-CN";
+  async function startMediaRecorderVoice() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showVoiceGuideModal();
+      return;
+    }
 
-    let prefixText = "";
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      const options = (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))
+        ? { mimeType: 'audio/webm;codecs=opus' }
+        : (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/mp4'))
+        ? { mimeType: 'audio/mp4' }
+        : {};
 
-    voiceRecognition.onstart = () => {
+      mediaRecorderInstance = new MediaRecorder(stream, options);
+      mediaRecorderInstance.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorderInstance.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        if (!audioChunks.length) return;
+        const mime = mediaRecorderInstance.mimeType || 'audio/webm';
+        const blob = new Blob(audioChunks, { type: mime });
+        const ext = mime.includes('mp4') ? '.mp4' : mime.includes('ogg') ? '.ogg' : '.webm';
+        
+        const fd = new FormData();
+        fd.append('audio', blob, `voice-${Date.now()}${ext}`);
+
+        toast("⚡ 正在转写语音为文字...");
+        btnMic.classList.add("loading");
+        try {
+          const resp = await fetch('/api/audio-transcribe', { method: 'POST', body: fd });
+          const json = await resp.json();
+          if (json.text) {
+            const inputEl = $("#input");
+            if (inputEl) {
+              const prev = inputEl.value;
+              inputEl.value = prev ? (prev.endsWith(' ') ? prev + json.text : prev + ' ' + json.text) : json.text;
+              inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+              inputEl.scrollTop = inputEl.scrollHeight;
+              inputEl.focus();
+            }
+            toast("✅ 语音识别成功！");
+          } else {
+            toast(json.error || "未识别出语音内容");
+          }
+        } catch (err) {
+          toast("语音转写失败: " + (err.message || '网络错误'));
+        } finally {
+          btnMic.classList.remove("loading");
+        }
+      };
+
+      mediaRecorderInstance.start();
       isVoiceRecording = true;
       btnMic.classList.add("recording");
-      btnMic.setAttribute("title", "正在录音，点击停止");
-      const inputEl = $("#input");
-      prefixText = inputEl ? inputEl.value : "";
-      if (prefixText && !prefixText.endsWith(" ") && !prefixText.endsWith("\n")) {
-        prefixText += " ";
-      }
-      toast("🎙️ 正在倾听中... 说完后点击麦克风停止");
-    };
-
-    voiceRecognition.onresult = (event) => {
-      let finalTranscript = "";
-      let interimTranscript = "";
-
-      for (let i = 0; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
-        } else {
-          interimTranscript += event.results[i][0].transcript;
-        }
-      }
-
-      const inputEl = $("#input");
-      if (inputEl) {
-        inputEl.value = prefixText + finalTranscript + interimTranscript;
-        inputEl.dispatchEvent(new Event("input", { bubbles: true }));
-        inputEl.scrollTop = inputEl.scrollHeight;
-      }
-    };
-
-    voiceRecognition.onerror = (event) => {
-      console.warn("[Voice Input]", event.error);
-      if (event.error === "not-allowed") {
-        toast("麦克风权限已被禁止，请在浏览器地址栏允许麦克风权限");
-      } else if (event.error !== "no-speech") {
-        toast(`语音输入提示: ${event.error}`);
-      }
-      stopVoiceRecording();
-    };
-
-    voiceRecognition.onend = () => {
-      stopVoiceRecording();
-    };
-
-    btnMic.addEventListener("click", () => {
-      if (isVoiceRecording) {
-        try { voiceRecognition.stop(); } catch (_) {}
-        stopVoiceRecording();
-      } else {
-        try {
-          voiceRecognition.start();
-        } catch (err) {
-          console.warn("Speech recognition start failed:", err);
-          stopVoiceRecording();
-        }
-      }
-    });
-
-    function stopVoiceRecording() {
-      isVoiceRecording = false;
-      if (btnMic) {
-        btnMic.classList.remove("recording");
-        btnMic.setAttribute("title", "语音输入 (按一下开始/结束)");
-      }
+      btnMic.setAttribute("title", "正在录音，点击停止并识别");
+      toast("🎙️ 正在录音... 说完后再次点击麦克风停止");
+    } catch (err) {
+      console.warn("getUserMedia failed:", err);
+      showVoiceGuideModal();
     }
-  } catch (err) {
-    console.warn("SpeechRecognition init error:", err);
   }
+
+  // 1. 如果支持原生 Web Speech API
+  if (SpeechRecognition) {
+    try {
+      voiceRecognition = new SpeechRecognition();
+      voiceRecognition.continuous = true;
+      voiceRecognition.interimResults = true;
+      voiceRecognition.lang = navigator.language || "zh-CN";
+
+      let prefixText = "";
+
+      voiceRecognition.onstart = () => {
+        isVoiceRecording = true;
+        btnMic.classList.add("recording");
+        btnMic.setAttribute("title", "正在倾听，点击停止");
+        const inputEl = $("#input");
+        prefixText = inputEl ? inputEl.value : "";
+        if (prefixText && !prefixText.endsWith(" ") && !prefixText.endsWith("\n")) {
+          prefixText += " ";
+        }
+        toast("🎙️ 正在倾听中... 说完后点击麦克风停止");
+      };
+
+      voiceRecognition.onresult = (event) => {
+        let finalTranscript = "";
+        let interimTranscript = "";
+
+        for (let i = 0; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+
+        const inputEl = $("#input");
+        if (inputEl) {
+          inputEl.value = prefixText + finalTranscript + interimTranscript;
+          inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+          inputEl.scrollTop = inputEl.scrollHeight;
+        }
+      };
+
+      voiceRecognition.onerror = (event) => {
+        console.warn("[Voice Input Error]", event.error);
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          stopVoiceRecording();
+          startMediaRecorderVoice();
+          return;
+        }
+        if (event.error !== "no-speech") {
+          toast(`语音提示: ${event.error}`);
+        }
+        stopVoiceRecording();
+      };
+
+      voiceRecognition.onend = () => {
+        stopVoiceRecording();
+      };
+
+      btnMic.addEventListener("click", () => {
+        if (isVoiceRecording) {
+          if (mediaRecorderInstance && mediaRecorderInstance.state === "recording") {
+            mediaRecorderInstance.stop();
+          }
+          if (voiceRecognition) {
+            try { voiceRecognition.stop(); } catch (_) {}
+          }
+          stopVoiceRecording();
+        } else {
+          try {
+            voiceRecognition.start();
+          } catch (err) {
+            console.warn("Speech recognition start failed, trying MediaRecorder:", err);
+            startMediaRecorderVoice();
+          }
+        }
+      });
+
+      function stopVoiceRecording() {
+        isVoiceRecording = false;
+        if (btnMic) {
+          btnMic.classList.remove("recording");
+          btnMic.setAttribute("title", "语音输入 (按一下开始/结束)");
+        }
+      }
+      return;
+    } catch (err) {
+      console.warn("SpeechRecognition init error:", err);
+    }
+  }
+
+  // 2. 如果不支持 Web Speech API，绑定 MediaRecorder 录音或引导弹窗
+  btnMic.addEventListener("click", () => {
+    if (isVoiceRecording) {
+      if (mediaRecorderInstance && mediaRecorderInstance.state === "recording") {
+        mediaRecorderInstance.stop();
+      }
+      isVoiceRecording = false;
+      btnMic.classList.remove("recording");
+      btnMic.setAttribute("title", "语音输入 (按一下开始/结束)");
+    } else {
+      startMediaRecorderVoice();
+    }
+  });
 }
 
 // ── 现代化工作区文件管理与代码编辑器（路径导航模式）──

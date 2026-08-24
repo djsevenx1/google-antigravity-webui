@@ -1244,6 +1244,30 @@ app.get('/api/assets/files/:filename', (req, res) => {
   }
 });
 
+// 语音转文字 API：接收前端录音文件 → 快速转写为文本
+app.post('/api/audio-transcribe', attachmentUpload.single('audio'), async (req, res) => {
+  const file = req.file;
+  if (!file) return send(res, 400, { error: '未收到录音文件' });
+  try {
+    const audioPath = file.path;
+    const prompt = `<files_input>${audioPath}</files_input>\n请直接转写出该音频中的语音说话内容。只需输出识别出来的文字，不要包含任何问候、说明、标点解释或格式前缀。`;
+    let resultText = '';
+    await cliProvider({
+      model: 'gemini-3.7-flash',
+      messages: [{ role: 'user', content: prompt }],
+      onDelta: (d) => { resultText += d; },
+      effort: 'off',
+      permissions: 'approve'
+    });
+    resultText = resultText.replace(/​/g, '').trim();
+    debugLog('[audio-transcribe] transcribed text:', resultText.slice(0, 60));
+    send(res, 200, { text: resultText });
+  } catch (err) {
+    debugLog('[audio-transcribe] error:', err && err.message);
+    send(res, 500, { error: err.message || '语音转写失败' });
+  }
+});
+
 // 允许特定工具（记住选择，写入 settings.json allow 列表）
 app.post('/api/permissions/allow', (req, res) => {
   const { toolName } = req.body || {};
