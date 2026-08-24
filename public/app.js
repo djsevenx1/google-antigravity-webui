@@ -1911,29 +1911,22 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        const resetSilenceWatchdog = (fromDelta = false) => {
-          const clean = (acc || '').replace(/[\u200b\s]/g, '');
-          if (clean.length > 10 && !fromDelta) {
-            return; // 已经有正文输出时，心跳绝对不能打断/延长看门狗
-          }
+        const resetSilenceWatchdog = () => {
           if (silenceWatchdog) clearTimeout(silenceWatchdog);
+          // 兜底保护：仅在 180 秒完全无网络心跳/文本时判定超时，绝不因正常思考/工具调用而误杀
           silenceWatchdog = setTimeout(() => {
-            const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
-            if (currentClean.length > 5 && !settled) {
-              receivedDone = true;
-              const targetNode = clientRun.asstNode || asstNode;
-              if (targetNode) {
-                if (targetNode.row) targetNode.row.classList.remove("streaming");
-                if (state.activeId === conv.id && targetNode.bubble) {
-                  const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-                  const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
-                  targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-                  refreshIcons();
-                }
+            if (!settled) {
+              const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
+              if (currentClean.length > 0) {
+                receivedDone = true;
+                const targetNode = clientRun.asstNode || asstNode;
+                if (targetNode && targetNode.row) targetNode.row.classList.remove("streaming");
+                done(() => resolve());
+              } else {
+                done(() => reject(new Error('请求响应超时 (180s)')));
               }
-              done(() => resolve());
             }
-          }, 1200);
+          }, 180000);
         };
 
         ws.onopen = () => {
