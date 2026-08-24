@@ -802,13 +802,13 @@ function getModelMetadata(modelId, tierData = {}) {
 app.get('/api/usage', async (req, res) => {
   // 每次调用 /api/usage 都强制从 Google 上游拉取最新真实配额数据
   profileFetchedAt = 0;
-  await refreshGoogleProfileInBackground(true).catch(() => {});
+  const freshProfile = await refreshGoogleProfileInBackground(true).catch(() => {});
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
   const googleAccount = cliAuthed ? getActiveGoogleProfile() : null;
   const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
 
-  const liveBuild = buildLiveWindowsData();
+  const liveBuild = buildLiveWindowsData(freshProfile || cachedGoogleProfile);
   const windows = liveBuild.windows;
 
   // 动态读取 CLI 真实模型列表
