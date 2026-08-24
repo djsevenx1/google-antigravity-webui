@@ -41,12 +41,15 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
 
   // 2. 实时从 state.latestUsageData 或 localStorage 抓取真实数据
   const quota = state.latestUsageData?.windows || {};
-  if (isGemini) {
+  const isThirdParty = isClaude || isGpt; // Claude 和 GPT 都读三方池
+  if (!isThirdParty) {
+    // Gemini 读 Gemini 配额池
     const w = quota.fiveHour;
     if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
     const ww = quota.weekly;
     if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
   } else {
+    // Claude / GPT 都读三方配额池
     const w = quota.claude5h;
     if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
     const ww = quota.claudeWeekly;
@@ -2050,20 +2053,14 @@ async function runConversationTurn(text, appendUserMsg = true) {
             done(() => reject(err));
             return;
           }
-          // 如果已收到 done 或已经有完整的回答文本，直接圆满结束当前轮次，绝不无限挂起等待！
+          // 已收到明确的 done 信号 → 正常完成
           if (receivedDone) { done(() => resolve()); return; }
           if (streamError) { done(() => reject(streamError)); return; }
           if (needsPerm) { done(() => reject(Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput }))); return; }
           
-          // 如果已经输出了有效文本（回答已生成完成），连接关闭视为正常结束
-          const cleanText = (acc || '').replace(/[\u200b\s]/g, '');
-          if (cleanText.length > 0) {
-            receivedDone = true;
-            done(() => resolve());
-            return;
-          }
-          
-          // 只有在完全没有收到任何字的情况下，才作为 network error 重试
+          // ★ 关键修复：无论是否已有文本，只要没收到 done，都当作网络断开 → 走重试逻辑
+          // 原来这里如果有文本就直接 resolve，导致 Claude 导语后断线被误认为「已完成」
+          // 现在统一走 reject('network error')，由外层 netRetryCount 控制重试并 subscribe 到后台继续跑的 run
           done(() => reject(new Error('network error')));
         };
       });
@@ -3454,8 +3451,8 @@ function tryReconnectToOngoingRun() {
   state.streaming = true;
   __reconnecting = true;
   updateSendButton();
-  // 10秒超时:如果 ws 一直没响应,自动清理
-  setTimeout(() => { if (__reconnecting) { __reconnecting = false; state.streaming = false; updateSendButton(); } }, 10000);
+  // 30秒超时:仅在 ws 完全没有响应的极端情况下自动清理（正常重连后 __reconnecting 已被提前清除）
+  setTimeout(() => { if (__reconnecting) { __reconnecting = false; state.streaming = false; updateSendButton(); } }, 30000);
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/ws/chat`;
@@ -3492,6 +3489,7 @@ function tryReconnectToOngoingRun() {
     // 第一次收到非 idle 事件 = 后台确实有任务在跑或刚完成
     if (!reconnected && (data.progress || data.delta || data.error)) {
       reconnected = true;
+      __reconnecting = false; // ← 已成功挂上，清除重连标记，防止 10s 超时误关按钮
       state.streaming = true;
       updateSendButton();
 
