@@ -4323,7 +4323,18 @@ async function showAccountSwitcher() {
     rows = '<div style="padding:20px;text-align:center;color:var(--text-muted)">还没有添加多个账号</div>';
   }
   
+  const isBusy = Boolean(state.streaming || activeClientRuns.size > 0);
+  const busyBanner = isBusy ? `
+    <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:8px 12px;margin-bottom:12px;display:flex;align-items:center;gap:8px;">
+      <span style="font-size:16px;">⏳</span>
+      <div style="font-size:12px;color:var(--danger);line-height:1.4;">
+        <strong>当前对话正在生成中</strong>：为保障推理数据与上下文安全，生成未结束前<strong>已锁定切换/管理账号</strong>功能。
+      </div>
+    </div>
+  ` : '';
+
   const modalHtml = `
+    ${busyBanner}
     <div id="acct-list" style="margin-bottom:12px;max-height:300px;overflow-y:auto">${rows}</div>
     <div style="border-top:1px solid var(--border-color);padding-top:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -4331,13 +4342,13 @@ async function showAccountSwitcher() {
       </div>
       
       <div style="display:flex;flex-direction:column;gap:8px;">
-        <button class="btn btn-primary" id="acct-add-new" style="width:100%;justify-content:center;">
+        <button class="btn btn-primary" id="acct-add-new" style="width:100%;justify-content:center;${isBusy ? 'opacity:0.6;cursor:not-allowed;' : ''}">
           <i data-lucide="plus" style="width:14px;height:14px;margin-right:6px"></i> 网页登录添加新账号
         </button>
         
         <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
           <input id="acct-label" placeholder="当前账号的备注名（可选）" style="flex:1;padding:6px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:12px"/>
-          <button class="btn btn-ghost btn-sm" id="acct-add" style="font-size:12px;white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm" id="acct-add" style="font-size:12px;white-space:nowrap;${isBusy ? 'opacity:0.6;cursor:not-allowed;' : ''}">
             仅保存当前生效账号
           </button>
         </div>
@@ -4357,6 +4368,10 @@ async function showAccountSwitcher() {
   document.querySelectorAll(".acct-row").forEach(item => {
     item.onclick = async e => {
       if (e.target.classList.contains("acct-del")) return;
+      if (state.streaming || activeClientRuns.size > 0) {
+        toast("⚠️ 当前对话正在生成回答中，禁止切换账号！请等待完成或点击停止。");
+        return;
+      }
       const email = item.getAttribute("data-email");
       if (email === activeEmail) return;
       closeModal();
@@ -4396,6 +4411,10 @@ async function showAccountSwitcher() {
   document.querySelectorAll(".acct-del").forEach(btn => {
     btn.onclick = async e => {
       e.stopPropagation();
+      if (state.streaming || activeClientRuns.size > 0) {
+        toast("⚠️ 当前对话正在生成回答中，禁止删除账号！");
+        return;
+      }
       const email = btn.getAttribute("data-email");
       const delRes = await fetch("/api/accounts/" + encodeURIComponent(email), { method: "DELETE" });
       const delData = await delRes.json();
@@ -4413,6 +4432,10 @@ async function showAccountSwitcher() {
   const addNewBtn = document.getElementById("acct-add-new");
   if (addNewBtn) {
     addNewBtn.onclick = () => {
+      if (state.streaming || activeClientRuns.size > 0) {
+        toast("⚠️ 当前对话正在生成回答中，请等待完成后再添加账号！");
+        return;
+      }
       closeModal();
       showCliLogin(async (tokenData) => {
         toast("授权完成，正在添加新账号...");
@@ -4436,6 +4459,10 @@ async function showAccountSwitcher() {
   const addBtn = document.getElementById("acct-add");
   if (addBtn) {
     addBtn.onclick = async () => {
+      if (state.streaming || activeClientRuns.size > 0) {
+        toast("⚠️ 当前对话正在生成回答中，请等待完成后再保存账号！");
+        return;
+      }
       const label = document.getElementById("acct-label").value.trim();
       const r3 = await fetch("/api/accounts/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label }) });
       const d3 = await r3.json();

@@ -1318,6 +1318,10 @@ app.post('/api/accounts/add', async (req, res) => {
 });
 
 app.post('/api/accounts/switch', async (req, res) => {
+  const hasRunning = Array.from(activeRuns.values()).some(r => r.isRunning);
+  if (hasRunning) {
+    return send(res, 400, { error: '当前正在生成回答中，禁止切换账号。请等待生成完成或点击停止后再切换。' });
+  }
   const { email } = req.body || {};
   if (!email) return send(res, 400, { error: '缺少 email' });
   const r = await switchAccount(email);
@@ -1335,6 +1339,10 @@ app.post('/api/accounts/switch', async (req, res) => {
 });
 
 app.delete('/api/accounts/:email', (req, res) => {
+  const hasRunning = Array.from(activeRuns.values()).some(r => r.isRunning);
+  if (hasRunning) {
+    return send(res, 400, { error: '当前正在生成回答中，禁止删除账号。请等待生成完成或停止后再操作。' });
+  }
   const email = req.params.email;
   const r = removeAccount(email);
   if (!r.ok) return send(res, 400, { error: r.error });
