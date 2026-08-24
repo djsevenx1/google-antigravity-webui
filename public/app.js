@@ -599,26 +599,31 @@ function initThinkingToggle() {
 
 // Render Sidebar & Usage Summary
 function updateUsageSummary(quotaData = null) {
+  const applyData = (d) => {
+    if (!d) return;
+    state.latestUsageData = d;
+    try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
+    
+    // 1. 更新侧边栏/顶部 Badge
+    const badgeEl = $("#usage-sidebar-badge");
+    if (badgeEl && d.windows && d.windows.fiveHour) {
+      const w = d.windows.fiveHour;
+      const tierBadge = d.tierBadge || 'AI Pro';
+      badgeEl.textContent = `${tierBadge} ${w.percent}%`;
+      badgeEl.title = `${d.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
+    }
+
+    // 2. 如果当前有打开的会话，且未在流式生成中，重刷所有气泡底部的配额条
+    if (!state.streaming && activeClientRuns.size === 0 && $("#chat-feed") && $("#chat-feed").children.length > 0) {
+      paintActiveConv();
+    }
+  };
+
   if (quotaData) {
-    state.latestUsageData = quotaData;
-    try { localStorage.setItem("agy-cached-usage", JSON.stringify(quotaData)); } catch (_) {}
-  }
-  const badgeEl = $("#usage-sidebar-badge");
-  if (!badgeEl) return;
-  if (quotaData && quotaData.windows && quotaData.windows.fiveHour) {
-    const w = quotaData.windows.fiveHour;
-    const tierBadge = quotaData.tierBadge || 'AI Pro';
-    badgeEl.textContent = `${tierBadge} ${w.percent}%`;
-    badgeEl.title = `${quotaData.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
+    applyData(quotaData);
   } else {
     fetch("/api/usage").then((r) => r.json()).then((d) => {
-      state.latestUsageData = d;
-      if (d && d.windows && d.windows.fiveHour) {
-        const w = d.windows.fiveHour;
-        const tierBadge = d.tierBadge || 'AI Pro';
-        badgeEl.textContent = `${tierBadge} ${w.percent}%`;
-        badgeEl.title = `${d.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
-      }
+      applyData(d);
     }).catch(() => {});
   }
 }
