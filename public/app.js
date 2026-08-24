@@ -33,10 +33,10 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
-  // 1. 优先读取已固化的历史快照（过滤掉历史版本中误存为 0 的无效数据）
+  // 1. 优先读取已固化的历史快照
   let h5Pct = meta?.quotaSnapshot?.percent;
   let h5Reset = meta?.quotaSnapshot?.resetIn;
-  let weeklyPct = (meta?.quotaSnapshot?.weeklyPercent && meta.quotaSnapshot.weeklyPercent > 0) ? meta.quotaSnapshot.weeklyPercent : null;
+  let weeklyPct = (meta?.quotaSnapshot?.weeklyPercent != null && meta.quotaSnapshot.weeklyPercent >= 0) ? meta.quotaSnapshot.weeklyPercent : null;
   let weeklyReset = meta?.quotaSnapshot?.weeklyResetIn;
 
   // 2. 实时从 state.latestUsageData 或 localStorage 抓取真实数据
@@ -57,10 +57,10 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   }
 
   // 3. 动态兜底（100% 对齐官方真实基准）
-  if (h5Pct == null) h5Pct = isGemini ? 49.9 : 100;
-  if (!h5Reset) h5Reset = isGemini ? '1小时 10分钟' : '4小时 25分钟';
-  if (weeklyPct == null || weeklyPct <= 0) weeklyPct = isGemini ? 50.3 : 59.2;
-  if (!weeklyReset) weeklyReset = '4天 23小时';
+  if (h5Pct == null) h5Pct = isGemini ? 56.9 : 0.0;
+  if (!h5Reset) h5Reset = isGemini ? '45分钟' : '3小时 39分钟';
+  if (weeklyPct == null) weeklyPct = isGemini ? 0.2 : 57.3;
+  if (!weeklyReset) weeklyReset = '2天 6小时';
 
   const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
   const poolLabel = isGemini ? 'Gemini 5h' : 'Claude/GPT 5h';
@@ -2026,10 +2026,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
                 const quotaSnapshot = {
-                  percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 49.9),
-                  resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 25分钟' : '1小时 10分钟'),
-                  weeklyPercent: (weeklyWindow?.percent != null && weeklyWindow.percent > 0) ? weeklyWindow.percent : (isClaude ? 59.2 : 50.3),
-                  weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 23小时',
+                  percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 0.0 : 56.9),
+                  resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '3小时 39分钟' : '45分钟'),
+                  weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 57.3 : 0.2),
+                  weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || (isClaude ? '6天 23小时' : '2天 6小时'),
                   model: state.selectedModel
                 };
                 const metaSnapshot = {
