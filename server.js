@@ -1780,8 +1780,10 @@ wss.on('connection', (ws, req) => {
 
     // 复用 Run Registry：如果已有同会话的后台任务
     let existingRun = activeRuns.get(convKey);
-    if (existingRun && existingRun.isRunning) {
-      // run 正在跑：回放所有错过的事件，然后挂接继续接收实时流
+    const isNewTurn = !existingRun || !existingRun.isRunning || (Array.isArray(messages) && messages.length > (existingRun.initialMessages?.length || 0));
+
+    if (existingRun && existingRun.isRunning && !isNewTurn) {
+      // 仅当是完全相同的轮次且正在跑时才 attach（例如刷新页面重新连接）
       debugLog(`[ws/chat] attach to run ${convKey} (isRunning=true, events=${existingRun.events.length})`);
       for (const ev of existingRun.events) {
         const match = ev.match(/^data: (.+)$/s);
@@ -1795,7 +1797,12 @@ wss.on('connection', (ws, req) => {
       ws.on('close', () => existingRun.listeners.delete(wsListener));
       return;
     }
-    // 旧 run 已完成或不存在 → 清掉旧的，继续创建新 run（发新消息）
+
+    if (existingRun) {
+      try { existingRun.abortController?.abort(); } catch (_) {}
+      existingRun.isRunning = false;
+      activeRuns.delete(convKey);
+    }
 
     // 新建后台 Run
     const t0 = Date.now();
@@ -1880,6 +1887,12 @@ wss.on('connection', (ws, req) => {
           break;
         } catch (err) {
           if (runAbortController.signal.aborted) throw err;
+          if (/trajectory not found|conversation not found/i.test(err && err.message || '')) {
+            debugLog(`[ws/chat] trajectory not found for ${conversationId}, resetting conversationId and retrying`);
+            conversationId = null;
+            if (conversationKey) deleteConversation(conversationKey);
+            continue;
+          }
           const isTransient = /terminated due to error|Agent execution terminated|stream ended|unexpected EOF|context canceled|connection reset|Eligibility check failed|profile picture|i\/o timeout|timeout|dial tcp|connection refused|network is unreachable/i.test(err && err.message || '');
           if (attempt < RETRY && isTransient) {
             await new Promise((r) => setTimeout(r, 1500));
