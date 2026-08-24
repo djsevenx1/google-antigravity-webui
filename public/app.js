@@ -33,16 +33,16 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
-  // 1. 优先读取当前激活账号的实时配额（state.latestUsageData），确保切换账号或对话结束后气泡底部的额度实时变动
+  // 1. 优先读取当条消息固化的专属配额快照；若无则降级读取当前账号实时池
   const quota = state.latestUsageData?.windows || {};
   const isThirdParty = isClaude || isGpt; // Claude 和 GPT 都读三方池
   const livePoolWindow = isThirdParty ? quota.claude5h : quota.fiveHour;
   const liveWeeklyWindow = isThirdParty ? quota.claudeWeekly : quota.weekly;
 
-  let h5Pct = livePoolWindow?.percent != null ? livePoolWindow.percent : meta?.quotaSnapshot?.percent;
-  let h5Reset = (livePoolWindow?.resetsIn || livePoolWindow?.resetText) || meta?.quotaSnapshot?.resetIn;
-  let weeklyPct = (liveWeeklyWindow?.percent != null && liveWeeklyWindow.percent >= 0) ? liveWeeklyWindow.percent : ((meta?.quotaSnapshot?.weeklyPercent != null && meta.quotaSnapshot.weeklyPercent >= 0) ? meta.quotaSnapshot.weeklyPercent : null);
-  let weeklyReset = (liveWeeklyWindow?.resetsIn || liveWeeklyWindow?.resetText) || meta?.quotaSnapshot?.weeklyResetIn;
+  let h5Pct = meta?.quotaSnapshot?.percent != null ? meta.quotaSnapshot.percent : livePoolWindow?.percent;
+  let h5Reset = (meta?.quotaSnapshot?.resetIn != null ? meta.quotaSnapshot.resetIn : (livePoolWindow?.resetsIn || livePoolWindow?.resetText));
+  let weeklyPct = (meta?.quotaSnapshot?.weeklyPercent != null && meta.quotaSnapshot.weeklyPercent >= 0) ? meta.quotaSnapshot.weeklyPercent : ((liveWeeklyWindow?.percent != null && liveWeeklyWindow.percent >= 0) ? liveWeeklyWindow.percent : null);
+  let weeklyReset = (meta?.quotaSnapshot?.weeklyResetIn != null ? meta.quotaSnapshot.weeklyResetIn : (liveWeeklyWindow?.resetsIn || liveWeeklyWindow?.resetText));
 
   // 2. 动态兜底（100% 对齐官方真实基准）
   if (h5Pct == null) h5Pct = isGemini ? 56.9 : 0.0;
@@ -2037,6 +2037,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
             if (data.liveQuota) {
               state.latestUsageData = data.liveQuota;
               updateUsageSummary(data.liveQuota);
+            if (data.quotaSnapshot) {
+              clientRun.lastQuotaSnapshot = data.quotaSnapshot;
             }
             receivedDone = true;
             const targetNode = clientRun.asstNode || asstNode;
@@ -2050,13 +2052,14 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 const poolWindow = isClaude ? liveQuota?.windows?.claude5h : liveQuota?.windows?.fiveHour;
                 const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
-                const quotaSnapshot = {
+                const quotaSnapshot = data.quotaSnapshot || {
                   percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 0.0 : 56.9),
                   resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '3小时 39分钟' : '45分钟'),
                   weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 57.3 : 0.2),
                   weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || (isClaude ? '6天 23小时' : '2天 6小时'),
                   model: state.selectedModel
                 };
+                clientRun.lastQuotaSnapshot = quotaSnapshot;
                 const metaSnapshot = {
                   duration: ((Date.now() - t0)/1000).toFixed(1),
                   model: state.selectedModel,
@@ -2283,7 +2286,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
     if (targetNode && targetNode.row) targetNode.row.classList.remove("streaming");
     if (!hasError && state.activeId === conv.id) {
       const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-      const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
+      const metaSnapshot = {
+        duration: ((Date.now() - t0)/1000).toFixed(1),
+        model: state.selectedModel,
+        quotaSnapshot: clientRun?.lastQuotaSnapshot
+      };
       
       // 直接使用当前已同步的配额数据渲染底部栏，0 延迟、0 额外网络开销
       if (targetNode && targetNode.bubble) {
@@ -2308,7 +2315,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const poolWindow = isClaude ? liveQuota?.windows?.claude5h : liveQuota?.windows?.fiveHour;
         const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
-        const quotaSnapshot = {
+        const quotaSnapshot = clientRun?.lastQuotaSnapshot || {
           percent: poolWindow?.percent != null ? poolWindow.percent : null,
           resetIn: poolWindow?.resetsIn || poolWindow?.resetText || null,
           weeklyPercent: (weeklyWindow?.percent != null && weeklyWindow.percent >= 0) ? weeklyWindow.percent : null,

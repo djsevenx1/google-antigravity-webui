@@ -1935,7 +1935,30 @@ wss.on('connection', (ws, req) => {
       clearInterval(heartbeat);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
 
-      // 1. 无论前端浏览器是否关闭/刷新，服务端立刻先将生成结果强制安全落盘
+      // 1. 每条对话结束瞬间，立即向 Google 原生接口拉取扣减后的最新真实配额
+      run.done = true;
+      profileFetchedAt = 0;
+      let freshQuota = null;
+      try {
+        const freshProfile = await refreshGoogleProfileInBackground(true);
+        freshQuota = buildLiveWindowsData(freshProfile);
+      } catch (_) {
+        freshQuota = buildLiveWindowsData(cachedGoogleProfile);
+      }
+
+      // 2. 构造当轮助手的完整元数据与配额快照
+      const isClaude = String(model || '').toLowerCase().includes('claude');
+      const poolW = isClaude ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
+      const weekW = isClaude ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
+      const turnQuotaSnapshot = {
+        percent: poolW?.percent != null ? poolW.percent : null,
+        resetIn: poolW?.resetsIn || poolW?.resetText || null,
+        weeklyPercent: weekW?.percent != null ? weekW.percent : null,
+        weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
+        model: model
+      };
+
+      // 3. 自动持久化保存到当前会话文件
       try {
         const filePath = getSessionFilePath(convKey);
         let sessionData = {
@@ -1958,7 +1981,8 @@ wss.on('connection', (ws, req) => {
             tools: run.toolEvents?.length ? run.toolEvents : undefined,
             meta: {
               duration: Math.round((Date.now() - t0) / 100) / 10,
-              model: model
+              model: model,
+              quotaSnapshot: turnQuotaSnapshot
             }
           });
         }
@@ -1972,49 +1996,13 @@ wss.on('connection', (ws, req) => {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
 
-      // 2. 立即广播 done 事件，附带当前最新配额（保证前端界面秒级响应）
-      run.done = true;
-      profileFetchedAt = 0;
-      const immediateQuota = buildLiveWindowsData(cachedGoogleProfile);
-      broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: immediateQuota });
-
-      // 后台立刻从 Google 上游拉取最新扣减后的真实配额，并推送 liveQuotaUpdate
-      (async () => {
-        try {
-          await new Promise(r => setTimeout(r, 600));
-          const freshProfile = await refreshGoogleProfileInBackground(true);
-          const freshQuota = buildLiveWindowsData(freshProfile);
-          broadcast({ liveQuotaUpdate: true, liveQuota: freshQuota });
-
-          // 同步固化到当前轮次会话文件中
-          if (filePath && fs.existsSync(filePath)) {
-            try {
-              const sess = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (Array.isArray(sess.messages) && sess.messages.length > 0) {
-                const last = sess.messages[sess.messages.length - 1];
-                if (last && last.role === 'assistant') {
-                  const isClaude = String(last.meta?.model || model || '').toLowerCase().includes('claude');
-                  const poolW = isClaude ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
-                  const weekW = isClaude ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
-                  if (!last.meta) last.meta = {};
-                  last.meta.quotaSnapshot = {
-                    percent: poolW?.percent != null ? poolW.percent : null,
-                    resetIn: poolW?.resetsIn || poolW?.resetText || null,
-                    weeklyPercent: weekW?.percent != null ? weekW.percent : null,
-                    weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
-                    model: last.meta.model || model
-                  };
-                  const tmp = `${filePath}.tmp.${Date.now()}`;
-                  fs.writeFileSync(tmp, JSON.stringify(sess, null, 2), 'utf-8');
-                  fs.renameSync(tmp, filePath);
-                }
-              }
-            } catch (_) {}
-          }
-        } catch (e) {
-          debugLog('[ws/chat] background quota refresh error:', e && e.message);
-        }
-      })();
+      // 4. 广播 done 事件，附带最新拉取到的真实扣减配额（前端接收后直接渲染）
+      broadcast({
+        done: true,
+        conversationId: out ? out.conversationId : null,
+        liveQuota: freshQuota,
+        quotaSnapshot: turnQuotaSnapshot
+      });
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
