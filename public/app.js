@@ -2333,6 +2333,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
     }
     saveConversations();
     refreshIcons();
+    // 对话结束后主动触发一次后台静默用量刷新，双重保险
+    setTimeout(() => { updateUsageSummary(); }, 800);
   }
 }
 
