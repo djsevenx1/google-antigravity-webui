@@ -1511,7 +1511,7 @@ app.post('/api/chat', async (req, res) => {
         if (runAbortController.signal.aborted) {
           throw err;
         }
-        if (attempt < RETRY && transient) {
+        if (attempt < RETRY && isTransient(err)) {
           await new Promise((r) => setTimeout(r, 1500));
           continue;
         }
