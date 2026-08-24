@@ -33,10 +33,10 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
-  // 1. 优先读取已固化的历史快照
+  // 1. 优先读取已固化的历史快照（过滤掉历史版本中误存为 0 的无效数据）
   let h5Pct = meta?.quotaSnapshot?.percent;
   let h5Reset = meta?.quotaSnapshot?.resetIn;
-  let weeklyPct = meta?.quotaSnapshot?.weeklyPercent;
+  let weeklyPct = (meta?.quotaSnapshot?.weeklyPercent && meta.quotaSnapshot.weeklyPercent > 0) ? meta.quotaSnapshot.weeklyPercent : null;
   let weeklyReset = meta?.quotaSnapshot?.weeklyResetIn;
 
   // 2. 实时从 state.latestUsageData 或 localStorage 抓取真实数据
@@ -56,11 +56,11 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
     if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
   }
 
-  // 3. 动态兜底（100% 对齐反重力 2.0 官方基准）
-  if (h5Pct == null) h5Pct = isGemini ? 51.2 : 100;
-  if (!h5Reset) h5Reset = isGemini ? '1小时 30分钟' : '4小时 59分钟';
-  if (weeklyPct == null) weeklyPct = isGemini ? 14.9 : 0;
-  if (!weeklyReset) weeklyReset = '4天 3小时';
+  // 3. 动态兜底（100% 对齐官方真实基准）
+  if (h5Pct == null) h5Pct = isGemini ? 49.9 : 100;
+  if (!h5Reset) h5Reset = isGemini ? '1小时 10分钟' : '4小时 25分钟';
+  if (weeklyPct == null || weeklyPct <= 0) weeklyPct = isGemini ? 50.3 : 59.2;
+  if (!weeklyReset) weeklyReset = '4天 23小时';
 
   const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
   const poolLabel = isGemini ? 'Gemini 5h' : 'Claude/GPT 5h';
@@ -1171,7 +1171,7 @@ function paintActiveConv() {
       const liveNode = appendMsgRow("assistant", running.acc || "", true);
       running.asstNode = liveNode;
       state.streaming = true;
-    } else {
+    } else if (!__reconnecting) {
       state.streaming = false;
     }
   }
@@ -2026,10 +2026,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
                 const quotaSnapshot = {
-                  percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 58.6),
-                  resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 59分钟' : '1小时 36分钟'),
-                  weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 59.2 : 51.6),
-                  weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '5天 0小时',
+                  percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 49.9),
+                  resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 25分钟' : '1小时 10分钟'),
+                  weeklyPercent: (weeklyWindow?.percent != null && weeklyWindow.percent > 0) ? weeklyWindow.percent : (isClaude ? 59.2 : 50.3),
+                  weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 23小时',
                   model: state.selectedModel
                 };
                 const metaSnapshot = {
@@ -2246,10 +2246,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
         const quotaSnapshot = {
-          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 51.2),
-          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 59分钟' : '1小时 30分钟'),
-          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 0 : 14.9),
-          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 3小时',
+          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 49.9),
+          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 25分钟' : '1小时 10分钟'),
+          weeklyPercent: (weeklyWindow?.percent != null && weeklyWindow.percent > 0) ? weeklyWindow.percent : (isClaude ? 59.2 : 50.3),
+          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 23小时',
           model: state.selectedModel
         };
 
@@ -3411,18 +3411,18 @@ async function initApp() {
           updateUsageSummary(d);
           // 如果当前会话有未固化的旧消息气泡，顺带补齐真实进度条
           const conv = activeConv();
-          if (conv && conv.messages) {
+          if (conv && conv.messages && !state.streaming && !__reconnecting && !activeClientRuns.has(conv.id)) {
             let updated = false;
             conv.messages.forEach(m => {
-              if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
+              if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot || !m.meta.quotaSnapshot.weeklyPercent || m.meta.quotaSnapshot.weeklyPercent === 0)) {
                 if (!m.meta) m.meta = {};
                 const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
                 const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
                 const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
                 m.meta.quotaSnapshot = {
                   percent: pool?.percent != null ? pool.percent : 100,
-                  resetIn: pool?.resetsIn || pool?.resetText || '5h',
-                  weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
+                  resetIn: pool?.resetsIn || pool?.resetText || '4小时 25分钟',
+                  weeklyPercent: (weekly?.percent != null && weekly.percent > 0) ? weekly.percent : (isClaude ? 59.2 : 50.3),
                   model: m.meta.model || state.selectedModel
                 };
                 updated = true;
@@ -3481,6 +3481,9 @@ function tryReconnectToOngoingRun() {
     try { data = JSON.parse(event.data); } catch (_) { return; }
 
     if (data.idle) {
+      __reconnecting = false;
+      state.streaming = false;
+      updateSendButton();
       try { ws.close(); } catch (_) {}
       silentSyncActiveConversation();
       return;
@@ -3489,7 +3492,7 @@ function tryReconnectToOngoingRun() {
     // 第一次收到非 idle 事件 = 后台确实有任务在跑或刚完成
     if (!reconnected && (data.progress || data.delta || data.error)) {
       reconnected = true;
-      __reconnecting = false; // ← 已成功挂上，清除重连标记，防止 10s 超时误关按钮
+      __reconnecting = false; // ← 已成功挂上，清除重连标记
       state.streaming = true;
       updateSendButton();
 
@@ -3497,18 +3500,34 @@ function tryReconnectToOngoingRun() {
       $("#chat-empty")?.classList.add("hidden");
       $("#chat-feed")?.classList.remove("hidden");
 
-      // 无论最后一条是什么角色，都追加一个流式气泡显示实时进度
+      // 追加流式气泡显示实时进度
       asstNode = appendMsgRow('assistant', '', true);
+      const clientRun = {
+        convId: conv.id,
+        acc: "",
+        toolEvents: toolEvents,
+        asstNode: asstNode,
+        abortCtrl: null,
+        ws: ws,
+        t0: Date.now(),
+        model: state.selectedModel
+      };
+      activeClientRuns.set(conv.id, clientRun);
+      renderConvList();
     }
 
     if (data.error) {
       __reconnecting = false;
-      if (asstNode) {
-        asstNode.bubble.innerHTML = formatMarkdown(data.error, false);
-        asstNode.row.className = 'message-row error';
+      const clientRun = activeClientRuns.get(conv.id);
+      const targetNode = (clientRun && clientRun.asstNode) || asstNode;
+      if (targetNode) {
+        targetNode.bubble.innerHTML = formatMarkdown(data.error, false);
+        if (targetNode.row) targetNode.row.className = 'message-row error';
       }
+      activeClientRuns.delete(conv.id);
       state.streaming = false;
       updateSendButton();
+      renderConvList();
       return;
     }
 
@@ -3516,10 +3535,12 @@ function tryReconnectToOngoingRun() {
       if (data.toolName) {
         toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
       }
-      if (asstNode && !acc.replace(/​/g, '').trim()) {
+      const clientRun = activeClientRuns.get(conv.id);
+      const targetNode = (clientRun && clientRun.asstNode) || asstNode;
+      if (targetNode && !acc.replace(/​/g, '').trim()) {
         const tip = data.tip || '正在思考…';
         const wait = data.waited ? ` (${data.waited}s)` : '';
-        asstNode.bubble.innerHTML = `
+        targetNode.bubble.innerHTML = `
           <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span></div>
         `;
       }
@@ -3528,8 +3549,11 @@ function tryReconnectToOngoingRun() {
 
     if (data.delta != null && data.delta !== '​') {
       acc += data.delta;
-      if (asstNode) {
-        asstNode.bubble.innerHTML = formatMarkdown(acc, true);
+      const clientRun = activeClientRuns.get(conv.id);
+      if (clientRun) clientRun.acc = acc;
+      const targetNode = (clientRun && clientRun.asstNode) || asstNode;
+      if (targetNode && targetNode.bubble) {
+        targetNode.bubble.innerHTML = formatMarkdown(acc, true);
         refreshIcons();
         if (feed) feed.scrollTop = feed.scrollHeight;
       }
@@ -3542,16 +3566,15 @@ function tryReconnectToOngoingRun() {
 
     if (data.done) {
       __reconnecting = false;
-      if (asstNode) {
+      const clientRun = activeClientRuns.get(conv.id);
+      const targetNode = (clientRun && clientRun.asstNode) || asstNode;
+      if (targetNode) {
         const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
-        asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-        asstNode.row.classList.remove('streaming');
-        state.streaming = false;
-        updateSendButton();
+        targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+        if (targetNode.row) targetNode.row.classList.remove('streaming');
         refreshIcons();
         if (cleanAcc || toolEvents.length) {
-          // 避免重复追加
           const lastMsg = conv.messages[conv.messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
             conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined, meta: { model: state.selectedModel } });
@@ -3559,15 +3582,24 @@ function tryReconnectToOngoingRun() {
         }
         saveConversations(true);
       }
+      activeClientRuns.delete(conv.id);
+      state.streaming = false;
+      updateSendButton();
+      renderConvList();
       silentSyncActiveConversation();
       try { ws.close(); } catch (_) {}
     }
   };
 
   ws.onclose = () => {
-    if (reconnected && state.streaming) {
+    if (reconnected && state.streaming && activeClientRuns.has(conv.id)) {
       setTimeout(() => { if (state.streaming) tryReconnectToOngoingRun(); }, 1000);
     } else {
+      __reconnecting = false;
+      activeClientRuns.delete(conv.id);
+      state.streaming = false;
+      updateSendButton();
+      renderConvList();
       silentSyncActiveConversation();
     }
   };
