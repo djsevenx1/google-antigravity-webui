@@ -1985,6 +1985,32 @@ wss.on('connection', (ws, req) => {
           const freshProfile = await refreshGoogleProfileInBackground(true);
           const freshQuota = buildLiveWindowsData(freshProfile);
           broadcast({ liveQuotaUpdate: true, liveQuota: freshQuota });
+
+          // 同步固化到当前轮次会话文件中
+          if (filePath && fs.existsSync(filePath)) {
+            try {
+              const sess = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              if (Array.isArray(sess.messages) && sess.messages.length > 0) {
+                const last = sess.messages[sess.messages.length - 1];
+                if (last && last.role === 'assistant') {
+                  const isClaude = String(last.meta?.model || model || '').toLowerCase().includes('claude');
+                  const poolW = isClaude ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
+                  const weekW = isClaude ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
+                  if (!last.meta) last.meta = {};
+                  last.meta.quotaSnapshot = {
+                    percent: poolW?.percent != null ? poolW.percent : null,
+                    resetIn: poolW?.resetsIn || poolW?.resetText || null,
+                    weeklyPercent: weekW?.percent != null ? weekW.percent : null,
+                    weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
+                    model: last.meta.model || model
+                  };
+                  const tmp = `${filePath}.tmp.${Date.now()}`;
+                  fs.writeFileSync(tmp, JSON.stringify(sess, null, 2), 'utf-8');
+                  fs.renameSync(tmp, filePath);
+                }
+              }
+            } catch (_) {}
+          }
         } catch (e) {
           debugLog('[ws/chat] background quota refresh error:', e && e.message);
         }
