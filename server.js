@@ -801,14 +801,11 @@ function getModelMetadata(modelId, tierData = {}) {
 }
 
 app.get('/api/usage', async (req, res) => {
-  if (req.query.refresh) {
-    profileFetchedAt = 0;
-  }
+  // 每次调用 /api/usage 都强制从 Google 上游拉取最新真实配额数据
+  profileFetchedAt = 0;
+  await refreshGoogleProfileInBackground(true).catch(() => {});
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
-  if (!cachedGoogleProfile?.liveQuotaBuckets || req.query.refresh || (Date.now() - profileFetchedAt > 60000)) {
-    await refreshGoogleProfileInBackground(!!req.query.refresh).catch(() => {});
-  }
   const googleAccount = cliAuthed ? getActiveGoogleProfile() : null;
   const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
 
@@ -1975,16 +1972,15 @@ wss.on('connection', (ws, req) => {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
 
-      // 2. 核心修复：对话完成后立即刷新 Google 云端最新真实配额并广播最新快照
+      // 2. 先立即发 done，让前端解锁输入框，然后后台强制刷新 Google 上游真实配额再推送
       run.done = true;
-      try {
-        const freshProfile = await refreshGoogleProfileInBackground(true);
-        const immediateQuotaData = buildLiveWindowsData(freshProfile);
-        broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: immediateQuotaData });
-      } catch (_) {
-        const fallbackQuota = buildLiveWindowsData();
-        broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: fallbackQuota });
-      }
+      broadcast({ done: true, conversationId: out ? out.conversationId : null, liveQuota: buildLiveWindowsData() });
+      // 后台异步强制从 Google 拉最新数据，完成后再推一次最新 liveQuota
+      profileFetchedAt = 0;
+      refreshGoogleProfileInBackground(true).then(freshProfile => {
+        const freshQuota = buildLiveWindowsData(freshProfile);
+        broadcast({ liveQuotaUpdate: true, liveQuota: freshQuota });
+      }).catch(() => {});
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;

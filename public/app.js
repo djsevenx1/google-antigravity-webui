@@ -2043,6 +2043,36 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
             done(() => resolve());
           }
+
+          // 对话完成后后台异步刷新的最新 Google 上游真实配额
+          if (data.liveQuotaUpdate && data.liveQuota) {
+            state.latestUsageData = data.liveQuota;
+            updateUsageSummary(data.liveQuota);
+            // 同时更新最近这条气泡底部的配额显示（用最新真实数据覆盖）
+            const targetNode = clientRun.asstNode || asstNode;
+            if (targetNode && state.activeId === conv.id && targetNode.bubble) {
+              const cleanAcc = (acc || '').replace(/[\u200b]/g, '').trim();
+              const modelId = String(state.selectedModel || '').toLowerCase();
+              const isClaude = modelId.includes('claude') || modelId.includes('gpt') || modelId.includes('oss');
+              const lq = data.liveQuota;
+              const poolW = isClaude ? lq?.windows?.claude5h : lq?.windows?.fiveHour;
+              const weekW = isClaude ? lq?.windows?.claudeWeekly : lq?.windows?.weekly;
+              const freshSnapshot = {
+                percent: poolW?.percent != null ? poolW.percent : null,
+                resetIn: poolW?.resetsIn || poolW?.resetText || null,
+                weeklyPercent: weekW?.percent != null ? weekW.percent : null,
+                weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
+                model: state.selectedModel
+              };
+              const freshMeta = {
+                duration: ((Date.now() - t0)/1000).toFixed(1),
+                model: state.selectedModel,
+                quotaSnapshot: freshSnapshot
+              };
+              targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, freshMeta, state.selectedModel);
+              refreshIcons();
+            }
+          }
         };
 
         ws.onerror = () => { __reconnecting = false; done(() => reject(new Error('network error'))); };
