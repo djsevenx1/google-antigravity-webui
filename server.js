@@ -107,12 +107,12 @@ function buildLiveWindowsData() {
   }
 
   return {
-    topNotice: 'You have used some of your weekly limit, it will fully refresh in 4 days, 3 hours.',
+    topNotice: '未连接企业版实时配额 API。以下为本地估算的账号满血配额。',
     windows: {
-      fiveHour: { percent: 65.3, used: 34.7, resetsIn: '2小时 1分钟', status: 'healthy' },
-      weekly: { percent: 17.1, used: 82.9, resetsIn: '4天 3小时', status: 'warning' },
-      claude5h: { percent: 100, used: 0, resetsIn: '4小时 59分钟', status: 'healthy' },
-      claudeWeekly: { percent: 0, used: 100, resetsIn: '4天 3小时', status: 'danger' }
+      fiveHour: { percent: 100, used: 0, resetsIn: `${fiveHourH}小时 ${fiveHourM}分钟`, status: 'healthy' },
+      weekly: { percent: 100, used: 0, resetsIn: weeklyRemainingStr, status: 'healthy' },
+      claude5h: { percent: 100, used: 0, resetsIn: `${fiveHourH}小时 ${fiveHourM}分钟`, status: 'healthy' },
+      claudeWeekly: { percent: 100, used: 0, resetsIn: weeklyRemainingStr, status: 'healthy' }
     }
   };
 }
