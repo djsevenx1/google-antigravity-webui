@@ -1237,7 +1237,7 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
   const contentCol = el("div", "message-content");
   
   const header = el("div", "message-header");
-  header.textContent = role === "user" ? "You" : (state.selectedModel || "Antigravity Agent");
+  header.textContent = role === "user" ? "You" : (meta?.model || (isStreaming ? state.selectedModel : "Antigravity Agent"));
   contentCol.append(header);
 
   let bubble;
