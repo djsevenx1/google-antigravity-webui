@@ -1889,8 +1889,11 @@ wss.on('connection', (ws, req) => {
           broadcast({ retrying: true, attempt });
         }
         try {
-          out = await cliProvider({
-            model, messages: effectiveMessages, effort, permissions, conversationId,
+          // 注入系统提示词:让 agy 写完代码后自动验证语法
+  const systemPrompt = { role: 'user', content: '【系统规则】你修改任何 JavaScript 文件后,必须立即执行 node --check <文件路径> 验证语法,确保无语法错误后再结束。如果语法有错,必须修复后再次验证,直到通过。' };
+  const messagesWithRules = [systemPrompt, ...effectiveMessages];
+  out = await cliProvider({
+            model, messages: messagesWithRules, effort, permissions, conversationId,
             onDelta: (txt) => {
               if (txt && txt !== '​') {
                 deliveredAnything = true;

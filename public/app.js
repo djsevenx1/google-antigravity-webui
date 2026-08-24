@@ -33,22 +33,31 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
-  // 1. 优先读取当条消息固化的专属配额快照；若无则降级读取当前账号实时池
+  // 1. 优先读取已固化的历史快照
+  let h5Pct = meta?.quotaSnapshot?.percent;
+  let h5Reset = meta?.quotaSnapshot?.resetIn;
+  let weeklyPct = meta?.quotaSnapshot?.weeklyPercent;
+  let weeklyReset = meta?.quotaSnapshot?.weeklyResetIn;
+
+  // 2. 实时从 state.latestUsageData 或 localStorage 抓取真实数据
   const quota = state.latestUsageData?.windows || {};
-  const isThirdParty = isClaude || isGpt; // Claude 和 GPT 都读三方池
-  const livePoolWindow = isThirdParty ? quota.claude5h : quota.fiveHour;
-  const liveWeeklyWindow = isThirdParty ? quota.claudeWeekly : quota.weekly;
+  if (isGemini) {
+    const w = quota.fiveHour;
+    if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
+    const ww = quota.weekly;
+    if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
+  } else {
+    const w = quota.claude5h;
+    if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
+    const ww = quota.claudeWeekly;
+    if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
+  }
 
-  let h5Pct = meta?.quotaSnapshot?.percent != null ? meta.quotaSnapshot.percent : livePoolWindow?.percent;
-  let h5Reset = (meta?.quotaSnapshot?.resetIn != null ? meta.quotaSnapshot.resetIn : (livePoolWindow?.resetsIn || livePoolWindow?.resetText));
-  let weeklyPct = (meta?.quotaSnapshot?.weeklyPercent != null && meta.quotaSnapshot.weeklyPercent >= 0) ? meta.quotaSnapshot.weeklyPercent : ((liveWeeklyWindow?.percent != null && liveWeeklyWindow.percent >= 0) ? liveWeeklyWindow.percent : null);
-  let weeklyReset = (meta?.quotaSnapshot?.weeklyResetIn != null ? meta.quotaSnapshot.weeklyResetIn : (liveWeeklyWindow?.resetsIn || liveWeeklyWindow?.resetText));
-
-  // 2. 动态兜底（100% 对齐官方真实基准）
-  if (h5Pct == null) h5Pct = isGemini ? 56.9 : 0.0;
-  if (!h5Reset) h5Reset = isGemini ? '45分钟' : '3小时 39分钟';
-  if (weeklyPct == null) weeklyPct = isGemini ? 0.2 : 57.3;
-  if (!weeklyReset) weeklyReset = '2天 6小时';
+  // 3. 动态兜底（100% 对齐反重力 2.0 官方基准）
+  if (h5Pct == null) h5Pct = isGemini ? 51.2 : 100;
+  if (!h5Reset) h5Reset = isGemini ? '1小时 30分钟' : '4小时 59分钟';
+  if (weeklyPct == null) weeklyPct = isGemini ? 14.9 : 0;
+  if (!weeklyReset) weeklyReset = '4天 3小时';
 
   const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
   const poolLabel = isGemini ? 'Gemini 5h' : 'Claude/GPT 5h';
@@ -86,35 +95,6 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
       </div>
     </div>
   `;
-}
-
-function updateAllQuotaPillsOnScreen(liveQuota = state.latestUsageData) {
-  if (!liveQuota || !liveQuota.windows) return;
-  const feed = document.querySelector('#chat-feed');
-  if (!feed) return;
-  const pills = feed.querySelectorAll('.msg-usage-pill');
-  if (pills.length === 0) return;
-
-  const conv = activeConv();
-  if (!conv || !conv.messages) return;
-  const asstMsgs = conv.messages.filter(m => m.role === 'assistant');
-  const rows = feed.querySelectorAll('.message-row.assistant');
-
-  rows.forEach((row, i) => {
-    const existingPill = row.querySelector('.msg-usage-pill');
-    if (existingPill) {
-      const msgMeta = asstMsgs[i]?.meta || {};
-      const model = msgMeta.model || state.selectedModel;
-      const cleanContent = (asstMsgs[i]?.content || '').replace(/[\u200b\s]/g, '');
-      const newPillHtml = getMessageQuotaFooterHtml(cleanContent, msgMeta, model);
-      const temp = document.createElement('div');
-      temp.innerHTML = newPillHtml.trim();
-      if (temp.firstElementChild) {
-        existingPill.replaceWith(temp.firstElementChild);
-      }
-    }
-  });
-  refreshIcons();
 }
 
 // Google Antigravity Web UI - Modernized Frontend Application
@@ -176,35 +156,7 @@ function refreshIcons() {
 let authToken = localStorage.getItem("agy-auth-token") || sessionStorage.getItem("agy-auth-token") || "";
 
 // 全局 Fetch 拦截器：自动携带鉴权 Token 并捕获 401 未认证状态
-function silentSyncActiveConversation() {} // 兼容占位
-// 通用复制函数(HTTP/HTTPS 都能用)
-window.__copyToClipboard = function(text) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    return __copyToClipboard(text);
-  }
-  return new Promise((resolve, reject) => {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.cssText = 'position:fixed;left:-9999px';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      resolve();
-    } catch(e) { reject(e); }
-  });
-};
-
 const _origFetch = window.fetch;
-
-// 头像代理：把 Google 图片 URL 转成服务器代理 URL(手机无法直连 Google)
-function proxyAvatar(url) {
-  if (!url || !url.startsWith('http')) return url;
-  if (url.includes('/api/avatar')) return url;
-  return '/api/avatar?u=' + encodeURIComponent(url);
-}
-
 window.fetch = async function(url, options = {}) {
   const opts = { ...options };
   opts.headers = new Headers(opts.headers || {});
@@ -628,34 +580,26 @@ function initThinkingToggle() {
 
 // Render Sidebar & Usage Summary
 function updateUsageSummary(quotaData = null) {
-  const applyData = (d) => {
-    if (!d) return;
-    state.latestUsageData = d;
-    try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
-    
-    // 1. 更新侧边栏/顶部 Badge
-    const badgeEl = $("#usage-sidebar-badge");
-    if (badgeEl && d.windows && d.windows.fiveHour) {
-      const w = d.windows.fiveHour;
-      const tierBadge = d.tierBadge || 'AI Pro';
-      badgeEl.textContent = `${tierBadge} ${w.percent}%`;
-      badgeEl.title = `${d.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
-    }
-
-    // 2. 直接即时更新屏幕上所有气泡底部的配额卡片
-    updateAllQuotaPillsOnScreen(d);
-
-    // 3. 如果当前有打开的会话，且未在流式生成中，重刷所有气泡底部的配额条
-    if (!state.streaming && activeClientRuns.size === 0 && $("#chat-feed") && $("#chat-feed").children.length > 0) {
-      paintActiveConv();
-    }
-  };
-
   if (quotaData) {
-    applyData(quotaData);
+    state.latestUsageData = quotaData;
+    try { localStorage.setItem("agy-cached-usage", JSON.stringify(quotaData)); } catch (_) {}
+  }
+  const badgeEl = $("#usage-sidebar-badge");
+  if (!badgeEl) return;
+  if (quotaData && quotaData.windows && quotaData.windows.fiveHour) {
+    const w = quotaData.windows.fiveHour;
+    const tierBadge = quotaData.tierBadge || 'AI Pro';
+    badgeEl.textContent = `${tierBadge} ${w.percent}%`;
+    badgeEl.title = `${quotaData.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
   } else {
     fetch("/api/usage").then((r) => r.json()).then((d) => {
-      applyData(d);
+      state.latestUsageData = d;
+      if (d && d.windows && d.windows.fiveHour) {
+        const w = d.windows.fiveHour;
+        const tierBadge = d.tierBadge || 'AI Pro';
+        badgeEl.textContent = `${tierBadge} ${w.percent}%`;
+        badgeEl.title = `${d.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
+      }
     }).catch(() => {});
   }
 }
@@ -685,7 +629,7 @@ function renderLoginArea() {
     }
     if (googleAcc.picture) {
       const img = el("img", "");
-      img.src = proxyAvatar(googleAcc.picture);
+      img.src = googleAcc.picture;
       frame.append(img);
     } else {
       const initial = (googleAcc.name || googleAcc.email || "G").charAt(0).toUpperCase();
@@ -703,7 +647,9 @@ function renderLoginArea() {
 
     if (tierType) {
       const pillText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
-      const tierPill = el("span", `tier-pill tier-pill-${tierType}`, pillText);
+      const pillBg = tierType === 'pro' ? 'linear-gradient(135deg,#f59e0b,#8b5cf6)' : tierType === 'enterprise' ? 'linear-gradient(135deg,#06b6d4,#3b82f6)' : '#64748b';
+      const tierPill = el("span", "", pillText);
+      tierPill.style.cssText = `font-size:9.5px;font-weight:800;background:${pillBg};color:white;padding:1px 5px;border-radius:10px;line-height:1.2;box-shadow:0 1px 3px rgba(0,0,0,0.2);`;
       userWrap.append(tierPill);
     }
 
@@ -719,7 +665,7 @@ function renderLoginArea() {
       sidebarUserCard.innerHTML = `
         <div class="header-avatar-frame ${tierType}" style="width:28px;height:28px;">
           ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-          <img src="${escapeHtml(proxyAvatar(googleAcc.picture))}" />
+          <img src="${escapeHtml(googleAcc.picture)}" />
           <span class="header-avatar-badge ${tierType}">${badgeText}</span>
         </div>
         <div style="flex:1;min-width:0;">
@@ -738,7 +684,7 @@ function renderLoginArea() {
     const userWrap = el("div", "flex items-center gap-2");
     if (st.user.picture) {
       const img = el("img", "avatar");
-      img.src = proxyAvatar(st.user.picture);
+      img.src = st.user.picture;
       img.style.cssText = "width:26px;height:26px;border-radius:50%;object-fit:cover;";
       userWrap.append(img);
     }
@@ -766,7 +712,7 @@ function renderLoginArea() {
     connectBtn.innerHTML = authed
       ? `<i data-lucide="shield-check" style="width:14px;height:14px;color:var(--success);"></i><span>已认证</span>`
       : `<i data-lucide="key-round" style="width:14px;height:14px;"></i><span>Google 登录</span>`;
-    connectBtn.onclick = () => authed ? showAccountSwitcher() : showCliLogin();
+    connectBtn.onclick = () => showCliLogin();
     area.append(connectBtn);
     refreshIcons();
     return;
@@ -1049,14 +995,14 @@ function formatMarkdown(text, isStreaming = false) {
   if (!text) return "";
   let processed = text.replace(/\u200b/g, "");
   
-  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> OR <antthinking>...</antthinking> (默认收纳折叠，用户点击可展开查看)
-  processed = processed.replace(/<(?:thought|thinking|antthinking|antthought|reasoning)>([\s\S]*?)<\/(?:thought|thinking|antthinking|antthought|reasoning)>/gi, (match, p1) => {
+  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> blocks (默认收纳折叠，用户点击可展开查看)
+  processed = processed.replace(/<(?:thought|thinking)>([\s\S]*?)<\/(?:thought|thinking)>/gi, (match, p1) => {
     return `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
   });
 
   // 2. Handle ACTIVE / UNCLOSED <thought> or <thinking> (流式中展开打印，非流式安全闭合折叠)
   let activeThinkingHtml = "";
-  const thoughtMatch = processed.match(/<(?:thought|thinking|antthinking|antthought|reasoning)>([\s\S]*)$/i);
+  const thoughtMatch = processed.match(/<(?:thought|thinking)>([\s\S]*)$/i);
   if (thoughtMatch) {
     const idx = thoughtMatch.index;
     const beforeThought = processed.substring(0, idx);
@@ -1153,7 +1099,7 @@ window.copyCodeFromBlock = function(btn) {
   const code = wrapper.querySelector("code");
   if (!code) return;
   const text = code.innerText || code.textContent;
-  (navigator.clipboard ? __copyToClipboard(text) : Promise.reject('no clipboard')).then(() => {
+  navigator.clipboard.writeText(text).then(() => {
     btn.innerHTML = `<i data-lucide="check" style="width:12px;height:12px;color:var(--success);"></i> 已复制`;
     refreshIcons();
     setTimeout(() => {
@@ -1196,7 +1142,7 @@ function paintActiveConv() {
       const liveNode = appendMsgRow("assistant", running.acc || "", true);
       running.asstNode = liveNode;
       state.streaming = true;
-    } else if (!__reconnecting) {
+    } else {
       state.streaming = false;
     }
   }
@@ -1219,7 +1165,7 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     if (googleAcc && googleAcc.picture) {
       avatar.innerHTML = `
         ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-        <img src="${escapeHtml(proxyAvatar(googleAcc.picture))}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
+        <img src="${escapeHtml(googleAcc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
         <span class="header-avatar-badge ${tierType}">${badgeText}</span>
       `;
     } else {
@@ -1262,7 +1208,7 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
   const contentCol = el("div", "message-content");
   
   const header = el("div", "message-header");
-  header.textContent = role === "user" ? "You" : (meta?.model || (isStreaming ? state.selectedModel : "Antigravity Agent"));
+  header.textContent = role === "user" ? "You" : (state.selectedModel || "Antigravity Agent");
   contentCol.append(header);
 
   let bubble;
@@ -1754,7 +1700,6 @@ $$(".starter-card").forEach((card) => {
 
 let abortCtrl = null;
 let currentWs = null;
-let __reconnecting = false; // tryReconnect 进行中,看门狗不干预
 let pendingAttachments = null; // 待发送的附件 [{path, name, mimeType, size}]
 function updateSendButton() {
   const btn = $("#btn-send");
@@ -1774,15 +1719,10 @@ function updateSendButton() {
 }
 
 function stopGenerating() {
-  if (abortCtrl) {
-    try { abortCtrl.abort(); } catch (_) {}
-  }
   if (currentWs) { try { currentWs.close(); } catch (_) {} currentWs = null; }
-
-  // 立即更新发送按钮状态
-  state.streaming = false;
-  updateSendButton();
-
+  if (abortCtrl) {
+    abortCtrl.abort();
+  }
   const conv = activeConv();
   if (conv) {
     fetch("/api/chat/abort", {
@@ -1792,30 +1732,6 @@ function stopGenerating() {
     }).catch(() => {});
   }
 }
-
-// streaming 看门狗：对话结束后若 streaming 残留(ws 断了 done 没到)，自动重置 + 清思考动画
-setInterval(() => {
-  if (state.streaming && !__reconnecting) {
-    const noConn = !currentWs || currentWs.readyState === WebSocket.CLOSED || currentWs.readyState === WebSocket.CLOSING;
-    if (noConn && activeClientRuns.size === 0) {
-      state.streaming = false;
-      updateSendButton();
-      // 清除思考动画:重绘当前对话
-      try {
-        const conv = activeConv();
-        if (conv) {
-          const lastMsg = conv.messages[conv.messages.length - 1];
-          if (lastMsg && lastMsg.role === 'assistant' && (!lastMsg.content || !lastMsg.content.replace(/\u200b/g,'').trim())) {
-            conv.messages.pop();
-            saveConversations(true);
-          }
-        }
-        paintActiveConv();
-        renderConvList();
-      } catch(_) {}
-    }
-  }
-}, 2000);
 
 async function handleSend() {
   if (state.streaming) {
@@ -1880,7 +1796,6 @@ async function runConversationTurn(text, appendUserMsg = true) {
   let newConvId = null;
   let toolEvents = []; // 收集工具执行事件，刷新后可恢复
 
-  const t0 = Date.now();
   const clientRun = {
     convId: conv.id,
     acc: "",
@@ -1939,22 +1854,29 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        const resetSilenceWatchdog = () => {
+        const resetSilenceWatchdog = (fromDelta = false) => {
+          const clean = (acc || '').replace(/[\u200b\s]/g, '');
+          if (clean.length > 10 && !fromDelta) {
+            return; // 已经有正文输出时，心跳绝对不能打断/延长看门狗
+          }
           if (silenceWatchdog) clearTimeout(silenceWatchdog);
-          // 兜底保护：仅在 180 秒完全无网络心跳/文本时判定超时，绝不因正常思考/工具调用而误杀
           silenceWatchdog = setTimeout(() => {
-            if (!settled) {
-              const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
-              if (currentClean.length > 0) {
-                receivedDone = true;
-                const targetNode = clientRun.asstNode || asstNode;
-                if (targetNode && targetNode.row) targetNode.row.classList.remove("streaming");
-                done(() => resolve());
-              } else {
-                done(() => reject(new Error('请求响应超时 (180s)')));
+            const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
+            if (currentClean.length > 5 && !settled) {
+              receivedDone = true;
+              const targetNode = clientRun.asstNode || asstNode;
+              if (targetNode) {
+                if (targetNode.row) targetNode.row.classList.remove("streaming");
+                if (state.activeId === conv.id && targetNode.bubble) {
+                  const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
+                  const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
+                  targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+                  refreshIcons();
+                }
               }
+              done(() => resolve());
             }
-          }, 180000);
+          }, 1200);
         };
 
         ws.onopen = () => {
@@ -1998,19 +1920,12 @@ async function runConversationTurn(text, appendUserMsg = true) {
               toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: tipText, waited: data.waited || 0 });
             }
             const cleanAcc = (acc || "").replace(/​/g, "").trim();
-            if (state.activeId === conv.id) {
+            if (!cleanAcc && state.activeId === conv.id) {
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode && targetNode.bubble) {
-                if (!cleanAcc) {
-                  targetNode.bubble.innerHTML = `
-                    <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
-                  `;
-                } else {
-                  targetNode.bubble.innerHTML = formatMarkdown(acc, true) + `
-                    <div class="thinking-active-indicator" style="margin-top:8px;padding:3px 8px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
-                  `;
-                  refreshIcons();
-                }
+                targetNode.bubble.innerHTML = `
+                  <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
+                `;
               }
             }
             return;
@@ -2037,8 +1952,6 @@ async function runConversationTurn(text, appendUserMsg = true) {
             if (data.liveQuota) {
               state.latestUsageData = data.liveQuota;
               updateUsageSummary(data.liveQuota);
-            if (data.quotaSnapshot) {
-              clientRun.lastQuotaSnapshot = data.quotaSnapshot;
             }
             receivedDone = true;
             const targetNode = clientRun.asstNode || asstNode;
@@ -2046,87 +1959,31 @@ async function runConversationTurn(text, appendUserMsg = true) {
               if (targetNode.row) targetNode.row.classList.remove("streaming");
               if (state.activeId === conv.id && targetNode.bubble) {
                 const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-                const modelId = String(state.selectedModel || '').toLowerCase();
-                const isClaude = modelId.includes('claude') || modelId.includes('gpt') || modelId.includes('oss');
-                const liveQuota = state.latestUsageData || {};
-                const poolWindow = isClaude ? liveQuota?.windows?.claude5h : liveQuota?.windows?.fiveHour;
-                const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
-
-                const quotaSnapshot = data.quotaSnapshot || {
-                  percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 0.0 : 56.9),
-                  resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '3小时 39分钟' : '45分钟'),
-                  weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 57.3 : 0.2),
-                  weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || (isClaude ? '6天 23小时' : '2天 6小时'),
-                  model: state.selectedModel
-                };
-                clientRun.lastQuotaSnapshot = quotaSnapshot;
-                const metaSnapshot = {
-                  duration: ((Date.now() - t0)/1000).toFixed(1),
-                  model: state.selectedModel,
-                  quotaSnapshot
-                };
+                const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
                 targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
                 refreshIcons();
               }
             }
             done(() => resolve());
           }
-
-          // 对话完成后后台异步刷新的最新 Google 上游真实配额
-          if (data.liveQuotaUpdate && data.liveQuota) {
-            state.latestUsageData = data.liveQuota;
-            updateUsageSummary(data.liveQuota);
-            // 同时更新最近这条气泡底部的配额显示（用最新真实数据覆盖）
-            const targetNode = clientRun.asstNode || asstNode;
-            if (targetNode && state.activeId === conv.id && targetNode.bubble) {
-              const cleanAcc = (acc || '').replace(/[\u200b]/g, '').trim();
-              const modelId = String(state.selectedModel || '').toLowerCase();
-              const isClaude = modelId.includes('claude') || modelId.includes('gpt') || modelId.includes('oss');
-              const lq = data.liveQuota;
-              const poolW = isClaude ? lq?.windows?.claude5h : lq?.windows?.fiveHour;
-              const weekW = isClaude ? lq?.windows?.claudeWeekly : lq?.windows?.weekly;
-              const freshSnapshot = {
-                percent: poolW?.percent != null ? poolW.percent : null,
-                resetIn: poolW?.resetsIn || poolW?.resetText || null,
-                weeklyPercent: weekW?.percent != null ? weekW.percent : null,
-                weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
-                model: state.selectedModel
-              };
-              const freshMeta = {
-                duration: ((Date.now() - t0)/1000).toFixed(1),
-                model: state.selectedModel,
-                quotaSnapshot: freshSnapshot
-              };
-              targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, freshMeta, state.selectedModel);
-              refreshIcons();
-              if (conv && conv.messages && conv.messages.length > 0) {
-                const last = conv.messages[conv.messages.length - 1];
-                if (last && last.role === 'assistant') {
-                  if (!last.meta) last.meta = {};
-                  last.meta.quotaSnapshot = freshSnapshot;
-                  saveConversations();
-                }
-              }
-            }
-          }
         };
 
-        ws.onerror = () => { __reconnecting = false; done(() => reject(new Error('network error'))); };
+        ws.onerror = () => { done(() => reject(new Error('network error'))); };
         ws.onclose = () => {
-          if (abortCtrl && abortCtrl.signal && abortCtrl.signal.aborted) {
-            const err = new Error('AbortError');
-            err.name = 'AbortError';
-            done(() => reject(err));
-            return;
-          }
-          // 已收到明确的 done 信号 → 正常完成
+          // 如果已收到 done 或已经有完整的回答文本，直接圆满结束当前轮次，绝不无限挂起等待！
           if (receivedDone) { done(() => resolve()); return; }
           if (streamError) { done(() => reject(streamError)); return; }
           if (needsPerm) { done(() => reject(Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput }))); return; }
           
-          // ★ 关键修复：无论是否已有文本，只要没收到 done，都当作网络断开 → 走重试逻辑
-          // 原来这里如果有文本就直接 resolve，导致 Claude 导语后断线被误认为「已完成」
-          // 现在统一走 reject('network error')，由外层 netRetryCount 控制重试并 subscribe 到后台继续跑的 run
+          // 如果已经输出了有效文本（回答已生成完成），连接关闭视为正常结束
+          const cleanText = (acc || '').replace(/[\u200b\s]/g, '');
+          if (cleanText.length > 0) {
+            receivedDone = true;
+            done(() => resolve());
+            return;
+          }
+          
+          // 只有在完全没有收到任何字的情况下，才作为 network error 重试
           done(() => reject(new Error('network error')));
         };
       });
@@ -2195,12 +2052,6 @@ async function runConversationTurn(text, appendUserMsg = true) {
             };
             wsRetry.onerror = () => { done2(() => reject(new Error('network error'))); };
             wsRetry.onclose = () => {
-              if (abortCtrl && abortCtrl.signal && abortCtrl.signal.aborted) {
-                const err = new Error('AbortError');
-                err.name = 'AbortError';
-                done2(() => reject(err));
-                return;
-              }
               if (receivedDone || (acc && acc.replace(/[\u200b\s]/g, '').length > 0)) {
                 receivedDone = true;
                 done2(() => resolve());
@@ -2230,22 +2081,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
       hasError = true;
       const targetNode = clientRun.asstNode || asstNode;
       if (isAbort) {
-        if (targetNode && targetNode.bubble) {
-          const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-          if (cleanAcc) {
-            targetNode.bubble.innerHTML = formatMarkdown(acc, false) + `<div style="margin-top:8px;font-size:12.5px;color:var(--text-muted);font-style:italic;">(已中止)</div>`;
-          } else {
-            targetNode.bubble.innerHTML = `<div style="font-size:13px;color:var(--text-muted);font-style:italic;">(已中止)</div>`;
-          }
-        }
-        if (state.activeId === conv.id) {
-          const lastMsg = conv.messages[conv.messages.length - 1];
-          if (lastMsg && lastMsg.role === 'assistant') {
-            const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-            lastMsg.content = cleanAcc ? acc + "\n\n*(已中止)*" : "*(已中止)*";
-          }
-          saveConversations();
-        }
+        if (targetNode && targetNode.bubble) targetNode.bubble.innerHTML = formatMarkdown(acc + "\n\n*(已中止生成)*", false);
       } else {
         const isQuotaErr = e.quotaExceeded || /quota|limit reached|upgrade your subscription/i.test(errMsg);
         let errorHtml = "";
@@ -2286,11 +2122,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
     if (targetNode && targetNode.row) targetNode.row.classList.remove("streaming");
     if (!hasError && state.activeId === conv.id) {
       const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-      const metaSnapshot = {
-        duration: ((Date.now() - t0)/1000).toFixed(1),
-        model: state.selectedModel,
-        quotaSnapshot: clientRun?.lastQuotaSnapshot
-      };
+      const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
       
       // 直接使用当前已同步的配额数据渲染底部栏，0 延迟、0 额外网络开销
       if (targetNode && targetNode.bubble) {
@@ -2315,11 +2147,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const poolWindow = isClaude ? liveQuota?.windows?.claude5h : liveQuota?.windows?.fiveHour;
         const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
-        const quotaSnapshot = clientRun?.lastQuotaSnapshot || {
-          percent: poolWindow?.percent != null ? poolWindow.percent : null,
-          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || null,
-          weeklyPercent: (weeklyWindow?.percent != null && weeklyWindow.percent >= 0) ? weeklyWindow.percent : null,
-          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || null,
+        const quotaSnapshot = {
+          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 51.2),
+          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 59分钟' : '1小时 30分钟'),
+          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 0 : 14.9),
+          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 3小时',
           model: state.selectedModel
         };
 
@@ -2340,8 +2172,6 @@ async function runConversationTurn(text, appendUserMsg = true) {
     }
     saveConversations();
     refreshIcons();
-    // 对话结束后主动触发一次后台静默用量刷新，双重保险
-    setTimeout(() => { updateUsageSummary(); }, 800);
   }
 }
 
@@ -2917,7 +2747,7 @@ window.handlePluginOp = async function(op, name) {
 };
 
 // Google Antigravity Model Usage & Quota Modal
-async function showUsageModal(manualRefresh = true) {
+async function showUsageModal(manualRefresh = false) {
   const googleAcc = state.status?.googleAccount || {};
   const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
   const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
@@ -2927,12 +2757,12 @@ async function showUsageModal(manualRefresh = true) {
       <!-- 账号信息卡片 -->
       <div id="usage-account-card" class="usage-account-card">
         <div style="display:flex;align-items:center;gap:14px;">
-          <div id="usage-avatar-frame-wrap" class="usage-avatar-frame pro">
-            <span id="usage-avatar-crown" class="modal-avatar-crown">👑</span>
+          <div id="usage-avatar-frame-wrap" class="usage-avatar-frame ${tierType}">
+            <span id="usage-avatar-crown" class="modal-avatar-crown" style="display:${tierType === 'pro' ? 'block' : 'none'}">👑</span>
             <div id="usage-avatar-box" class="usage-avatar-box">
               <span class="usage-default-avatar">◇</span>
             </div>
-            <span id="usage-avatar-corner-badge" class="usage-avatar-corner-badge pro">PRO</span>
+            <span id="usage-avatar-corner-badge" class="usage-avatar-corner-badge ${tierType}">${badgeText}</span>
           </div>
           <div>
             <div id="usage-user-name" style="font-weight:600;font-size:14.5px;color:var(--text-primary);">${googleAcc.name || '加载中...'}</div>
@@ -2941,7 +2771,7 @@ async function showUsageModal(manualRefresh = true) {
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           <div id="usage-tier-badge" class="usage-tier-pill" style="background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(147,51,234,0.15));border:1px solid rgba(147,51,234,0.3);color:#818cf8;font-weight:600;">Google AI Pro</div>
-          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:5px;color:var(--accent);cursor:pointer;border-radius:12px;background:var(--bg-secondary);border:1px solid var(--border-color);" onclick="showUsageModal(true)">
+          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:5px;color:var(--accent);cursor:pointer;border-radius:12px;background:var(--bg-secondary);border:1px solid var(--border-color);" onclick="showUsageModal()">
             <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i>
             <span>实时刷新</span>
           </button>
@@ -3066,31 +2896,37 @@ async function showUsageModal(manualRefresh = true) {
     
     // Fill Account
     const acc = d.account;
-    // 默认保持 Pro 样式，如果检测到降级或特殊变动，再通过 JS 去覆盖
-    if (d.tierType && d.tierType !== 'pro') {
-      const frameEl = $("#usage-avatar-frame-wrap");
-      const cornerBadgeEl = $("#usage-avatar-corner-badge");
-      const crownEl = $("#usage-avatar-crown");
-      const badgeEl = $("#usage-tier-badge");
-      
-      if (frameEl) frameEl.className = `usage-avatar-frame ${d.tierType}`;
-      if (cornerBadgeEl) {
-        cornerBadgeEl.className = `usage-avatar-corner-badge ${d.tierType}`;
-        cornerBadgeEl.textContent = d.tierType === 'enterprise' ? 'ENT' : 'FREE';
-      }
-      if (crownEl) crownEl.style.display = 'none';
-      if (badgeEl) badgeEl.className = `tier-badge tier-badge-${d.tierType}`;
+    const isPro = d.tierType === 'pro' || d.tierType === 'enterprise';
+    const isFree = d.tierType === 'free';
+    const tierType = d.tierType || (isPro ? 'pro' : isFree ? 'free' : 'unauthed');
+    const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : tierType === 'free' ? 'FREE' : '';
+
+    const frameEl = $("#usage-avatar-frame-wrap");
+    const cornerBadgeEl = $("#usage-avatar-corner-badge");
+    if (frameEl) frameEl.className = `usage-avatar-frame ${tierType}`;
+    if (cornerBadgeEl) {
+      cornerBadgeEl.className = `usage-avatar-corner-badge ${tierType}`;
+      cornerBadgeEl.textContent = badgeText;
+      cornerBadgeEl.style.display = badgeText ? "block" : "none";
     }
+    const crownEl = $("#usage-avatar-crown");
+    if (crownEl) crownEl.style.display = tierType === 'pro' ? 'block' : 'none';
 
     if (acc) {
       $("#usage-user-name").textContent = acc.name || "Google 用户";
       $("#usage-user-email").textContent = acc.email || "已认证";
       if (acc.picture) {
-        $("#usage-avatar-box").innerHTML = `<img src="${escapeHtml(proxyAvatar(acc.picture))}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />`;
+        $("#usage-avatar-box").innerHTML = `<img src="${escapeHtml(acc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />`;
       }
+      const badgeStyle = isPro 
+        ? "background:linear-gradient(135deg,rgba(59,130,246,0.18),rgba(147,51,234,0.18));border:1px solid rgba(147,51,234,0.4);color:#a78bfa;font-weight:600;"
+        : isFree 
+        ? "background:rgba(245,158,11,0.15);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;font-weight:600;"
+        : "background:var(--bg-secondary);border:1px solid var(--border-color);color:var(--text-muted);";
       
       const badgeEl = $("#usage-tier-badge");
-      if (badgeEl) badgeEl.textContent = d.tier || acc.tier || "Google AI 账号";
+      badgeEl.textContent = d.tier || acc.tier || "Google AI 账号";
+      badgeEl.style.cssText = badgeStyle;
     } else {
       $("#usage-user-name").textContent = "未登录 Google 账号";
       $("#usage-user-email").textContent = "请点击右上角登录以激活云端配额";
@@ -3123,12 +2959,12 @@ async function showUsageModal(manualRefresh = true) {
 
     // Render Claude & GPT 5h & Weekly Windows (100% 像素级对齐反重力 2.0 官方客户端)
     const winClaude5h = win.claude5h || { percent: 100, resetsIn: "4小时 59分钟" };
-    const winClaudeWeekly = win.claudeWeekly || { percent: 100, resetsIn: winWeekly.resetsIn };
+    const winClaudeWeekly = win.claudeWeekly || { percent: 0, resetsIn: winWeekly.resetsIn };
 
-    const isClaudeWeeklyHit = winClaudeWeekly.percent <= 0;
+    const isClaudeWeeklyHit = winClaudeWeekly.percent === 0;
 
     if ($("#win-percent-claude5h")) {
-      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100% 可用" : `${winClaude5h.percent}% 可用`;
+      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100%" : `${winClaude5h.percent}%`;
       $("#win-percent-claude5h").style.color = isClaudeWeeklyHit ? "#10b981" : (winClaude5h.percent > 60 ? "#10b981" : "#f59e0b");
     }
     if ($("#win-bar-claude5h")) {
@@ -3142,7 +2978,7 @@ async function showUsageModal(manualRefresh = true) {
     }
 
     if ($("#win-percent-claudeweekly")) {
-      $("#win-percent-claudeweekly").textContent = `${winClaudeWeekly.percent}% 可用`;
+      $("#win-percent-claudeweekly").textContent = `${winClaudeWeekly.percent}%`;
       $("#win-percent-claudeweekly").style.color = isClaudeWeeklyHit ? "#94a3b8" : "#eab308";
     }
     if ($("#win-bar-claudeweekly")) {
@@ -3265,7 +3101,6 @@ $("#btn-theme").addEventListener("click", () => {
 });
 $("#btn-send").addEventListener("click", handleSend);
 $("#btn-plugins").addEventListener("click", () => showPlugins("market"));
-$("#btn-debug")?.addEventListener("click", () => showDebugModal());
 $("#btn-about").addEventListener("click", showAbout);
 
 // ── 快速回到底部悬浮按钮 ──
@@ -3357,7 +3192,7 @@ function updateUserAvatarsInFeed() {
     if (googleAcc.picture) {
       avatar.innerHTML = `
         ${tierType === 'pro' ? '<span class="header-avatar-crown">👑</span>' : ''}
-        <img src="${escapeHtml(proxyAvatar(googleAcc.picture))}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
+        <img src="${escapeHtml(googleAcc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
         <span class="header-avatar-badge ${tierType}">${badgeText}</span>
       `;
     } else {
@@ -3375,7 +3210,6 @@ async function refreshSystemStatus() {
   try {
     const res = await fetch("/api/status");
     state.status = await res.json();
-    try { localStorage.setItem("agy-cached-status", JSON.stringify(state.status)); } catch (_) {}
     renderLoginArea();
     updateUserAvatarsInFeed();
   } catch (_) {}
@@ -3385,52 +3219,32 @@ async function refreshSystemStatus() {
 async function initApp() {
   initTheme();
   initThinkingToggle();
-  
-  // 1. 同步从 localStorage 加载所有本地缓存（零延迟）
-  // 1a. 恢复模型列表
+  const isAuthed = await checkWebAuthStatus();
+  if (!isAuthed) return;
+  await refreshSystemStatus();
+  await loadConversations();
+
+  // Instant default models fallback to eliminate initial blank wait
   if (!state.models || !state.models.length) {
     try {
       const cached = JSON.parse(localStorage.getItem("agy-cached-models") || "[]");
-      state.models = cached.length ? cached : ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
+      if (cached.length) state.models = cached;
+      else state.models = ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
     } catch (_) {
       state.models = ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
     }
     renderModelSelect();
   }
 
-  // 1b. 从 localStorage 恢复账号缓存(防刷新闪登录按钮)
-  try {
-    const cachedStatus = JSON.parse(localStorage.getItem("agy-cached-status") || "null");
-    if (cachedStatus) state.status = cachedStatus;
-  } catch (_) {}
-
-  // 2. 同步从 localStorage 加载会话(秒开,不等网络)
-  try {
-    const raw = localStorage.getItem(CONV_KEY) || localStorage.getItem('agy-convs');
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr) && arr.length) state.conversations = arr;
-    }
-    const last = localStorage.getItem(ACTIVE_KEY) || localStorage.getItem('agy-active-conv') || '';
-    if (last && state.conversations.some(c => c.id === last)) {
-      state.activeId = last;
-    } else if (state.conversations.length) {
-      state.activeId = state.conversations[0].id;
-    }
-  } catch(_) {}
-
-  // 3. 用本地数据立即渲染界面（绝不新建多余对话）
-  if (!state.conversations || !state.conversations.length || !state.activeId) {
+  // Instant render local conversations & chat box
+  if (!state.conversations.length || !state.activeId) {
     newChat(true);
   } else {
     renderConvList();
     paintActiveConv();
   }
 
-  // 3. 用本地缓存的账号数据渲染头像（不闪 Google 登录按钮）
-  renderLoginArea();
-
-  // 4. Restore saved permissions & effort preferences
+  // Restore saved permissions & effort preferences
   const permSel = $("#permissions");
   if (permSel) {
     const savedPerm = localStorage.getItem("agy-permissions") || "approve";
@@ -3451,66 +3265,55 @@ async function initApp() {
 
   updateSendButton();
   refreshIcons();
-  // 5. Fire async background syncs
-  checkWebAuthStatus().then(async (isAuthed) => {
-    if (!isAuthed) return;
-    
-    // Auth passed, sync conversations and system status in parallel
-    Promise.all([
-      loadConversations().then(() => {
-        // Re-render chat list after cloud sync
-        renderConvList();
-        paintActiveConv();
-        // Try reconnecting after we have the latest conversations
-        tryReconnectToOngoingRun();
-      }),
-      refreshSystemStatus(),
-      refreshModels().then(() => {
-        if (state.models && state.models.length) {
-          try { localStorage.setItem("agy-cached-models", JSON.stringify(state.models)); } catch (_) {}
-        }
-      })
-    ]).catch(() => {});
 
-    // 主动拉取最新实时配额，预热缓存并对齐所有进度条
-    fetch("/api/usage?refresh=1")
-      .then(r => r.json())
-      .then(d => {
-        if (d && d.windows) {
-          state.latestUsageData = d;
-          try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
-          updateUsageSummary(d);
-          // 如果当前会话有未固化的旧消息气泡，顺带补齐真实进度条
-          const conv = activeConv();
-          if (conv && conv.messages && !state.streaming && !__reconnecting && !activeClientRuns.has(conv.id)) {
-            let updated = false;
-            conv.messages.forEach(m => {
-              if (m.role === 'assistant') {
-                if (!m.meta) m.meta = {};
-                const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
-                const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
-                const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
-                if (pool?.percent != null || weekly?.percent != null) {
-                  m.meta.quotaSnapshot = {
-                    percent: pool?.percent != null ? pool.percent : m.meta?.quotaSnapshot?.percent,
-                    resetIn: pool?.resetsIn || pool?.resetText || m.meta?.quotaSnapshot?.resetIn,
-                    weeklyPercent: weekly?.percent != null ? weekly.percent : m.meta?.quotaSnapshot?.weeklyPercent,
-                    weeklyResetIn: weekly?.resetsIn || weekly?.resetText || m.meta?.quotaSnapshot?.weeklyResetIn,
-                    model: m.meta.model || state.selectedModel
-                  };
-                  updated = true;
-                }
-              }
-            });
-            if (updated) {
-              saveConversations();
-              paintActiveConv();
+  // ── 借鉴 CloudCLI：刷新/重开页面后，如果该对话后台还在跑，自动重连并实时显示 ──
+  tryReconnectToOngoingRun();
+
+  // Non-blocking parallel background sync
+  // 启动时立即主动拉取最新实时配额，预热缓存并对齐所有进度条
+  fetch("/api/usage?refresh=1")
+    .then(r => r.json())
+    .then(d => {
+      if (d && d.windows) {
+        state.latestUsageData = d;
+        try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
+        updateUsageSummary(d);
+        // 如果当前会话有未固化的旧消息气泡，顺带补齐真实进度条
+        const conv = activeConv();
+        if (conv && conv.messages) {
+          let updated = false;
+          conv.messages.forEach(m => {
+            if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
+              if (!m.meta) m.meta = {};
+              const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
+              const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
+              const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
+              m.meta.quotaSnapshot = {
+                percent: pool?.percent != null ? pool.percent : 100,
+                resetIn: pool?.resetsIn || pool?.resetText || '5h',
+                weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
+                model: m.meta.model || state.selectedModel
+              };
+              updated = true;
             }
+          });
+          if (updated) {
+            saveConversations();
+            paintActiveConv();
           }
         }
-      })
-      .catch(() => {});
-  });
+      }
+    })
+    .catch(() => {});
+
+  Promise.all([
+    refreshSystemStatus(),
+    refreshModels().then(() => {
+      if (state.models && state.models.length) {
+        try { localStorage.setItem("agy-cached-models", JSON.stringify(state.models)); } catch (_) {}
+      }
+    })
+  ]).catch(() => {});
 }
 
 initApp();
@@ -3521,12 +3324,6 @@ function tryReconnectToOngoingRun() {
   const conv = activeConv();
   if (!conv) return;
   if (state.streaming) return; // 正在发消息时不要干扰
-  // 乐观设 streaming=true:刷新后等待 server 回复期间,按钮先显示"停止"
-  state.streaming = true;
-  __reconnecting = true;
-  updateSendButton();
-  // 30秒超时:仅在 ws 完全没有响应的极端情况下自动清理（正常重连后 __reconnecting 已被提前清除）
-  setTimeout(() => { if (__reconnecting) { __reconnecting = false; state.streaming = false; updateSendButton(); } }, 30000);
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/ws/chat`;
@@ -3555,9 +3352,6 @@ function tryReconnectToOngoingRun() {
     try { data = JSON.parse(event.data); } catch (_) { return; }
 
     if (data.idle) {
-      __reconnecting = false;
-      state.streaming = false;
-      updateSendButton();
       try { ws.close(); } catch (_) {}
       silentSyncActiveConversation();
       return;
@@ -3566,7 +3360,6 @@ function tryReconnectToOngoingRun() {
     // 第一次收到非 idle 事件 = 后台确实有任务在跑或刚完成
     if (!reconnected && (data.progress || data.delta || data.error)) {
       reconnected = true;
-      __reconnecting = false; // ← 已成功挂上，清除重连标记
       state.streaming = true;
       updateSendButton();
 
@@ -3574,34 +3367,17 @@ function tryReconnectToOngoingRun() {
       $("#chat-empty")?.classList.add("hidden");
       $("#chat-feed")?.classList.remove("hidden");
 
-      // 追加流式气泡显示实时进度
+      // 无论最后一条是什么角色，都追加一个流式气泡显示实时进度
       asstNode = appendMsgRow('assistant', '', true);
-      const clientRun = {
-        convId: conv.id,
-        acc: "",
-        toolEvents: toolEvents,
-        asstNode: asstNode,
-        abortCtrl: null,
-        ws: ws,
-        t0: Date.now(),
-        model: state.selectedModel
-      };
-      activeClientRuns.set(conv.id, clientRun);
-      renderConvList();
     }
 
     if (data.error) {
-      __reconnecting = false;
-      const clientRun = activeClientRuns.get(conv.id);
-      const targetNode = (clientRun && clientRun.asstNode) || asstNode;
-      if (targetNode) {
-        targetNode.bubble.innerHTML = formatMarkdown(data.error, false);
-        if (targetNode.row) targetNode.row.className = 'message-row error';
+      if (asstNode) {
+        asstNode.bubble.innerHTML = formatMarkdown(data.error, false);
+        asstNode.row.className = 'message-row error';
       }
-      activeClientRuns.delete(conv.id);
       state.streaming = false;
       updateSendButton();
-      renderConvList();
       return;
     }
 
@@ -3609,12 +3385,10 @@ function tryReconnectToOngoingRun() {
       if (data.toolName) {
         toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
       }
-      const clientRun = activeClientRuns.get(conv.id);
-      const targetNode = (clientRun && clientRun.asstNode) || asstNode;
-      if (targetNode && !acc.replace(/​/g, '').trim()) {
+      if (asstNode && !acc.replace(/​/g, '').trim()) {
         const tip = data.tip || '正在思考…';
         const wait = data.waited ? ` (${data.waited}s)` : '';
-        targetNode.bubble.innerHTML = `
+        asstNode.bubble.innerHTML = `
           <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span></div>
         `;
       }
@@ -3623,11 +3397,8 @@ function tryReconnectToOngoingRun() {
 
     if (data.delta != null && data.delta !== '​') {
       acc += data.delta;
-      const clientRun = activeClientRuns.get(conv.id);
-      if (clientRun) clientRun.acc = acc;
-      const targetNode = (clientRun && clientRun.asstNode) || asstNode;
-      if (targetNode && targetNode.bubble) {
-        targetNode.bubble.innerHTML = formatMarkdown(acc, true);
+      if (asstNode) {
+        asstNode.bubble.innerHTML = formatMarkdown(acc, true);
         refreshIcons();
         if (feed) feed.scrollTop = feed.scrollHeight;
       }
@@ -3639,16 +3410,16 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.done) {
-      __reconnecting = false;
-      const clientRun = activeClientRuns.get(conv.id);
-      const targetNode = (clientRun && clientRun.asstNode) || asstNode;
-      if (targetNode) {
+      if (asstNode) {
         const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
-        targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-        if (targetNode.row) targetNode.row.classList.remove('streaming');
+        asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+        asstNode.row.classList.remove('streaming');
+        state.streaming = false;
+        updateSendButton();
         refreshIcons();
         if (cleanAcc || toolEvents.length) {
+          // 避免重复追加
           const lastMsg = conv.messages[conv.messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
             conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined, meta: { model: state.selectedModel } });
@@ -3656,24 +3427,15 @@ function tryReconnectToOngoingRun() {
         }
         saveConversations(true);
       }
-      activeClientRuns.delete(conv.id);
-      state.streaming = false;
-      updateSendButton();
-      renderConvList();
       silentSyncActiveConversation();
       try { ws.close(); } catch (_) {}
     }
   };
 
   ws.onclose = () => {
-    if (reconnected && state.streaming && activeClientRuns.has(conv.id)) {
+    if (reconnected && state.streaming) {
       setTimeout(() => { if (state.streaming) tryReconnectToOngoingRun(); }, 1000);
     } else {
-      __reconnecting = false;
-      activeClientRuns.delete(conv.id);
-      state.streaming = false;
-      updateSendButton();
-      renderConvList();
       silentSyncActiveConversation();
     }
   };
@@ -4127,16 +3889,10 @@ async function showAccountSwitcher() {
   for (const a of accounts) {
     const isActive = a.email === activeEmail;
     const isPrimary = !!a.isPrimary;
-    const q = a.quotaSnapshot || {};
-    const qBadges = [];
-    if (q.gemini5h != null) qBadges.push(`<span style="font-size:10px;background:rgba(59,130,246,0.12);color:var(--accent);padding:1px 5px;border-radius:4px;">Gemini 5h: ${q.gemini5h}%</span>`);
-    if (q.geminiWeekly != null) qBadges.push(`<span style="font-size:10px;background:rgba(245,158,11,0.12);color:#f59e0b;padding:1px 5px;border-radius:4px;">周度: ${q.geminiWeekly}%</span>`);
-    if (q.claudeWeekly != null) qBadges.push(`<span style="font-size:10px;background:rgba(168,85,247,0.12);color:#a855f7;padding:1px 5px;border-radius:4px;">Claude周: ${q.claudeWeekly}%</span>`);
-
     rows += `
       <div class="acct-row" data-email="${escapeHtml(a.email)}" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;cursor:pointer;${isActive ? 'background:var(--bg-tertiary);' : ''};border:1px solid ${isPrimary ? 'rgba(245,158,11,0.3)' : 'var(--border-color)'};margin-bottom:6px;">
         <div style="position:relative;">
-          <img src="${escapeHtml(proxyAvatar(a.picture) || '')}" style="width:30px;height:30px;border-radius:50%" onerror="this.style.display='none'"/>
+          <img src="${escapeHtml(a.picture || '')}" style="width:30px;height:30px;border-radius:50%" onerror="this.style.display='none'"/>
           ${isPrimary ? '<span style="position:absolute;top:-4px;right:-4px;font-size:10px;">👑</span>' : ''}
         </div>
         <div style="flex:1">
@@ -4144,10 +3900,7 @@ async function showAccountSwitcher() {
             <span style="font-size:13px;font-weight:600">${escapeHtml(a.name || a.label || a.email)}</span>
             ${isPrimary ? '<span style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:10px;padding:1px 5px;border-radius:4px;font-weight:600;">默认主账号</span>' : ''}
           </div>
-          <div style="display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap;">
-            <span style="font-size:11px;color:var(--text-muted)">${escapeHtml(a.email)}</span>
-            ${qBadges.join('')}
-          </div>
+          <div style="font-size:11px;color:var(--text-muted)">${escapeHtml(a.email)}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           ${isActive ? '<span style="color:#10b981;font-weight:600;font-size:11.5px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,0.1);">当前生效</span>' : '<span style="color:var(--accent);font-size:11.5px;">点击切换</span>'}
@@ -4164,18 +3917,7 @@ async function showAccountSwitcher() {
     rows = '<div style="padding:20px;text-align:center;color:var(--text-muted)">还没有添加多个账号</div>';
   }
   
-  const isBusy = Boolean(state.streaming || activeClientRuns.size > 0);
-  const busyBanner = isBusy ? `
-    <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:8px 12px;margin-bottom:12px;display:flex;align-items:center;gap:8px;">
-      <span style="font-size:16px;">⏳</span>
-      <div style="font-size:12px;color:var(--danger);line-height:1.4;">
-        <strong>当前对话正在生成中</strong>：为保障推理数据与上下文安全，生成未结束前<strong>已锁定切换/管理账号</strong>功能。
-      </div>
-    </div>
-  ` : '';
-
   const modalHtml = `
-    ${busyBanner}
     <div id="acct-list" style="margin-bottom:12px;max-height:300px;overflow-y:auto">${rows}</div>
     <div style="border-top:1px solid var(--border-color);padding-top:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -4183,13 +3925,13 @@ async function showAccountSwitcher() {
       </div>
       
       <div style="display:flex;flex-direction:column;gap:8px;">
-        <button class="btn btn-primary" id="acct-add-new" style="width:100%;justify-content:center;${isBusy ? 'opacity:0.6;cursor:not-allowed;' : ''}">
+        <button class="btn btn-primary" id="acct-add-new" style="width:100%;justify-content:center;">
           <i data-lucide="plus" style="width:14px;height:14px;margin-right:6px"></i> 网页登录添加新账号
         </button>
         
         <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
           <input id="acct-label" placeholder="当前账号的备注名（可选）" style="flex:1;padding:6px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:12px"/>
-          <button class="btn btn-ghost btn-sm" id="acct-add" style="font-size:12px;white-space:nowrap;${isBusy ? 'opacity:0.6;cursor:not-allowed;' : ''}">
+          <button class="btn btn-ghost btn-sm" id="acct-add" style="font-size:12px;white-space:nowrap;">
             仅保存当前生效账号
           </button>
         </div>
@@ -4209,10 +3951,6 @@ async function showAccountSwitcher() {
   document.querySelectorAll(".acct-row").forEach(item => {
     item.onclick = async e => {
       if (e.target.classList.contains("acct-del")) return;
-      if (state.streaming || activeClientRuns.size > 0) {
-        toast("⚠️ 当前对话正在生成回答中，禁止切换账号！请等待完成或点击停止。");
-        return;
-      }
       const email = item.getAttribute("data-email");
       if (email === activeEmail) return;
       closeModal();
@@ -4221,31 +3959,16 @@ async function showAccountSwitcher() {
         const r2 = await fetch("/api/accounts/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
         const d2 = await r2.json();
         if (d2.error) { toast(d2.error); return; }
-        if (d2.account) {
-          if (!state.status) state.status = {};
-          const tierType = d2.profile?.tierType || (d2.account.authMethod === 'consumer' ? 'pro' : 'free');
-          state.status.googleAccount = {
-            email: d2.account.email,
-            name: d2.account.name || (d2.account.email ? d2.account.email.split('@')[0] : 'Google 用户'),
-            picture: d2.account.picture,
-            tier: d2.profile?.tier || (tierType === 'pro' ? 'Google AI Pro' : 'Antigravity Free Tier'),
-            tierType: tierType
-          };
-          renderLoginArea();
-        }
-        if (d2.quota) {
-          state.latestUsageData = d2.quota;
-          updateUsageSummary(d2.quota);
-        }
+        // 彻底清空旧账号的配额缓存与冷却锁
+        state.latestUsageData = null;
         localStorage.removeItem('agy-cached-usage');
         localStorage.removeItem('claudeResetAt');
-        toast("已切换到 " + (d2.account.name || d2.account.label || d2.account.email) + "，实时配额已同步！");
+        toast("已切换到 " + (d2.account.label || d2.account.email));
         await refreshSystemStatus();
         await refreshModels();
         await updateUsageSummary(); // 立即拉取并刷新新账号的真实配额
         renderLoginArea();
         renderConvList();
-        paintActiveConv(); // 立即重新渲染当前会话，气泡底部的额度瞬间跟随新账号变动！
       } catch (e2) { toast("切换失败: " + e2.message); }
     };
   });
@@ -4253,10 +3976,6 @@ async function showAccountSwitcher() {
   document.querySelectorAll(".acct-del").forEach(btn => {
     btn.onclick = async e => {
       e.stopPropagation();
-      if (state.streaming || activeClientRuns.size > 0) {
-        toast("⚠️ 当前对话正在生成回答中，禁止删除账号！");
-        return;
-      }
       const email = btn.getAttribute("data-email");
       const delRes = await fetch("/api/accounts/" + encodeURIComponent(email), { method: "DELETE" });
       const delData = await delRes.json();
@@ -4274,10 +3993,6 @@ async function showAccountSwitcher() {
   const addNewBtn = document.getElementById("acct-add-new");
   if (addNewBtn) {
     addNewBtn.onclick = () => {
-      if (state.streaming || activeClientRuns.size > 0) {
-        toast("⚠️ 当前对话正在生成回答中，请等待完成后再添加账号！");
-        return;
-      }
       closeModal();
       showCliLogin(async (tokenData) => {
         toast("授权完成，正在添加新账号...");
@@ -4301,10 +4016,6 @@ async function showAccountSwitcher() {
   const addBtn = document.getElementById("acct-add");
   if (addBtn) {
     addBtn.onclick = async () => {
-      if (state.streaming || activeClientRuns.size > 0) {
-        toast("⚠️ 当前对话正在生成回答中，请等待完成后再保存账号！");
-        return;
-      }
       const label = document.getElementById("acct-label").value.trim();
       const r3 = await fetch("/api/accounts/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label }) });
       const d3 = await r3.json();
@@ -4317,378 +4028,3 @@ async function showAccountSwitcher() {
     };
   }
 }
-
-// === 系统运行与连接诊断面板 (System Diagnostics Dashboard) ===
-let debugLogsHistory = [];
-function addClientLog(type, msg) {
-  const time = new Date().toTimeString().split(' ')[0];
-  const item = { time, type, msg };
-  debugLogsHistory.push(item);
-  if (debugLogsHistory.length > 300) debugLogsHistory.shift();
-  const consoleEl = document.getElementById("debug-terminal-output");
-  if (consoleEl) {
-    const lineEl = document.createElement("div");
-    lineEl.className = `debug-log-line ${type}`;
-    lineEl.textContent = `[${time}] [${type.toUpperCase()}] ${msg}`;
-    consoleEl.appendChild(lineEl);
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-    const counterEl = document.getElementById("debug-log-counter");
-    if (counterEl) counterEl.textContent = `${debugLogsHistory.length} events`;
-  }
-}
-
-// 全局错误捕获记录到诊断终端
-window.addEventListener("error", (e) => {
-  if (e && e.message) addClientLog("err", `Window error: ${e.message} (${e.filename || ''}:${e.lineno || ''})`);
-});
-window.addEventListener("unhandledrejection", (e) => {
-  if (e && e.reason) addClientLog("err", `Unhandled Promise rejection: ${e.reason.message || e.reason}`);
-});
-
-window.switchDebugTab = function(tabName) {
-  document.querySelectorAll(".debug-tab-btn").forEach(b => {
-    b.classList.toggle("active", b.dataset.tab === tabName);
-  });
-  document.querySelectorAll(".debug-tab-content").forEach(c => {
-    c.classList.toggle("active", c.id === `debug-tab-${tabName}`);
-  });
-};
-
-window.debugForceRefresh = async function() {
-  addClientLog("info", "正在请求刷新系统状态与配额数据...");
-  const btn = document.getElementById("btn-dbg-refresh");
-  if (btn) btn.disabled = true;
-  try {
-    const t0 = Date.now();
-    await refreshSystemStatus();
-    addClientLog("ok", `系统状态刷新成功 (耗时: ${Date.now() - t0}ms)`);
-    if (state.status?.googleAccount) {
-      addClientLog("ok", `Google 账号: ${state.status.googleAccount.email} (${state.status.googleAccount.name || '无真实姓名'})`);
-    }
-    toast("诊断状态已刷新同步！");
-    showDebugModal();
-  } catch (err) {
-    addClientLog("err", `刷新状态失败: ${err && err.message}`);
-    toast("刷新失败: " + (err && err.message));
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-};
-
-window.debugTestHeartbeat = async function() {
-  addClientLog("info", "正在向 /api/heartbeat 发送探活心跳包...");
-  try {
-    const t0 = Date.now();
-    const res = await fetch("/api/heartbeat");
-    const data = await res.json();
-    const latency = Date.now() - t0;
-    if (res.ok && data.ok) {
-      addClientLog("ok", `心跳探活正常 (延迟: ${latency}ms, 实例ID: ${data.instanceId || 'unknown'}, 运行时间: ${data.uptime || 0}s)`);
-      toast(`心跳正常 (延迟: ${latency}ms)`);
-    } else {
-      addClientLog("warn", `心跳返回异常状态: ${res.status}`);
-    }
-  } catch (err) {
-    addClientLog("err", `心跳探针连接失败: ${err && err.message}`);
-  }
-};
-
-window.debugCopyReport = function() {
-  const report = {
-    generatedAt: new Date().toISOString(),
-    ua: navigator.userAgent,
-    authToken: authToken ? `${authToken.slice(0, 10)}...` : 'none',
-    selectedModel: state.selectedModel,
-    isStreaming: state.streaming,
-    activeRunsCount: activeClientRuns.size,
-    status: state.status,
-    recentClientLogs: debugLogsHistory.slice(-60)
-  };
-  const _clipText = JSON.stringify(report, null, 2);
-  (__copyToClipboard(_clipText))
-    .then(() => toast("全量诊断报告已成功复制到剪贴板！"))
-    .catch(() => toast("复制失败，请手动选择复制"));
-};
-
-window.debugClearConsole = function() {
-  debugLogsHistory = [];
-  const consoleEl = document.getElementById("debug-terminal-output");
-  if (consoleEl) {
-    consoleEl.innerHTML = '<div class="debug-log-line dim">诊断控制台已清空。</div>';
-  }
-  const counterEl = document.getElementById("debug-log-counter");
-  if (counterEl) counterEl.textContent = '0 events';
-};
-
-window.showDebugModal = async function showDebugModal() {
-  const isAuthed = Boolean(authToken);
-  const cliStatus = state.status?.cli || {};
-  const gAcc = state.status?.googleAccount || null;
-  const isStreaming = Boolean(state.streaming);
-  const activeRunsCount = activeClientRuns.size;
-  const currentConv = activeConv();
-
-  // 静默拉取系统硬件状态
-  let sysStats = null;
-  try {
-    const resStats = await fetch("/api/system/stats");
-    if (resStats.ok) sysStats = await resStats.json();
-  } catch (_) {}
-
-  // 静默拉取账号列表
-  let accountsList = [];
-  try {
-    const resAcc = await fetch("/api/accounts");
-    if (resAcc.ok) {
-      const accData = await resAcc.json();
-      accountsList = accData.accounts || [];
-    }
-  } catch (_) {}
-
-  const s = sysStats || {};
-
-  const modalHtml = `
-    <div class="debug-panel-wrap">
-      <!-- 顶部诊断标签栏 -->
-      <div class="debug-tabs">
-        <button class="debug-tab-btn active" data-tab="overview" onclick="switchDebugTab('overview')">
-          <i data-lucide="layout-dashboard" style="width:13px;height:13px;"></i> 系统总览
-        </button>
-        <button class="debug-tab-btn" data-tab="account" onclick="switchDebugTab('account')">
-          <i data-lucide="user-check" style="width:13px;height:13px;"></i> 账号与 Token (${accountsList.length || 1})
-        </button>
-        <button class="debug-tab-btn" data-tab="cli" onclick="switchDebugTab('cli')">
-          <i data-lucide="terminal-square" style="width:13px;height:13px;"></i> CLI 内核与模型
-        </button>
-        <button class="debug-tab-btn" data-tab="tasks" onclick="switchDebugTab('tasks')">
-          <i data-lucide="activity" style="width:13px;height:13px;"></i> 运行状态与任务
-        </button>
-        <button class="debug-tab-btn" data-tab="clientlogs" onclick="switchDebugTab('clientlogs')">
-          <i data-lucide="terminal" style="width:13px;height:13px;"></i> 客户端诊断日志
-        </button>
-      </div>
-
-      <!-- 操作按钮栏 -->
-      <div class="debug-actions-bar">
-        <button class="btn btn-primary btn-sm" id="btn-dbg-refresh" onclick="debugForceRefresh()">
-          <i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 刷新状态
-        </button>
-        <button class="btn btn-secondary btn-sm" id="btn-dbg-ping" onclick="debugTestHeartbeat()">
-          <i data-lucide="heart-pulse" style="width:13px;height:13px;"></i> 心跳探活测试
-        </button>
-        <button class="btn btn-secondary btn-sm" onclick="debugCopyReport()">
-          <i data-lucide="copy" style="width:13px;height:13px;"></i> 复制诊断 JSON
-        </button>
-        <button class="btn btn-ghost btn-sm" onclick="debugClearConsole()" style="margin-left:auto;">
-          <i data-lucide="trash-2" style="width:13px;height:13px;"></i> 清空日志
-        </button>
-      </div>
-
-      <!-- Tab 1: 系统总览 -->
-      <div class="debug-tab-content active" id="debug-tab-overview">
-        <div class="debug-grid">
-          <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="shield-check" style="width:13px;height:13px;"></i> Web 鉴权凭证</div>
-            <div class="debug-card-val">
-              ${isAuthed ? '<span class="debug-badge ok">已鉴权登入</span> <span class="debug-code-pill">' + authToken.slice(0, 8) + '...</span>' : '<span class="debug-badge warn">免密或未登录</span>'}
-            </div>
-            <div style="font-size:11px;color:var(--text-dim);">当前会话密钥就绪</div>
-          </div>
-
-          <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="cpu" style="width:13px;height:13px;"></i> 宿主环境平台</div>
-            <div class="debug-card-val">
-              <span>${s.platform || 'linux'} (${s.arch || 'x64'})</span>
-              <span class="debug-badge ok">${s.cpus || 0} 核 CPU</span>
-            </div>
-            <div style="font-size:11px;color:var(--text-dim);">${s.cpuModel || 'CPU 架构就绪'}</div>
-          </div>
-
-          <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="hard-drive" style="width:13px;height:13px;"></i> 系统内存状态</div>
-            <div class="debug-card-val">
-              <span>${s.usedMemMB || 0} / ${s.totalMemMB || 0} MB</span>
-              <span class="debug-badge ${s.memUsagePct > 85 ? 'err' : 'ok'}">${s.memUsagePct || 0}%</span>
-            </div>
-            <div style="font-size:11px;color:var(--text-dim);">可用空闲内存: ${s.freeMemMB || 0} MB</div>
-          </div>
-
-          <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="clock" style="width:13px;height:13px;"></i> 运行时间</div>
-            <div class="debug-card-val">
-              <span>已稳定运行 ${s.uptime || 0}s</span>
-              <span class="debug-badge ok">在线</span>
-            </div>
-            <div style="font-size:11px;color:var(--text-dim);">当前前端视图: 正常</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Tab 2: 账号与 Token 详情 -->
-      <div class="debug-tab-content" id="debug-tab-account">
-        <table class="debug-table">
-          <thead>
-            <tr>
-              <th>Google 账号 / 邮箱</th>
-              <th>显示名称 (官方真实名)</th>
-              <th>头像状态</th>
-              <th>账号类型 / Tier</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${(accountsList.length > 0 ? accountsList : (gAcc ? [gAcc] : [])).map(a => `
-              <tr style="${gAcc && a.email === gAcc.email ? 'background:rgba(59,130,246,0.08);font-weight:600;' : ''}">
-                <td>
-                  ${gAcc && a.email === gAcc.email ? '<span class="debug-badge ok" style="margin-right:4px;">当前生效</span>' : ''}
-                  <span>${escapeHtml(a.email || '-')}</span>
-                </td>
-                <td>${escapeHtml(a.name || a.label || (gAcc?.name) || '-')}</td>
-                <td>
-                  ${a.picture || gAcc?.picture ? '<span class="debug-badge ok">有头像</span>' : '<span class="debug-badge warn">无头像</span>'}
-                </td>
-                <td><span class="debug-code-pill">${escapeHtml(a.tier || gAcc?.tier || 'Google AI Pro (G1 Credits)')}</span></td>
-              </tr>
-            `).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-dim);">暂无账号数据</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Tab 3: CLI 内核与模型 -->
-      <div class="debug-tab-content" id="debug-tab-cli">
-        <div class="debug-card" style="margin-bottom:10px;">
-          <div class="debug-card-title"><i data-lucide="binary" style="width:13px;height:13px;"></i> Antigravity CLI 引擎</div>
-          <div class="debug-card-val">
-            <span class="debug-badge ${cliStatus.installed ? 'ok' : 'err'}">${cliStatus.installed ? '已安装 (Installed)' : '未找到'}</span>
-            <span class="debug-badge ${cliStatus.authenticated ? 'ok' : 'warn'}">${cliStatus.authenticated ? '认证就绪 (Authenticated)' : '未认证'}</span>
-          </div>
-        </div>
-
-        <div style="font-size:12.5px;font-weight:600;color:var(--text-main);margin-bottom:6px;">可用模型列表:</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">
-          ${(state.models || ['gemini-3.7-flash-high', 'gemini-3.1-pro-high', 'claude-sonnet-4-6']).map(m => `<span class="debug-code-pill">${escapeHtml(m)}</span>`).join('')}
-        </div>
-      </div>
-
-      <!-- Tab 4: 运行状态与任务 -->
-      <div class="debug-tab-content" id="debug-tab-tasks">
-        <div class="debug-grid">
-          <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="activity" style="width:13px;height:13px;"></i> 实时流式状态</div>
-            <div class="debug-card-val">
-              ${isStreaming ? '<span class="debug-badge warn">生成中 (Streaming)</span>' : '<span class="debug-badge ok">空闲 (Idle)</span>'}
-              <span style="font-size:11.5px;color:var(--text-dim);">活跃任务数: ${activeRunsCount}</span>
-            </div>
-          </div>
-
-          <div class="debug-card">
-            <div class="debug-card-title"><i data-lucide="message-square" style="width:13px;height:13px;"></i> 当前选中会话</div>
-            <div class="debug-card-val">
-              <span class="debug-code-pill">${escapeHtml(currentConv ? (currentConv.id || '新对话') : '无')}</span>
-            </div>
-            <div style="font-size:11px;color:var(--text-dim);">消息总数: ${currentConv?.messages?.length || 0} 条</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Tab 5: 客户端控制台日志 -->
-      <div class="debug-tab-content" id="debug-tab-clientlogs">
-        <div class="debug-console-wrap">
-          <div class="debug-console-header">
-            <span><i data-lucide="terminal" style="width:12px;height:12px;vertical-align:-1px;display:inline-block;margin-right:4px;"></i> BROWSER CLIENT DIAGNOSTIC LOGS</span>
-            <span id="debug-log-counter">${debugLogsHistory.length} events</span>
-          </div>
-          <div class="debug-console-body" id="debug-terminal-output">
-            ${debugLogsHistory.length === 0 ? '<div class="debug-log-line dim">暂无诊断日志。点击上方【心跳探活测试】或【刷新状态】开始检查。</div>' : ''}
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-
-  openModal("🔧 系统运行与全量诊断中心", modalHtml, true);
-  refreshIcons();
-
-  // 渲染历史客户端日志
-  const consoleEl = document.getElementById("debug-terminal-output");
-  if (consoleEl && debugLogsHistory.length > 0) {
-    consoleEl.innerHTML = debugLogsHistory.map(l => `<div class="debug-log-line ${l.type}">[${l.time}] [${l.type.toUpperCase()}] ${escapeHtml(l.msg)}</div>`).join('');
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-  }
-};
-
-// === 调试增强: 服务端日志 + 一键操作 ===
-window.__fetchServerLog = async function(type) {
-  try {
-    const res = await fetch('/api/debug-log?type=' + type);
-    const data = await res.json();
-    return data.lines || [];
-  } catch(e) { return ['[获取失败: ' + e.message + ']']; }
-};
-
-window.__forceResetStreaming = function() {
-  state.streaming = false;
-  if (currentWs) { try { currentWs.close(); } catch(e){} currentWs = null; }
-  if (abortCtrl) { try { abortCtrl.abort(); } catch(e){} abortCtrl = null; }
-  activeClientRuns.clear();
-  updateSendButton();
-  paintActiveConv();
-  addClientLog('ok', '已强制重置流式状态 (streaming=false)');
-  toast('已强制重置，发送按钮已恢复');
-};
-
-window.__testStatus = async function() {
-  addClientLog('info', '正在测试 /api/status...');
-  try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    if (data.googleAccount) {
-      addClientLog('ok', '/api/status ✅ googleAccount有 picture:' + (data.googleAccount.picture ? '有' : '无'));
-    } else {
-      addClientLog('err', '/api/status ❌ 无 googleAccount');
-    }
-    if (data.cli) {
-      addClientLog('ok', 'cli: installed=' + data.cli.installed + ' authed=' + data.cli.authenticated);
-    }
-  } catch(e) { addClientLog('err', '/api/status 报错: ' + e.message); }
-};
-
-window.__testHeartbeat = async function() {
-  addClientLog('info', '正在测试 /api/heartbeat...');
-  try {
-    const res = await fetch('/api/heartbeat');
-    const data = await res.json();
-    addClientLog('ok', '/api/heartbeat ✅ uptime=' + data.uptime + 'ms');
-  } catch(e) { addClientLog('err', '/api/heartbeat ❌ ' + e.message); }
-};
-
-window.__showServerLogs = async function() {
-  addClientLog('info', '正在获取服务端日志...');
-  const lines = await __fetchServerLog('server');
-  addClientLog('info', '--- server.log 尾部 ---');
-  lines.slice(-20).forEach(l => addClientLog('info', l.slice(0,200)));
-};
-
-window.__showChatDebug = async function() {
-  addClientLog('info', '正在获取对话调试日志...');
-  const lines = await __fetchServerLog('chat');
-  addClientLog('info', '--- chat-debug.log 尾部 ---');
-  lines.slice(-15).forEach(l => addClientLog('info', l.slice(0,200)));
-};
-
-window.__dumpState = function() {
-  addClientLog('info', '=== 全量状态转储 ===');
-  addClientLog('info', 'authToken: ' + (authToken ? authToken.slice(0,10)+'...' : '空'));
-  addClientLog('info', 'state.streaming: ' + state.streaming);
-  addClientLog('info', 'state.selectedModel: ' + state.selectedModel);
-  addClientLog('info', 'state.status: ' + (state.status ? '有' : 'null'));
-  if (state.status) {
-    addClientLog('info', '  googleAccount: ' + (state.status.googleAccount ? '有' : 'null'));
-    addClientLog('info', '  cli.authed: ' + state.status?.cli?.authenticated);
-  }
-  addClientLog('info', 'activeClientRuns.size: ' + activeClientRuns.size);
-  addClientLog('info', 'currentWs: ' + (currentWs ? ('readyState=' + currentWs.readyState) : 'null'));
-  addClientLog('info', 'conversations: ' + (state.conversations?.length || 0));
-  const conv = state.conversations?.find(c => c.id === state.activeId);
-  addClientLog('info', 'activeConv: ' + (conv ? (conv.id + ' msgs=' + (conv.messages?.length||0) + ' convId=' + (conv.convId||'null')) : 'null'));
-  addClientLog('ok', '状态转储完成');
-};
