@@ -3299,12 +3299,8 @@ async function initApp() {
   initTheme();
   initThinkingToggle();
   initVoiceInput();
-  const isAuthed = await checkWebAuthStatus();
-  if (!isAuthed) return;
-  await refreshSystemStatus();
-  await loadConversations();
-
-  // Instant default models fallback to eliminate initial blank wait
+  
+  // 1. Instant default models fallback to eliminate initial blank wait
   if (!state.models || !state.models.length) {
     try {
       const cached = JSON.parse(localStorage.getItem("agy-cached-models") || "[]");
@@ -3316,15 +3312,18 @@ async function initApp() {
     renderModelSelect();
   }
 
-  // Instant render local conversations & chat box
-  if (!state.conversations.length || !state.activeId) {
+  // 2. Instant render local conversations & chat box
+  if (!state.conversations || !state.conversations.length || !state.activeId) {
     newChat(true);
   } else {
     renderConvList();
     paintActiveConv();
   }
+  
+  // 3. Immediately render default user shell (Pro)
+  renderLoginArea();
 
-  // Restore saved permissions & effort preferences
+  // 4. Restore saved permissions & effort preferences
   const permSel = $("#permissions");
   if (permSel) {
     const savedPerm = localStorage.getItem("agy-permissions") || "approve";
@@ -3345,55 +3344,63 @@ async function initApp() {
 
   updateSendButton();
   refreshIcons();
+  // 5. Fire async background syncs
+  checkWebAuthStatus().then(async (isAuthed) => {
+    if (!isAuthed) return;
+    
+    // Auth passed, sync conversations and system status in parallel
+    Promise.all([
+      loadConversations().then(() => {
+        // Re-render chat list after cloud sync
+        renderConvList();
+        paintActiveConv();
+        // Try reconnecting after we have the latest conversations
+        tryReconnectToOngoingRun();
+      }),
+      refreshSystemStatus(),
+      refreshModels().then(() => {
+        if (state.models && state.models.length) {
+          try { localStorage.setItem("agy-cached-models", JSON.stringify(state.models)); } catch (_) {}
+        }
+      })
+    ]).catch(() => {});
 
-  // ── 借鉴 CloudCLI：刷新/重开页面后，如果该对话后台还在跑，自动重连并实时显示 ──
-  tryReconnectToOngoingRun();
-
-  // Non-blocking parallel background sync
-  // 启动时立即主动拉取最新实时配额，预热缓存并对齐所有进度条
-  fetch("/api/usage?refresh=1")
-    .then(r => r.json())
-    .then(d => {
-      if (d && d.windows) {
-        state.latestUsageData = d;
-        try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
-        updateUsageSummary(d);
-        // 如果当前会话有未固化的旧消息气泡，顺带补齐真实进度条
-        const conv = activeConv();
-        if (conv && conv.messages) {
-          let updated = false;
-          conv.messages.forEach(m => {
-            if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
-              if (!m.meta) m.meta = {};
-              const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
-              const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
-              const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
-              m.meta.quotaSnapshot = {
-                percent: pool?.percent != null ? pool.percent : 100,
-                resetIn: pool?.resetsIn || pool?.resetText || '5h',
-                weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
-                model: m.meta.model || state.selectedModel
-              };
-              updated = true;
+    // 主动拉取最新实时配额，预热缓存并对齐所有进度条
+    fetch("/api/usage?refresh=1")
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.windows) {
+          state.latestUsageData = d;
+          try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
+          updateUsageSummary(d);
+          // 如果当前会话有未固化的旧消息气泡，顺带补齐真实进度条
+          const conv = activeConv();
+          if (conv && conv.messages) {
+            let updated = false;
+            conv.messages.forEach(m => {
+              if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
+                if (!m.meta) m.meta = {};
+                const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
+                const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
+                const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
+                m.meta.quotaSnapshot = {
+                  percent: pool?.percent != null ? pool.percent : 100,
+                  resetIn: pool?.resetsIn || pool?.resetText || '5h',
+                  weeklyPercent: weekly?.percent != null ? weekly.percent : 90,
+                  model: m.meta.model || state.selectedModel
+                };
+                updated = true;
+              }
+            });
+            if (updated) {
+              saveConversations();
+              paintActiveConv();
             }
-          });
-          if (updated) {
-            saveConversations();
-            paintActiveConv();
           }
         }
-      }
-    })
-    .catch(() => {});
-
-  Promise.all([
-    refreshSystemStatus(),
-    refreshModels().then(() => {
-      if (state.models && state.models.length) {
-        try { localStorage.setItem("agy-cached-models", JSON.stringify(state.models)); } catch (_) {}
-      }
-    })
-  ]).catch(() => {});
+      })
+      .catch(() => {});
+  });
 }
 
 initApp();
