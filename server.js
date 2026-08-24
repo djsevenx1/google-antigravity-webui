@@ -464,7 +464,7 @@ async function refreshGoogleProfileInBackground(force = false) {
 
           cachedGoogleProfile = {
             email: profile.email || (await getActiveAccountEmail()) || 'Google 用户',
-            name: profile.name || ((profile.email || (await getActiveAccountEmail())) ? (profile.email || (await getActiveAccountEmail())).split('@')[0] : 'Google 用户'),
+            name: profile.name || cachedGoogleProfile?.name || (cachedGoogleProfile === null && fs.existsSync(PROFILE_CACHE_FILE) ? (JSON.parse(fs.readFileSync(PROFILE_CACHE_FILE,"utf8")||"{}").name) : null) || ((profile.email || (await getActiveAccountEmail())) ? (profile.email || (await getActiveAccountEmail())).split('@')[0] : 'Google 用户'),
             picture: profile.picture || 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c',
             tier: tierData.name,
             tierType: tierData.type,
