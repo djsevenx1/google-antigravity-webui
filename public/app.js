@@ -1021,14 +1021,14 @@ function formatMarkdown(text, isStreaming = false) {
   if (!text) return "";
   let processed = text.replace(/\u200b/g, "");
   
-  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> blocks (默认收纳折叠，用户点击可展开查看)
-  processed = processed.replace(/<(?:thought|thinking)>([\s\S]*?)<\/(?:thought|thinking)>/gi, (match, p1) => {
+  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> OR <antthinking>...</antthinking> (默认收纳折叠，用户点击可展开查看)
+  processed = processed.replace(/<(?:thought|thinking|antthinking|antthought|reasoning)>([\s\S]*?)<\/(?:thought|thinking|antthinking|antthought|reasoning)>/gi, (match, p1) => {
     return `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
   });
 
   // 2. Handle ACTIVE / UNCLOSED <thought> or <thinking> (流式中展开打印，非流式安全闭合折叠)
   let activeThinkingHtml = "";
-  const thoughtMatch = processed.match(/<(?:thought|thinking)>([\s\S]*)$/i);
+  const thoughtMatch = processed.match(/<(?:thought|thinking|antthinking|antthought|reasoning)>([\s\S]*)$/i);
   if (thoughtMatch) {
     const idx = thoughtMatch.index;
     const beforeThought = processed.substring(0, idx);
@@ -1970,12 +1970,19 @@ async function runConversationTurn(text, appendUserMsg = true) {
               toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: tipText, waited: data.waited || 0 });
             }
             const cleanAcc = (acc || "").replace(/​/g, "").trim();
-            if (!cleanAcc && state.activeId === conv.id) {
+            if (state.activeId === conv.id) {
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode && targetNode.bubble) {
-                targetNode.bubble.innerHTML = `
-                  <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
-                `;
+                if (!cleanAcc) {
+                  targetNode.bubble.innerHTML = `
+                    <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
+                  `;
+                } else {
+                  targetNode.bubble.innerHTML = formatMarkdown(acc, true) + `
+                    <div class="thinking-active-indicator" style="margin-top:8px;padding:3px 8px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
+                  `;
+                  refreshIcons();
+                }
               }
             }
             return;
