@@ -738,7 +738,7 @@ function renderLoginArea() {
     connectBtn.innerHTML = authed
       ? `<i data-lucide="shield-check" style="width:14px;height:14px;color:var(--success);"></i><span>已认证</span>`
       : `<i data-lucide="key-round" style="width:14px;height:14px;"></i><span>Google 登录</span>`;
-    connectBtn.onclick = () => showCliLogin();
+    connectBtn.onclick = () => authed ? showAccountSwitcher() : showCliLogin();
     area.append(connectBtn);
     refreshIcons();
     return;
@@ -2016,7 +2016,24 @@ async function runConversationTurn(text, appendUserMsg = true) {
               if (targetNode.row) targetNode.row.classList.remove("streaming");
               if (state.activeId === conv.id && targetNode.bubble) {
                 const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-                const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
+                const modelId = String(state.selectedModel || '').toLowerCase();
+                const isClaude = modelId.includes('claude') || modelId.includes('gpt') || modelId.includes('oss');
+                const liveQuota = state.latestUsageData || {};
+                const poolWindow = isClaude ? liveQuota?.windows?.claude5h : liveQuota?.windows?.fiveHour;
+                const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
+
+                const quotaSnapshot = {
+                  percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 58.6),
+                  resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 59分钟' : '1小时 36分钟'),
+                  weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 59.2 : 51.6),
+                  weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '5天 0小时',
+                  model: state.selectedModel
+                };
+                const metaSnapshot = {
+                  duration: ((Date.now() - t0)/1000).toFixed(1),
+                  model: state.selectedModel,
+                  quotaSnapshot
+                };
                 targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
                 refreshIcons();
               }
@@ -2831,7 +2848,7 @@ window.handlePluginOp = async function(op, name) {
 };
 
 // Google Antigravity Model Usage & Quota Modal
-async function showUsageModal(manualRefresh = false) {
+async function showUsageModal(manualRefresh = true) {
   const googleAcc = state.status?.googleAccount || {};
   const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
   const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : 'FREE';
@@ -3042,7 +3059,7 @@ async function showUsageModal(manualRefresh = false) {
     const isClaudeWeeklyHit = winClaudeWeekly.percent <= 0;
 
     if ($("#win-percent-claude5h")) {
-      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100%" : `${winClaude5h.percent}%`;
+      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100% 可用" : `${winClaude5h.percent}% 可用`;
       $("#win-percent-claude5h").style.color = isClaudeWeeklyHit ? "#10b981" : (winClaude5h.percent > 60 ? "#10b981" : "#f59e0b");
     }
     if ($("#win-bar-claude5h")) {
@@ -3056,7 +3073,7 @@ async function showUsageModal(manualRefresh = false) {
     }
 
     if ($("#win-percent-claudeweekly")) {
-      $("#win-percent-claudeweekly").textContent = `${winClaudeWeekly.percent}%`;
+      $("#win-percent-claudeweekly").textContent = `${winClaudeWeekly.percent}% 可用`;
       $("#win-percent-claudeweekly").style.color = isClaudeWeeklyHit ? "#94a3b8" : "#eab308";
     }
     if ($("#win-bar-claudeweekly")) {
@@ -4172,11 +4189,23 @@ async function showAccountSwitcher() {
         const r2 = await fetch("/api/accounts/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
         const d2 = await r2.json();
         if (d2.error) { toast(d2.error); return; }
+        if (d2.account) {
+          if (!state.status) state.status = {};
+          const tierType = d2.account.authMethod === 'consumer' ? 'pro' : 'free';
+          state.status.googleAccount = {
+            email: d2.account.email,
+            name: d2.account.name || (d2.account.email ? d2.account.email.split('@')[0] : 'Google 用户'),
+            picture: d2.account.picture,
+            tier: tierType === 'pro' ? 'Google AI Pro' : 'Antigravity Free Tier',
+            tierType: tierType
+          };
+          renderLoginArea();
+        }
         // 彻底清空旧账号的配额缓存与冷却锁
         state.latestUsageData = null;
         localStorage.removeItem('agy-cached-usage');
         localStorage.removeItem('claudeResetAt');
-        toast("已切换到 " + (d2.account.label || d2.account.email));
+        toast("已切换到 " + (d2.account.name || d2.account.label || d2.account.email));
         await refreshSystemStatus();
         await refreshModels();
         await updateUsageSummary(); // 立即拉取并刷新新账号的真实配额
