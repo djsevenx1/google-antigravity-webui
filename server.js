@@ -1227,7 +1227,29 @@ app.post('/api/permissions/allow', (req, res) => {
 app.get('/api/accounts', async (req, res) => {
   const accounts = await ensurePrimaryAccount();
   const activeEmail = await getActiveAccountEmail();
-  const pa = accounts.map(a => ({...a, picture: a.picture ? ("/api/avatar?u=" + encodeURIComponent(a.picture)) : a.picture})); send(res, 200, { accounts: pa, activeEmail });
+  const pa = accounts.map(a => {
+    let gemini5h = null, geminiWeekly = null, claudeWeekly = null;
+    if (a.quotaSummary?.groups) {
+      const gGroup = a.quotaSummary.groups.find(g => g.displayName?.includes('Gemini'));
+      const cGroup = a.quotaSummary.groups.find(g => g.displayName?.includes('Claude'));
+      const g5 = gGroup?.buckets?.find(b => b.window === '5h');
+      const gw = gGroup?.buckets?.find(b => b.window === 'weekly');
+      const cw = cGroup?.buckets?.find(b => b.window === 'weekly');
+      if (g5?.remainingFraction != null) gemini5h = parseFloat((g5.remainingFraction * 100).toFixed(1));
+      if (gw?.remainingFraction != null) geminiWeekly = parseFloat((gw.remainingFraction * 100).toFixed(1));
+      if (cw?.remainingFraction != null) claudeWeekly = parseFloat((cw.remainingFraction * 100).toFixed(1));
+    }
+    return {
+      ...a,
+      picture: a.picture ? ("/api/avatar?u=" + encodeURIComponent(a.picture)) : a.picture,
+      quotaSnapshot: {
+        gemini5h,
+        geminiWeekly,
+        claudeWeekly
+      }
+    };
+  });
+  send(res, 200, { accounts: pa, activeEmail });
 });
 
 app.post('/api/accounts/add', async (req, res) => {
@@ -1252,9 +1274,10 @@ app.post('/api/accounts/switch', async (req, res) => {
   cachedGoogleProfile = null;
   try { if (fs.existsSync(PROFILE_CACHE_FILE)) fs.unlinkSync(PROFILE_CACHE_FILE); } catch (_) {}
   invalidateCliAuth();
-  // 异步触发新账号的 Profile 与实时配额刷新
-  refreshGoogleProfileInBackground(true).catch(() => {});
-  send(res, 200, r);
+  // 立即同步拉取新账号的 Profile 与 4 维真实配额
+  const newProfile = await refreshGoogleProfileInBackground(true).catch(() => {});
+  const newQuota = buildLiveWindowsData();
+  send(res, 200, { ...r, profile: newProfile, quota: newQuota });
 });
 
 app.delete('/api/accounts/:email', (req, res) => {
