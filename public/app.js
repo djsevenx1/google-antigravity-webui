@@ -1796,6 +1796,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
   let newConvId = null;
   let toolEvents = []; // 收集工具执行事件，刷新后可恢复
 
+  const t0 = Date.now();
   const clientRun = {
     convId: conv.id,
     acc: "",
