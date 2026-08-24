@@ -121,6 +121,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
 import express from 'express';
 import session from 'express-session';
 import { fileURLToPath } from 'node:url';
@@ -301,7 +302,7 @@ app.post('/api/debug-log', (req, res) => {
 
 // 对其余所有 /api 接口强制鉴权
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/heartbeat' || req.path === '/avatar') {
+  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/heartbeat' || req.path === '/avatar' || req.path === '/test-fetch' || req.path === '/test-fetch') {
     return next();
   }
   return requireWebAuth(req, res, next);
@@ -375,8 +376,8 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
   };
 }
 
-async function refreshGoogleProfileInBackground() {
-  if (Date.now() - profileFetchedAt < 300000 && cachedGoogleProfile) return cachedGoogleProfile;
+async function refreshGoogleProfileInBackground(force = false) {
+  if (!force && Date.now() - profileFetchedAt < 300000 && cachedGoogleProfile) return cachedGoogleProfile;
   const tokenPaths = [
     path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
     '/vol5/@apphome/claude code/.gemini/antigravity-cli/antigravity-oauth-token'
@@ -492,18 +493,50 @@ async function refreshGoogleProfileInBackground() {
 
 
 // ---------- API ----------
-// 头像代理：手机无法直连 Google，通过服务器中转图片
+// 头像缓存代理：首次 fetch 下载到本地,后续直接读本地(不依赖 Google)
+const AVATAR_CACHE_DIR = path.join(__dirname, 'data', 'avatars');
+if (!fs.existsSync(AVATAR_CACHE_DIR)) fs.mkdirSync(AVATAR_CACHE_DIR, { recursive: true });
+
+app.get('/api/test-fetch', async (req,res) => { try { const r = await fetch('https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c',{signal:AbortSignal.timeout(8000)}); const b = Buffer.from(await r.arrayBuffer()); res.send('fetch OK size='+b.length); } catch(e) { res.send('fetch FAIL: '+e.message); } });
+
 app.get('/api/avatar', async (req, res) => {
   const url = req.query.u;
   if (!url || !url.startsWith('http')) return res.status(400).end();
   if (!url.includes('googleusercontent.com') && !url.includes('google.com')) return res.status(403).end();
-  try {
-    const r = await fetch(url);
-    const buf = Buffer.from(await r.arrayBuffer());
-    res.set('Content-Type', r.headers.get('content-type') || 'image/jpeg');
+  const hash = crypto.createHash('md5').update(url).digest('hex');
+  // 1. 先找 email 命名的缓存(另一个 AI 下载的)
+  const files = fs.existsSync(AVATAR_CACHE_DIR) ? fs.readdirSync(AVATAR_CACHE_DIR) : [];
+  const emailFile = files.find(f => f.endsWith('.jpg') || f.endsWith('.png'));
+  if (emailFile) {
+    const f = path.join(AVATAR_CACHE_DIR, emailFile);
+    if (fs.statSync(f).size > 100) {
+      const ext = emailFile.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      res.set('Content-Type', ext);
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.sendFile(f);
+    }
+  }
+  // 2. 再找 MD5 命名的缓存
+  const cacheFile = path.join(AVATAR_CACHE_DIR, hash + '.jpg');
+  if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 100) {
+    res.set('Content-Type', 'image/jpeg');
     res.set('Cache-Control', 'public, max-age=86400');
-    res.send(buf);
-  } catch(e) { res.status(502).end(); }
+    return res.sendFile(cacheFile);
+  }
+  // 3. fetch 下载(Google 可能不可达,有兜底)
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > 100) fs.writeFileSync(cacheFile, buf);
+      res.set('Content-Type', r.headers.get('content-type') || 'image/jpeg');
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.send(buf);
+    }
+  } catch(e) {}
+  // 4. 兜底:1x1 透明图
+  res.set('Content-Type', 'image/gif');
+  res.send(Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'));
 });
 
 app.get('/api/debug-log', async (req, res) => {
@@ -522,7 +555,7 @@ app.get('/api/status', async (req, res) => {
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
   if (!cachedGoogleProfile || cachedGoogleProfile.isMock || (Date.now() - profileFetchedAt > 300000)) {
-    await refreshGoogleProfileInBackground().catch(() => {});
+    refreshGoogleProfileInBackground().catch(() => {});  // 非阻塞:后台刷新,不卡 /api/status
   }
   const ga = cachedGoogleProfile ? { ...cachedGoogleProfile, picture: cachedGoogleProfile.picture ? ('/api/avatar?u=' + encodeURIComponent(cachedGoogleProfile.picture)) : cachedGoogleProfile.picture } : null;
   send(res, 200, {
@@ -659,7 +692,7 @@ app.get('/api/usage', async (req, res) => {
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
   if (!cachedGoogleProfile || req.query.refresh || (Date.now() - profileFetchedAt > 300000)) {
-    await refreshGoogleProfileInBackground().catch(() => {});
+    await refreshGoogleProfileInBackground(!!req.query.refresh).catch(() => {});
   }
   const googleAccount = cliAuthed ? cachedGoogleProfile : null;
   const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
@@ -1122,7 +1155,7 @@ app.post('/api/accounts/switch', (req, res) => {
   if (!email) return send(res, 400, { error: '缺少 email' });
   const r = switchAccount(email);
   if (!r.ok) return send(res, 400, { error: r.error });
-  debugLog('[accounts] switched to:', r.account.label);
+  debugLog('[accounts] switched to:', r.account.email || r.account.label);
   // 切换后彻底清空所有内存缓存与 CLI 登录态
   profileFetchedAt = 0;
   cachedGoogleProfile = null;
@@ -1479,14 +1512,11 @@ server.headersTimeout = 605000;
 server.requestTimeout = 0;
 server.timeout = 0;
 
-// 端口被占时：不退出，等 1 秒后重试绑定（解决重启时旧进程没完全释放导致 EADDRINUSE）
+// 端口被占时：另一个实例已在跑，本实例直接退出（不竞争，防 EADDRINUSE 循环）
 server.on('error', (err) => {
   if (err && err.code === 'EADDRINUSE') {
-    debugLog(`[warn] 端口 ${config.port} 被占用，1 秒后重试...`);
-    setTimeout(() => {
-      try { server.close(); } catch (_) {}
-      server.listen(config.port);
-    }, 1000);
+    debugLog(`[warn] 端口 ${config.port} 被占用,另一个实例已在跑,本实例退出`);
+    process.exit(0);
   } else {
     debugLog('[fatal] 服务器错误:', (err && err.message) || err);
     console.error('[fatal] 服务器错误:', (err && err.message) || err);
