@@ -3319,7 +3319,22 @@ async function initApp() {
     if (cachedStatus) state.status = cachedStatus;
   } catch (_) {}
 
-  // 2. 用本地数据立即渲染界面（绝不新建多余对话）
+  // 2. 同步从 localStorage 加载会话(秒开,不等网络)
+  try {
+    const raw = localStorage.getItem(CONV_KEY) || localStorage.getItem('agy-convs');
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) state.conversations = arr;
+    }
+    const last = localStorage.getItem(ACTIVE_KEY) || localStorage.getItem('agy-active-conv') || '';
+    if (last && state.conversations.some(c => c.id === last)) {
+      state.activeId = last;
+    } else if (state.conversations.length) {
+      state.activeId = state.conversations[0].id;
+    }
+  } catch(_) {}
+
+  // 3. 用本地数据立即渲染界面（绝不新建多余对话）
   if (!state.conversations || !state.conversations.length || !state.activeId) {
     newChat(true);
   } else {
