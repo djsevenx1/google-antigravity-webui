@@ -3289,6 +3289,7 @@ async function refreshSystemStatus() {
   try {
     const res = await fetch("/api/status");
     state.status = await res.json();
+    try { localStorage.setItem("agy-cached-status", JSON.stringify(state.status)); } catch (_) {}
     renderLoginArea();
     updateUserAvatarsInFeed();
   } catch (_) {}
@@ -3300,27 +3301,48 @@ async function initApp() {
   initThinkingToggle();
   initVoiceInput();
   
-  // 1. Instant default models fallback to eliminate initial blank wait
+  // 1. 同步从 localStorage 加载所有本地缓存（零延迟）
+  // 1a. 恢复模型列表
   if (!state.models || !state.models.length) {
     try {
       const cached = JSON.parse(localStorage.getItem("agy-cached-models") || "[]");
-      if (cached.length) state.models = cached;
-      else state.models = ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
+      state.models = cached.length ? cached : ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
     } catch (_) {
       state.models = ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
     }
     renderModelSelect();
   }
 
-  // 2. Instant render local conversations & chat box
+  // 1b. 同步从 localStorage 恢复历史对话（fix: 防止每次刷新都新建对话）
+  try {
+    const raw = localStorage.getItem("agy-conversations-v2") || localStorage.getItem("agy-convs");
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) state.conversations = arr;
+    }
+    const last = localStorage.getItem("agy-active-conv-v2") || localStorage.getItem("agy-active-conv") || "";
+    if (last && state.conversations.some(c => c.id === last)) {
+      state.activeId = last;
+    } else if (state.conversations.length) {
+      state.activeId = state.conversations[0].id;
+    }
+  } catch (_) {}
+
+  // 1c. 同步从 localStorage 恢复账号缓存（fix: 防止刷新时闪 Google 登录按钮）
+  try {
+    const cachedStatus = JSON.parse(localStorage.getItem("agy-cached-status") || "null");
+    if (cachedStatus) state.status = cachedStatus;
+  } catch (_) {}
+
+  // 2. 用本地数据立即渲染界面（绝不新建多余对话）
   if (!state.conversations || !state.conversations.length || !state.activeId) {
     newChat(true);
   } else {
     renderConvList();
     paintActiveConv();
   }
-  
-  // 3. Immediately render default user shell (Pro)
+
+  // 3. 用本地缓存的账号数据渲染头像（不闪 Google 登录按钮）
   renderLoginArea();
 
   // 4. Restore saved permissions & effort preferences
