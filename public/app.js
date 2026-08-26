@@ -186,10 +186,20 @@ if (typeof marked !== "undefined") {
   });
 }
 
-function refreshIcons() {
-  if (typeof lucide !== "undefined" && lucide.createIcons) {
-    lucide.createIcons();
+let _iconRafId = null;
+function refreshIcons(container = null) {
+  if (typeof lucide === "undefined" || !lucide.createIcons) return;
+  if (container && container !== document && container !== document.body) {
+    try {
+      lucide.createIcons({ root: container });
+      return;
+    } catch (_) {}
   }
+  if (_iconRafId) return;
+  _iconRafId = requestAnimationFrame(() => {
+    _iconRafId = null;
+    try { lucide.createIcons(); } catch (_) {}
+  });
 }
 
 // ── 格式化工具卡片：对照终端与 Claude/OpenCode 风格设计，纯净精致 ──
@@ -467,20 +477,30 @@ function activeConv() {
 }
 
 let _saveTimeout = null;
+let _localSaveTimeout = null;
 function saveConversations(immediate = false) {
-  try {
-    const slim = state.conversations.map((c) => ({
-      id: c.id,
-      title: c.title,
-      messages: c.messages,
-      convId: c.convId,
-      createdAt: c.createdAt || Date.now(),
-      updatedAt: c.updatedAt || Date.now()
-    }));
-    // 本地缓存备份（离线保护）
-    localStorage.setItem(CONV_KEY, JSON.stringify(slim));
-    localStorage.setItem(ACTIVE_KEY, state.activeId || "");
-  } catch (_) {}
+  const syncLocal = () => {
+    try {
+      const slim = state.conversations.map((c) => ({
+        id: c.id,
+        title: c.title,
+        messages: c.messages,
+        convId: c.convId,
+        createdAt: c.createdAt || Date.now(),
+        updatedAt: c.updatedAt || Date.now()
+      }));
+      localStorage.setItem(CONV_KEY, JSON.stringify(slim));
+      localStorage.setItem(ACTIVE_KEY, state.activeId || "");
+    } catch (_) {}
+  };
+
+  if (immediate) {
+    if (_localSaveTimeout) clearTimeout(_localSaveTimeout);
+    syncLocal();
+  } else {
+    if (_localSaveTimeout) clearTimeout(_localSaveTimeout);
+    _localSaveTimeout = setTimeout(syncLocal, 300);
+  }
 
   const conv = activeConv();
   if (!conv) return;
@@ -1664,16 +1684,16 @@ function getSlashPopup() {
 }
 
 function hideSlashPopup() {
-  const popup = getSlashPopup();
-  if (popup) popup.classList.add('hidden');
-  activeSlashIdx = 0;
-  filteredSlashCommands = [];
+  if (slashPopupEl && !slashPopupEl.classList.contains('hidden')) {
+    slashPopupEl.classList.add('hidden');
+    activeSlashIdx = 0;
+    filteredSlashCommands = [];
+  }
 }
 
 function updateSlashHighlight() {
-  const popup = getSlashPopup();
-  if (!popup) return;
-  popup.querySelectorAll('.slash-item').forEach((el, idx) => {
+  if (!slashPopupEl || slashPopupEl.classList.contains('hidden')) return;
+  slashPopupEl.querySelectorAll('.slash-item').forEach((el, idx) => {
     const isActive = idx === activeSlashIdx;
     if (isActive) {
       el.classList.add('active');
@@ -1705,6 +1725,21 @@ function executeSlashCommand(item) {
     inputArea.value = '';
     autoResizeInput();
     showAbout();
+  } else if (item.action === 'refresh') {
+    location.reload();
+  } else if (item.action === 'toggleDark') {
+    toggleTheme();
+  } else if (item.action === 'clearInput') {
+    inputArea.value = '';
+    autoResizeInput();
+  } else if (item.action === 'toggleThinking') {
+    const toggleInput = $("#toggle-thinking");
+    if (toggleInput) {
+      toggleInput.checked = !toggleInput.checked;
+      applyThinkingVisibility(toggleInput.checked, true);
+    }
+    inputArea.value = '';
+    autoResizeInput();
   } else if (item.action === 'insert') {
     inputArea.value = item.cmd + ' ';
     inputArea.focus();
@@ -1713,6 +1748,10 @@ function executeSlashCommand(item) {
     inputArea.value = item.cmd;
     autoResizeInput();
     handleSend();
+  } else if (item.prompt) {
+    inputArea.value = item.prompt + ' ';
+    autoResizeInput();
+    inputArea.focus();
   }
 }
 
@@ -1976,10 +2015,19 @@ async function runConversationTurn(text, appendUserMsg = true) {
   if (appendUserMsg) {
     conv.messages.push({ role: "user", content: text });
     saveConversations();
+    const empty = $("#chat-empty");
+    if (empty) empty.classList.add("hidden");
+    const feed = $("#chat-feed");
+    if (feed) feed.classList.remove("hidden");
+    appendMsgRow("user", text);
   }
   let userMsgPushed = appendUserMsg; // 重试时不再重复 push 用户消息
 
-  paintActiveConv();
+  const empty = $("#chat-empty");
+  if (empty) empty.classList.add("hidden");
+  const feed = $("#chat-feed");
+  if (feed) feed.classList.remove("hidden");
+
   const asstNode = appendMsgRow("assistant", "", true);
 
   state.streaming = true;
