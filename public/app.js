@@ -331,21 +331,38 @@ function formatToolCallCard(t, index, isRunning = false) {
     subtitleText = cleanArgVal(input.Description || input.Instruction || t.toolAction || t.toolSummary || tip || '代码文件局部变更');
     copyText = replacementContent || targetContent || filePath || summaryText;
 
-    if (targetContent || replacementContent) {
+    let diffLinesHtml = '';
+    if (output && output.includes('[diff_block_start]')) {
+      const diffMatch = output.match(/\[diff_block_start\]([\s\S]*?)\[diff_block_end\]/);
+      if (diffMatch) {
+        const block = diffMatch[1].trim();
+        diffLinesHtml = block.split('\n').map(l => {
+          if (l.startsWith('-')) return `<div class="diff-line-del"><span class="diff-sign">-</span><span class="diff-text">${escapeHtml(l.slice(1))}</span></div>`;
+          if (l.startsWith('+')) return `<div class="diff-line-add"><span class="diff-sign">+</span><span class="diff-text">${escapeHtml(l.slice(1))}</span></div>`;
+          if (l.startsWith('@@')) return `<div class="diff-line-header" style="color:var(--text-dim);font-size:11px;padding:2px 0;">${escapeHtml(l)}</div>`;
+          return `<div class="diff-line-context" style="color:var(--text-dim);padding-left:14px;"><span class="diff-text">${escapeHtml(l)}</span></div>`;
+        }).join('');
+      }
+    }
+    if (!diffLinesHtml && (targetContent || replacementContent)) {
       const targetLines = targetContent ? targetContent.split('\n').map((l) => 
         `<div class="diff-line-del"><span class="diff-sign">-</span><span class="diff-text">${escapeHtml(l)}</span></div>`
       ).join('') : '';
       const replaceLines = replacementContent ? replacementContent.split('\n').map((l) => 
         `<div class="diff-line-add"><span class="diff-sign">+</span><span class="diff-text">${escapeHtml(l)}</span></div>`
       ).join('') : '';
+      diffLinesHtml = `${targetLines}${replaceLines}`;
+    }
+
+    if (diffLinesHtml) {
       detailCode = `
         <div class="tool-file-header">
           <span class="file-path">✏️ ${escapeHtml(filePath || summaryText)}</span>
           ${startLine ? `<span class="line-range">L${startLine} - ${endLine || ''}</span>` : ''}
         </div>
         ${subtitleText ? `<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:8px;font-style:italic;">${escapeHtml(subtitleText)}</div>` : ''}
-        <div class="diff-wrapper">${targetLines}${replaceLines}</div>
-        ${output ? `
+        <div class="diff-wrapper">${diffLinesHtml}</div>
+        ${output && !output.includes('[diff_block_start]') ? `
           <div class="tool-output-section">
             <pre class="tool-output-content" style="color:#34d399;">${escapeHtml(output.trim())}</pre>
           </div>
@@ -2406,6 +2423,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
               }
             }
             if (data.quotaSnapshot) clientRun.lastQuotaSnapshot = data.quotaSnapshot;
+            if (Array.isArray(data.tools) && data.tools.length > 0) {
+              toolEvents = data.tools;
+            }
             receivedDone = true;
             state.streaming = false;
             updateSendButton();
