@@ -241,6 +241,7 @@ function formatToolCallCard(t, index, isRunning = false) {
   const input = normalizeToolInput(t.input || t.toolInput || {});
   let rawInput = t.rawInput || (typeof input === 'object' && Object.keys(input).length ? JSON.stringify(input, null, 2) : (typeof input === 'string' ? input : ''));
   if (rawInput === '{}' || rawInput === '""') rawInput = '';
+  const output = cleanArgVal(t.output || input.output || '');
 
   let typeClass = 'type-generic';
   let badgeText = 'Tool';
@@ -260,12 +261,19 @@ function formatToolCallCard(t, index, isRunning = false) {
     summaryText = cmd ? cmd.split('\n')[0] : (tip || '执行系统终端命令');
     subtitleText = t.toolAction || t.toolSummary || (cwd ? `Cwd: ${cwd}` : (cmd ? '终端命令调用' : tip));
     if (subtitleText === summaryText) subtitleText = '';
-    copyText = cmd || summaryText;
+    copyText = cmd ? (output ? `${cmd}\n\n=== Output ===\n${output}` : cmd) : summaryText;
     detailCode = `
       ${cwd ? `<div class="tool-file-header"><span class="file-path">📁 ${escapeHtml(cwd)}</span><span class="line-range">bash</span></div>` : ''}
-      <div style="font-family:monospace;line-height:1.5;">
+      <div style="font-family:monospace;line-height:1.5;white-space:pre-wrap;word-break:break-all;">
         <span style="color:#10b981;font-weight:700;">$ </span><span style="color:#f8fafc;">${escapeHtml(cmd || summaryText)}</span>
       </div>
+      ${subtitleText ? `<div style="color:var(--text-dim);font-style:italic;font-size:11px;margin:6px 0 4px 0;">${escapeHtml(subtitleText)}</div>` : ''}
+      ${output ? `
+        <div class="tool-output-section">
+          <div class="tool-output-tag">Execution Output</div>
+          <pre class="tool-output-content">${escapeHtml(output.trim())}</pre>
+        </div>
+      ` : (isRunning ? `<div style="font-size:11px;color:#38bdf8;margin-top:6px;">⚡ 指令正在后台执行中...</div>` : '')}
     `;
     const lines = (cmd || '').split('\n').length;
     linesBadge = lines > 1 ? `${lines} lines` : (waited || 'bash');
@@ -279,17 +287,24 @@ function formatToolCallCard(t, index, isRunning = false) {
     const fn = filePath ? filePath.split('/').pop() : '';
     summaryText = fn || (filePath ? filePath.slice(-35) : (tip || '读取文件内容'));
     subtitleText = t.toolAction || t.toolSummary || (filePath ? filePath : (tip || '文件上下文读取'));
-    copyText = filePath || summaryText;
+    copyText = output || filePath || summaryText;
     detailCode = `
       <div class="tool-file-header">
         <span class="file-path">📄 ${escapeHtml(filePath || summaryText)}</span>
         ${startLine ? `<span class="line-range">L${startLine} - ${endLine || 'EOF'}</span>` : ''}
       </div>
-      <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
-        <div># 目标文件: ${escapeHtml(filePath || summaryText)}</div>
-        ${startLine ? `<div># 查看行号: 第 ${startLine} 行 至 第 ${endLine || '结束'} 行</div>` : ''}
-        <div style="color:#38bdf8;margin-top:4px;"># 状态：文件内容已读取并注入对话上下文</div>
-      </div>
+      ${subtitleText ? `<div style="color:var(--text-dim);font-style:italic;font-size:11px;margin-bottom:6px;">${escapeHtml(subtitleText)}</div>` : ''}
+      ${output ? `
+        <div class="tool-output-section">
+          <pre class="tool-output-content">${escapeHtml(output.trim())}</pre>
+        </div>
+      ` : `
+        <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
+          <div># 目标文件: ${escapeHtml(filePath || summaryText)}</div>
+          ${startLine ? `<div># 查看行号: 第 ${startLine} 行 至 第 ${endLine || '结束'} 行</div>` : ''}
+          <div style="color:#38bdf8;margin-top:4px;"># 状态：文件内容已读取并注入对话上下文</div>
+        </div>
+      `}
     `;
     linesBadge = (startLine && endLine) ? `L${startLine}-${endLine}` : (waited || 'read');
   } else if (toolName.includes('replace') || toolName.includes('write') || toolName.includes('edit')) {
@@ -320,6 +335,11 @@ function formatToolCallCard(t, index, isRunning = false) {
         </div>
         ${subtitleText ? `<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:8px;font-style:italic;">${escapeHtml(subtitleText)}</div>` : ''}
         <div class="diff-wrapper">${targetLines}${replaceLines}</div>
+        ${output ? `
+          <div class="tool-output-section">
+            <pre class="tool-output-content" style="color:#34d399;">${escapeHtml(output.trim())}</pre>
+          </div>
+        ` : ''}
       `;
     } else {
       detailCode = `
@@ -328,7 +348,7 @@ function formatToolCallCard(t, index, isRunning = false) {
         </div>
         <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
           <div># 操作说明: ${escapeHtml(subtitleText)}</div>
-          <div style="color:#34d399;margin-top:4px;"># 状态：代码变更已成功保存并应用</div>
+          ${output ? `<div style="color:#34d399;margin-top:4px;">${escapeHtml(output.trim())}</div>` : `<div style="color:#34d399;margin-top:4px;"># 状态：代码变更已成功保存并应用</div>`}
         </div>
       `;
     }
@@ -342,17 +362,23 @@ function formatToolCallCard(t, index, isRunning = false) {
     const p = cleanArgVal(input.SearchPath || input.SearchDirectory || '');
     summaryText = q || tip || '检索代码与文件';
     subtitleText = p ? `Scope: ${p}` : (t.toolAction || t.toolSummary || '项目代码全文检索');
-    copyText = q || summaryText;
+    copyText = output || q || summaryText;
     detailCode = `
       <div class="tool-file-header">
         <span class="file-path">🔍 "${escapeHtml(q || summaryText)}"</span>
         ${p ? `<span class="line-range">${escapeHtml(p)}</span>` : ''}
       </div>
-      <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
-        <div># 检索内容: ${escapeHtml(q || summaryText)}</div>
-        ${p ? `<div># 检索路径: ${escapeHtml(p)}</div>` : ''}
-        <div style="color:#a78bfa;margin-top:4px;"># 状态：检索已完成，已注入分析上下文</div>
-      </div>
+      ${output ? `
+        <div class="tool-output-section">
+          <pre class="tool-output-content">${escapeHtml(output.trim())}</pre>
+        </div>
+      ` : `
+        <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
+          <div># 检索内容: ${escapeHtml(q || summaryText)}</div>
+          ${p ? `<div># 检索路径: ${escapeHtml(p)}</div>` : ''}
+          <div style="color:#a78bfa;margin-top:4px;"># 状态：检索已完成，已注入分析上下文</div>
+        </div>
+      `}
     `;
     linesBadge = waited || 'search';
   } else {
@@ -2254,16 +2280,39 @@ async function runConversationTurn(text, appendUserMsg = true) {
             const waitText = data.waited ? ` (${data.waited}s)` : "";
             // 收集工具执行事件
             if (data.toolName) {
-              toolEvents.push({
-                tool: data.toolName,
-                stepType: data.stepType || '',
-                tip: tipText,
-                input: data.toolInput || null,
-                rawInput: data.rawInput || '',
-                toolAction: data.toolAction || '',
-                toolSummary: data.toolSummary || '',
-                waited: data.waited || 0
-              });
+              let existing = null;
+              if (data.stepIndex != null) {
+                existing = toolEvents.find(e => e.stepIndex === data.stepIndex);
+              }
+              if (!existing && toolEvents.length > 0) {
+                const last = toolEvents[toolEvents.length - 1];
+                if (last && last.tool === data.toolName && (last.state === 'ACTIVE' || !last.output) && data.toolOutput) {
+                  existing = last;
+                }
+              }
+              if (existing) {
+                if (data.toolInput && Object.keys(data.toolInput).length) existing.input = data.toolInput;
+                if (data.rawInput) existing.rawInput = data.rawInput;
+                if (data.toolOutput) existing.output = data.toolOutput;
+                if (data.toolState) existing.state = data.toolState;
+                if (data.duration) existing.duration = data.duration;
+                if (data.waited) existing.waited = data.waited;
+              } else {
+                toolEvents.push({
+                  tool: data.toolName,
+                  stepType: data.stepType || '',
+                  tip: tipText,
+                  input: data.toolInput || null,
+                  rawInput: data.rawInput || '',
+                  output: data.toolOutput || '',
+                  state: data.toolState || 'ACTIVE',
+                  duration: data.duration || 0,
+                  stepIndex: data.stepIndex,
+                  toolAction: data.toolAction || '',
+                  toolSummary: data.toolSummary || '',
+                  waited: data.waited || 0
+                });
+              }
             }
             const targetNode = clientRun.asstNode || asstNode;
             if (targetNode && targetNode.bubble && state.activeId === conv.id) {

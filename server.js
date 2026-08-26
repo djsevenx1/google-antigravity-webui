@@ -2140,14 +2140,34 @@ wss.on('connection', (ws, req) => {
               const waited = Math.round((Date.now() - t0) / 1000);
               if (p && (p.toolName || p.stepType)) {
                 const tName = p.toolName || (p.stepType === 'checkpoint' ? 'sync' : 'thought');
-                const lastEvt = run.toolEvents[run.toolEvents.length - 1];
-                if (!lastEvt || lastEvt.tool !== tName || tName !== 'thought') {
+                let existingEvt = null;
+                if (p.stepIndex != null) {
+                  existingEvt = run.toolEvents.find(e => e.stepIndex === p.stepIndex);
+                }
+                if (!existingEvt && run.toolEvents.length > 0) {
+                  const last = run.toolEvents[run.toolEvents.length - 1];
+                  if (last && last.tool === tName && (last.state === 'ACTIVE' || !last.output) && p.toolOutput) {
+                    existingEvt = last;
+                  }
+                }
+                if (existingEvt) {
+                  if (p.toolInput && Object.keys(p.toolInput).length) existingEvt.input = p.toolInput;
+                  if (p.rawInput) existingEvt.rawInput = p.rawInput;
+                  if (p.toolOutput) existingEvt.output = p.toolOutput;
+                  if (p.toolState) existingEvt.state = p.toolState;
+                  if (p.duration) existingEvt.duration = p.duration;
+                  if (waited) existingEvt.waited = waited;
+                } else if (tName !== 'thought' || !run.toolEvents.length || run.toolEvents[run.toolEvents.length - 1].tool !== 'thought') {
                   run.toolEvents.push({
                     tool: tName,
                     stepType: p.stepType || '',
                     tip: p.tip || (tName === 'thought' ? 'Thought for a few seconds' : ''),
                     input: p.toolInput || null,
                     rawInput: p.rawInput || '',
+                    output: p.toolOutput || '',
+                    state: p.toolState || 'ACTIVE',
+                    duration: p.duration || 0,
+                    stepIndex: p.stepIndex,
                     toolAction: p.toolAction || '',
                     toolSummary: p.toolSummary || '',
                     waited
