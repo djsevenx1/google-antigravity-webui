@@ -512,16 +512,42 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
     'User-Agent': 'antigravity/1.1.19'
   };
 
+  const fetchWithFallback = async (urls, options) => {
+    for (const u of urls) {
+      try {
+        const res = await fetch(u, options);
+        if (res.ok) return res;
+      } catch (_) {}
+    }
+    return null;
+  };
+
   let [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
     fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }),
-    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
-    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
-    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
-    fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) })
+    fetchWithFallback([
+      'https://cloudcode-pa.googleapis.com/v1alpha/users/me:retrieveUserTierInfo',
+      'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
+      'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    fetchWithFallback([
+      'https://cloudcode-pa.googleapis.com/v1alpha/users/me:retrieveUserQuotaSummary',
+      'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
+      'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    fetchWithFallback([
+      'https://cloudcode-pa.googleapis.com/v1alpha/users/me:retrieveUserQuota',
+      'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
+      'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    fetchWithFallback([
+      'https://cloudcode-pa.googleapis.com/v1alpha/models:list',
+      'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+      'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels'
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) })
   ]);
 
   // 如果遇到 401，立即强制刷新 Token 并重试一次
-  if (quotaSummaryRes.status === 'fulfilled' && quotaSummaryRes.value.status === 401) {
+  if ((quotaSummaryRes.status === 'fulfilled' && !quotaSummaryRes.value) || (userinfoRes.status === 'fulfilled' && userinfoRes.value.status === 401)) {
     raw = await refreshAccessToken(raw);
     token = raw?.token?.access_token;
     if (token) {
@@ -531,26 +557,42 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
       headers.Authorization = `Bearer ${token}`;
       [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
         fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }),
-        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
-        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
-        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
-        fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) })
+        fetchWithFallback([
+          'https://cloudcode-pa.googleapis.com/v1alpha/users/me:retrieveUserTierInfo',
+          'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
+          'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        fetchWithFallback([
+          'https://cloudcode-pa.googleapis.com/v1alpha/users/me:retrieveUserQuotaSummary',
+          'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
+          'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        fetchWithFallback([
+          'https://cloudcode-pa.googleapis.com/v1alpha/users/me:retrieveUserQuota',
+          'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
+          'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        fetchWithFallback([
+          'https://cloudcode-pa.googleapis.com/v1alpha/models:list',
+          'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+          'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels'
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) })
       ]);
     }
   }
 
   let profile = {};
-  if (userinfoRes.status === 'fulfilled' && userinfoRes.value.ok) {
+  if (userinfoRes.status === 'fulfilled' && userinfoRes.value && userinfoRes.value.ok) {
     try { profile = await userinfoRes.value.json(); } catch (_) {}
   }
 
   let liveTierInfo = null;
-  if (tierRes.status === 'fulfilled' && tierRes.value.ok) {
+  if (tierRes.status === 'fulfilled' && tierRes.value && tierRes.value.ok) {
     try { liveTierInfo = await tierRes.value.json(); } catch (_) {}
   }
 
   let liveQuotaSummary = null;
-  if (quotaSummaryRes.status === 'fulfilled' && quotaSummaryRes.value.ok) {
+  if (quotaSummaryRes.status === 'fulfilled' && quotaSummaryRes.value && quotaSummaryRes.value.ok) {
     try {
       const sData = await quotaSummaryRes.value.json();
       if (Array.isArray(sData?.groups)) liveQuotaSummary = sData;
@@ -558,7 +600,7 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   }
 
   let liveQuotaBuckets = null;
-  if (quotaRes.status === 'fulfilled' && quotaRes.value.ok) {
+  if (quotaRes.status === 'fulfilled' && quotaRes.value && quotaRes.value.ok) {
     try {
       const qData = await quotaRes.value.json();
       if (Array.isArray(qData?.buckets)) liveQuotaBuckets = qData.buckets;
@@ -566,7 +608,7 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   }
 
   let liveModelsQuota = null;
-  if (modelsRes.status === 'fulfilled' && modelsRes.value.ok) {
+  if (modelsRes.status === 'fulfilled' && modelsRes.value && modelsRes.value.ok) {
     try {
       const mData = await modelsRes.value.json();
       if (mData?.models) liveModelsQuota = mData.models;

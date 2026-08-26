@@ -2026,6 +2026,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 renderUsageModalContent(data.liveQuota);
               }
             }
+            if (data.quotaSnapshot) clientRun.lastQuotaSnapshot = data.quotaSnapshot;
             receivedDone = true;
             state.streaming = false;
             updateSendButton();
@@ -2254,12 +2255,12 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const poolWindow = isClaude ? liveQuota?.windows?.claude5h : liveQuota?.windows?.fiveHour;
         const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
-        const quotaSnapshot = {
-          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 0.4 : 98),
-          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || '即将重置',
+        const quotaSnapshot = (clientRun.lastQuotaSnapshot) || {
+          percent: poolWindow?.percent != null ? poolWindow.percent : null,
+          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || '',
           resetTime: poolWindow?.resetTime || null,
-          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 58.2 : 0.7),
-          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || (isClaude ? '5天 0小时' : '8小时 23分钟'),
+          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : null,
+          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '',
           weeklyResetTime: weeklyWindow?.resetTime || null,
           model: state.selectedModel
         };
