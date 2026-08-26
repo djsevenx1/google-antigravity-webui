@@ -690,7 +690,7 @@ function initTheme() {
 }
 
 // Thinking & Tools Visibility Mode
-function applyThinkingVisibility(show) {
+function applyThinkingVisibility(show, withToast = false) {
   state.showThinking = !!show;
   document.body.classList.toggle("hide-thinking-tools", !state.showThinking);
   const toggleInput = $("#toggle-thinking");
@@ -700,6 +700,10 @@ function applyThinkingVisibility(show) {
   try {
     localStorage.setItem("agy-show-thinking", state.showThinking ? "true" : "false");
   } catch (_) {}
+  refreshIcons();
+  if (withToast) {
+    showToast(state.showThinking ? "已开启工具调用显示" : "已隐藏工具调用详情");
+  }
 }
 
 function initThinkingToggle() {
@@ -708,7 +712,7 @@ function initThinkingToggle() {
   const toggleInput = $("#toggle-thinking");
   if (toggleInput) {
     toggleInput.addEventListener("change", (e) => {
-      applyThinkingVisibility(e.target.checked);
+      applyThinkingVisibility(e.target.checked, true);
     });
   }
   if (toggleRow) {
@@ -716,7 +720,7 @@ function initThinkingToggle() {
       if (e.target !== toggleInput) {
         if (toggleInput) {
           toggleInput.checked = !toggleInput.checked;
-          applyThinkingVisibility(toggleInput.checked);
+          applyThinkingVisibility(toggleInput.checked, true);
         }
       }
     });
