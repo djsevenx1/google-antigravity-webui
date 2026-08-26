@@ -1,4 +1,133 @@
 
+
+// ========== 本地配额计算引擎 ==========
+// 每天第一次用企业版API校正,之后本地按 token 消耗扣减
+let LOCAL_QUOTA_FILE;
+
+function loadLocalQuota() {
+  try {
+    if (fs.existsSync(LOCAL_QUOTA_FILE)) return JSON.parse(fs.readFileSync(LOCAL_QUOTA_FILE, 'utf8'));
+  } catch(_) {}
+  return null;
+}
+
+function saveLocalQuota(q) {
+  try { fs.writeFileSync(LOCAL_QUOTA_FILE, JSON.stringify(q, null, 2)); } catch(_) {}
+}
+
+// 从企业版API校正配额(每天第一次)
+async function calibrateQuotaFromAPI() {
+  const q = loadLocalQuota();
+  if (q && q.lastCalibrate) {
+    const today = new Date().toDateString();
+    const lastCalDay = new Date(q.lastCalibrate).toDateString();
+    if (today === lastCalDay) return q; // 今天已校正过
+  }
+  // 调企业版API拉真实配额
+  const activeAcc = getActiveAccount();
+  const profile = await refreshGoogleProfileInBackground(true, activeAcc);
+  const summary = profile?.liveQuotaSummary;
+  if (!summary || !Array.isArray(summary.groups)) return q || null;
+  
+  const newQ = { lastCalibrate: new Date().toISOString(), windows: {} };
+  for (const g of summary.groups) {
+    const isClaude = (g.displayName || '').toLowerCase().includes('claude') || (g.displayName || '').toLowerCase().includes('gpt');
+    const weekly = g.buckets?.find(b => b.window === 'weekly' || b.bucketId?.includes('weekly'));
+    const h5 = g.buckets?.find(b => b.window === '5h' || b.bucketId?.includes('5h'));
+    const prefix = isClaude ? 'claude' : 'gemini';
+    if (weekly) newQ.windows[`${prefix}Weekly`] = { remainingFraction: weekly.remainingFraction, resetTime: weekly.resetTime };
+    if (h5) newQ.windows[`${prefix}5h`] = { remainingFraction: h5.remainingFraction, resetTime: h5.resetTime };
+  }
+  saveLocalQuota(newQ);
+  return newQ;
+}
+
+// 本地扣减配额(每次对话后调用)
+function deductLocalQuota(model, usage) {
+  if (!usage || !usage.total_tokens) return;
+  const q = loadLocalQuota();
+  if (!q || !q.windows) return;
+  
+  const isClaude = String(model || '').toLowerCase().includes('claude') || String(model || '').toLowerCase().includes('gpt') || String(model || '').toLowerCase().includes('oss');
+  const prefix = isClaude ? 'claude' : 'gemini';
+  const totalTokens = usage.total_tokens || ((usage.input_tokens || 0) + (usage.output_tokens || 0) + (usage.thinking_tokens || 0));
+  
+  // Google WTUS 权重:不同模型消耗不同比例
+  // Gemini Flash: 1x, Gemini Pro: 5x, Claude Sonnet: 3x, Claude Opus: 15x, GPT-OSS: 1x
+  const modelLower = String(model || '').toLowerCase();
+  let weight = 1;
+  if (modelLower.includes('opus')) weight = 15;
+  else if (modelLower.includes('sonnet')) weight = 3;
+  else if (modelLower.includes('pro') && !modelLower.includes('flash')) weight = 5;
+  else if (modelLower.includes('gpt') || modelLower.includes('oss')) weight = 1;
+  
+  // Google AI Pro 每周配额上限约 50000 WTUS,5h 约 8000 WTUS(实测推算)
+  const WEEKLY_LIMIT = 50000;
+  const HOURLY_5H_LIMIT = 8000;
+  const consumedWTUS = Math.round(totalTokens * weight / 1000); // 转成千级 WTUS
+  
+  // 扣减 5h
+  const key5h = `${prefix}5h`;
+  if (q.windows[key5h]) {
+    const resetTime = new Date(q.windows[key5h].resetTime);
+    if (Date.now() >= resetTime.getTime()) {
+      // 5h窗口过期,重置
+      q.windows[key5h] = { remainingFraction: 1, resetTime: new Date(Date.now() + 5 * 3600 * 1000).toISOString() };
+    }
+    const consumedFraction = Math.min(q.windows[key5h].remainingFraction, consumedWTUS / HOURLY_5H_LIMIT);
+    q.windows[key5h].remainingFraction = Math.max(0, q.windows[key5h].remainingFraction - consumedFraction);
+  }
+  
+  // 扣减 weekly
+  const keyW = `${prefix}Weekly`;
+  if (q.windows[keyW]) {
+    const resetTime = new Date(q.windows[keyW].resetTime);
+    if (Date.now() >= resetTime.getTime()) {
+      q.windows[keyW] = { remainingFraction: 1, resetTime: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() };
+    }
+    const consumedFraction = Math.min(q.windows[keyW].remainingFraction, consumedWTUS / WEEKLY_LIMIT);
+    q.windows[keyW].remainingFraction = Math.max(0, q.windows[keyW].remainingFraction - consumedFraction);
+  }
+  
+  q.lastDeduct = new Date().toISOString();
+  saveLocalQuota(q);
+}
+
+// 从本地配额生成 buildLiveWindowsData 所需的格式
+function buildLocalQuotaWindows() {
+  const q = loadLocalQuota();
+  if (!q || !q.windows) return null;
+  const now = new Date();
+  const fmtCountdown = (resetTime) => {
+    if (!resetTime) return '查询中';
+    const diff = new Date(resetTime).getTime() - now.getTime();
+    if (diff <= 0) return '即将重置';
+    const d = Math.floor(diff / (24 * 3600 * 1000));
+    const h = Math.floor((diff % (24 * 3600 * 1000)) / (3600 * 1000));
+    const m = Math.floor((diff % (3600 * 1000)) / (60 * 1000));
+    if (d > 0) return `${d}天 ${h}小时`;
+    if (h > 0) return `${h}小时 ${m}分钟`;
+    return `${m}分钟`;
+  };
+  const mk = (w, title, cnTitle) => {
+    if (!w) return null;
+    const pct = Math.round((w.remainingFraction || 0) * 1000) / 10;
+    return { title, cnTitle, percent: pct, used: Math.round((100 - pct) * 10) / 10, total: 100,
+      resetsIn: fmtCountdown(w.resetTime), resetText: fmtCountdown(w.resetTime), resetTime: w.resetTime,
+      status: pct > 60 ? 'healthy' : pct > 20 ? 'warning' : 'danger' };
+  };
+  const result = {};
+  const f = mk(q.windows.gemini5h, '5h', 'Google/Gemini 5小时');
+  const w = mk(q.windows.geminiWeekly, 'Weekly', '每周Gemini');
+  const cf = mk(q.windows.claude5h, '5h', 'Claude/GPT 5小时');
+  const cw = mk(q.windows.claudeWeekly, 'Weekly', '每周Claude/GPT');
+  if (f || w || cf || cw) {
+    return { topNotice: '本地计算配额(每天校正)', windows: { fiveHour: f, weekly: w, claude5h: cf, claudeWeekly: cw } };
+  }
+  return null;
+}
+
+
 export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccount = null) {
   const activeToken = readActiveToken();
   const activeRt = activeToken?.token?.refresh_token;
@@ -245,6 +374,7 @@ import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } f
 import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts } from './lib/accounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+LOCAL_QUOTA_FILE = path.join(__dirname, "data", "local_quota.json");
 const app = express();
 
 app.use(express.json({ limit: '50mb' }));
@@ -2055,6 +2185,12 @@ wss.on('connection', (ws, req) => {
       clearInterval(heartbeat);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
 
+      // 本地配额扣减:从 agy result.usage 拿 token 消耗
+      if (out && out.usage) {
+        deductLocalQuota(model, out.usage);
+        debugLog(`[quota] 扣减: model=${model} tokens=${out.usage.total_tokens}`);
+      }
+
       // 0. 自动检查 agy 修改的 JS 文件语法，有错则广播给前端
       try {
         const { execFileSync } = await import('node:child_process');
@@ -2124,14 +2260,19 @@ wss.on('connection', (ws, req) => {
       run.done = true;
       run.isRunning = false;
       profileFetchedAt = 0;
+      // 配额获取:优先本地计算(每天企业版API校正一次)
       let freshQuota = null;
       try {
-        const activeAcc = getActiveAccount();
-        const freshProfile = await refreshGoogleProfileInBackground(true, activeAcc);
-        freshQuota = buildLiveWindowsData(freshProfile, activeAcc);
+        await calibrateQuotaFromAPI(); // 每天第一次校正
+        freshQuota = buildLocalQuotaWindows();
+        if (!freshQuota) {
+          const activeAcc = getActiveAccount();
+          const freshProfile = await refreshGoogleProfileInBackground(true, activeAcc);
+          freshQuota = buildLiveWindowsData(freshProfile, activeAcc);
+        }
       } catch (_) {
         const activeAcc = getActiveAccount();
-        freshQuota = buildLiveWindowsData(cachedGoogleProfile, activeAcc);
+        freshQuota = buildLocalQuotaWindows() || buildLiveWindowsData(cachedGoogleProfile, activeAcc);
       }
 
       // 2. 构造当轮助手的完整元数据与配额快照
