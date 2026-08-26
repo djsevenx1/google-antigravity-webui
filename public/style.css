@@ -1635,6 +1635,45 @@ html[data-theme="light"] .tool-file-header {
   word-break: break-all;
 }
 
+/* 工具输出结果区域 (Stdout / Result)，高保真终端风格 */
+.tool-output-section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+}
+html[data-theme="light"] .tool-output-section {
+  border-top-color: rgba(0, 0, 0, 0.1);
+}
+.tool-output-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 5px;
+}
+.tool-output-content {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 380px;
+  overflow-y: auto;
+}
+html[data-theme="light"] .tool-output-content {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #1e293b;
+}
+
 /* 活跃执行中状态动画 */
 .tool-call-card.is-running {
   border-color: rgba(59, 130, 246, 0.5);
