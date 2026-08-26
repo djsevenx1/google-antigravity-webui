@@ -202,13 +202,43 @@ function refreshIcons(container = null) {
   });
 }
 
-// ── 格式化工具卡片：对照终端与 Claude/OpenCode 风格设计，纯净精致 ──
+// ── 参数与代码清洗工具函数 ──
+function cleanArgVal(v) {
+  if (v == null) return '';
+  if (typeof v !== 'string') return String(v);
+  let s = v.trim();
+  if ((s.startsWith('"') && s.endsWith('"') && s.length >= 2) || (s.startsWith("'") && s.endsWith("'") && s.length >= 2)) {
+    try {
+      const parsed = JSON.parse(s);
+      if (typeof parsed === 'string') return parsed;
+    } catch (_) {
+      s = s.slice(1, -1);
+    }
+  }
+  return s;
+}
+
+function normalizeToolInput(raw) {
+  if (!raw) return {};
+  let input = raw;
+  if (typeof input === 'string') {
+    try { input = JSON.parse(input); } catch (_) { return { raw: input }; }
+  }
+  if (!input || typeof input !== 'object') return {};
+  const res = {};
+  for (const k of Object.keys(input)) {
+    res[k] = cleanArgVal(input[k]);
+  }
+  return res;
+}
+
+// ── 格式化工具卡片：对照终端与 Claude/OpenCode 风格设计，纯净精致，精确到代码 ──
 function formatToolCallCard(t, index, isRunning = false) {
   const toolName = String(t.tool || t.toolName || t.name || '').toLowerCase();
   const stepType = String(t.stepType || '').toLowerCase();
   const tip = t.tip || '';
   const waited = t.waited ? `${t.waited}s` : '';
-  const input = t.input || t.toolInput || {};
+  const input = normalizeToolInput(t.input || t.toolInput || {});
   let rawInput = t.rawInput || (typeof input === 'object' && Object.keys(input).length ? JSON.stringify(input, null, 2) : (typeof input === 'string' ? input : ''));
   if (rawInput === '{}' || rawInput === '""') rawInput = '';
 
@@ -217,76 +247,129 @@ function formatToolCallCard(t, index, isRunning = false) {
   let iconHtml = '<i data-lucide="wrench" style="width:12px;height:12px;"></i>';
   let summaryText = tip || toolName;
   let subtitleText = '';
-  let detailCode = rawInput;
-  let isDiff = false;
+  let detailCode = '';
+  let copyText = '';
   let linesBadge = '';
 
   if (toolName.includes('command') || toolName === 'bash') {
     typeClass = 'type-bash';
     badgeText = 'Bash';
     iconHtml = '<span style="font-family:monospace;font-weight:700;font-size:12.5px;">$</span>';
-    const cmd = input.CommandLine || input.command || (rawInput && !rawInput.startsWith('{') ? rawInput : '');
+    const cmd = cleanArgVal(input.CommandLine || input.command || (rawInput && !rawInput.startsWith('{') ? rawInput : ''));
+    const cwd = cleanArgVal(input.Cwd || input.cwd || '');
     summaryText = cmd ? cmd.split('\n')[0] : (tip || '执行系统终端命令');
-    subtitleText = t.toolAction || t.toolSummary || (cmd ? '终端指令调用' : tip);
-    detailCode = cmd ? `${cmd}\n\n# 状态：指令已在后台环境中成功执行完成` : (rawInput || `$ ${summaryText}\n\n# 状态：执行完成`);
-    const lines = (detailCode || '').split('\n').length;
+    subtitleText = t.toolAction || t.toolSummary || (cwd ? `Cwd: ${cwd}` : (cmd ? '终端命令调用' : tip));
+    if (subtitleText === summaryText) subtitleText = '';
+    copyText = cmd || summaryText;
+    detailCode = `
+      ${cwd ? `<div class="tool-file-header"><span class="file-path">📁 ${escapeHtml(cwd)}</span><span class="line-range">bash</span></div>` : ''}
+      <div style="font-family:monospace;line-height:1.5;">
+        <span style="color:#10b981;font-weight:700;">$ </span><span style="color:#f8fafc;">${escapeHtml(cmd || summaryText)}</span>
+      </div>
+    `;
+    const lines = (cmd || '').split('\n').length;
     linesBadge = lines > 1 ? `${lines} lines` : (waited || 'bash');
   } else if (toolName.includes('view') || toolName.includes('read') || toolName === 'list_dir') {
     typeClass = 'type-read';
     badgeText = toolName === 'list_dir' ? 'List' : 'Read';
     iconHtml = '<i data-lucide="file-text" style="width:12px;height:12px;"></i>';
-    const filePath = input.AbsolutePath || input.TargetFile || input.DirectoryPath || input.path || '';
+    const filePath = cleanArgVal(input.AbsolutePath || input.TargetFile || input.DirectoryPath || input.path || '');
+    const startLine = input.StartLine || input.start_line || null;
+    const endLine = input.EndLine || input.end_line || null;
     const fn = filePath ? filePath.split('/').pop() : '';
     summaryText = fn || (filePath ? filePath.slice(-35) : (tip || '读取文件内容'));
     subtitleText = t.toolAction || t.toolSummary || (filePath ? filePath : (tip || '文件上下文读取'));
-    detailCode = filePath ? `Path: ${filePath}\n${input.StartLine ? `Lines: ${input.StartLine} - ${input.EndLine || ''}\n` : ''}\n# 状态：文件内容已读取并注入对话上下文` : (rawInput || `[文件读取]\n操作：${summaryText}\n状态：已成功读取完成`);
-    linesBadge = (input.StartLine && input.EndLine) ? `L${input.StartLine}-${input.EndLine}` : (waited || 'read');
+    copyText = filePath || summaryText;
+    detailCode = `
+      <div class="tool-file-header">
+        <span class="file-path">📄 ${escapeHtml(filePath || summaryText)}</span>
+        ${startLine ? `<span class="line-range">L${startLine} - ${endLine || 'EOF'}</span>` : ''}
+      </div>
+      <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
+        <div># 目标文件: ${escapeHtml(filePath || summaryText)}</div>
+        ${startLine ? `<div># 查看行号: 第 ${startLine} 行 至 第 ${endLine || '结束'} 行</div>` : ''}
+        <div style="color:#38bdf8;margin-top:4px;"># 状态：文件内容已读取并注入对话上下文</div>
+      </div>
+    `;
+    linesBadge = (startLine && endLine) ? `L${startLine}-${endLine}` : (waited || 'read');
   } else if (toolName.includes('replace') || toolName.includes('write') || toolName.includes('edit')) {
     typeClass = toolName.includes('write') ? 'type-write' : 'type-edit';
     badgeText = toolName.includes('write') ? 'Write' : 'Edit';
     iconHtml = '<i data-lucide="pen-tool" style="width:12px;height:12px;"></i>';
-    const filePath = input.TargetFile || input.AbsolutePath || input.path || '';
+    const filePath = cleanArgVal(input.TargetFile || input.AbsolutePath || input.path || '');
+    const startLine = input.StartLine ? parseInt(input.StartLine) : null;
+    const endLine = input.EndLine ? parseInt(input.EndLine) : null;
+    const targetContent = cleanArgVal(input.TargetContent || '');
+    const replacementContent = cleanArgVal(input.ReplacementContent || input.CodeContent || '');
     const fn = filePath ? filePath.split('/').pop() : '';
-    summaryText = fn || (filePath ? filePath.slice(-35) : '修改文件');
-    subtitleText = input.Description || input.Instruction || t.toolAction || t.toolSummary || tip || '代码文件局部变更';
-    
-    if (input.TargetContent || input.ReplacementContent) {
-      isDiff = true;
-      const targetLines = (input.TargetContent || '').split('\n').map(l => `<span class="diff-line-del">- ${escapeHtml(l)}</span>`).join('');
-      const replaceLines = (input.ReplacementContent || '').split('\n').map(l => `<span class="diff-line-add">+ ${escapeHtml(l)}</span>`).join('');
-      detailCode = `<div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;font-family:monospace;">Target: ${escapeHtml(filePath || 'current file')}</div>${targetLines}${replaceLines}`;
-    } else if (input.CodeContent) {
-      detailCode = `Target: ${filePath}\n\n${input.CodeContent}`;
+    summaryText = fn || (filePath ? filePath.slice(-35) : '修改文件代码');
+    subtitleText = cleanArgVal(input.Description || input.Instruction || t.toolAction || t.toolSummary || tip || '代码文件局部变更');
+    copyText = replacementContent || targetContent || filePath || summaryText;
+
+    if (targetContent || replacementContent) {
+      const targetLines = targetContent ? targetContent.split('\n').map((l) => 
+        `<div class="diff-line-del"><span class="diff-sign">-</span><span class="diff-text">${escapeHtml(l)}</span></div>`
+      ).join('') : '';
+      const replaceLines = replacementContent ? replacementContent.split('\n').map((l) => 
+        `<div class="diff-line-add"><span class="diff-sign">+</span><span class="diff-text">${escapeHtml(l)}</span></div>`
+      ).join('') : '';
+      detailCode = `
+        <div class="tool-file-header">
+          <span class="file-path">✏️ ${escapeHtml(filePath || summaryText)}</span>
+          ${startLine ? `<span class="line-range">L${startLine} - ${endLine || ''}</span>` : ''}
+        </div>
+        ${subtitleText ? `<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:8px;font-style:italic;">${escapeHtml(subtitleText)}</div>` : ''}
+        <div class="diff-wrapper">${targetLines}${replaceLines}</div>
+      `;
     } else {
-      detailCode = `Target: ${filePath || summaryText}\n\n# 操作：${subtitleText}\n# 状态：代码变更已成功保存并应用`;
+      detailCode = `
+        <div class="tool-file-header">
+          <span class="file-path">✏️ ${escapeHtml(filePath || summaryText)}</span>
+        </div>
+        <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
+          <div># 操作说明: ${escapeHtml(subtitleText)}</div>
+          <div style="color:#34d399;margin-top:4px;"># 状态：代码变更已成功保存并应用</div>
+        </div>
+      `;
     }
-    const lines = (input.CodeContent || input.ReplacementContent || detailCode || '').split('\n').length;
+    const lines = (replacementContent || targetContent || '').split('\n').length;
     linesBadge = lines > 1 ? `${lines} lines` : (waited || 'edit');
   } else if (toolName.includes('search') || toolName.includes('grep') || toolName.includes('find')) {
     typeClass = 'type-search';
     badgeText = 'Search';
     iconHtml = '<i data-lucide="search" style="width:12px;height:12px;"></i>';
-    const q = input.Query || input.Pattern || input.query || '';
+    const q = cleanArgVal(input.Query || input.Pattern || input.query || '');
+    const p = cleanArgVal(input.SearchPath || input.SearchDirectory || '');
     summaryText = q || tip || '检索代码与文件';
-    subtitleText = input.SearchPath || input.SearchDirectory || t.toolAction || t.toolSummary || '项目代码全文搜索';
-    detailCode = (rawInput && rawInput !== '{}') ? rawInput : `Search: "${summaryText}"\nScope: ${subtitleText}\n\n# 状态：检索已完成，已将匹配结果提供给模型分析`;
+    subtitleText = p ? `Scope: ${p}` : (t.toolAction || t.toolSummary || '项目代码全文检索');
+    copyText = q || summaryText;
+    detailCode = `
+      <div class="tool-file-header">
+        <span class="file-path">🔍 "${escapeHtml(q || summaryText)}"</span>
+        ${p ? `<span class="line-range">${escapeHtml(p)}</span>` : ''}
+      </div>
+      <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
+        <div># 检索内容: ${escapeHtml(q || summaryText)}</div>
+        ${p ? `<div># 检索路径: ${escapeHtml(p)}</div>` : ''}
+        <div style="color:#a78bfa;margin-top:4px;"># 状态：检索已完成，已注入分析上下文</div>
+      </div>
+    `;
     linesBadge = waited || 'search';
-  } else if (toolName === 'thought' || toolName === 'sync' || stepType.includes('response') || stepType.includes('thought') || stepType.includes('checkpoint')) {
+  } else {
     typeClass = 'type-thought';
     badgeText = 'Thought';
     iconHtml = '<i data-lucide="brain" style="width:12px;height:12px;"></i>';
     summaryText = 'Thought for a few seconds';
-    subtitleText = tip && tip !== 'Thought for a few seconds' ? tip : '深度推理与上下文思考完成';
-    detailCode = (rawInput && rawInput !== '{}') ? rawInput : `• 已全面解析提问意图并比对对话历史上下文\n• 规划高准确度解答方案与实施步骤\n• 深度思考完成，生成最终高质量回复`;
+    subtitleText = tip && tip !== 'Thought for a few seconds' ? tip : '深度推理与上下文思考';
+    const thoughtText = cleanArgVal(input.thought || rawInput || '');
+    copyText = thoughtText || subtitleText;
+    detailCode = `
+      <div style="font-size:12px;line-height:1.6;color:var(--text-primary);white-space:pre-wrap;">${escapeHtml(thoughtText || '• 意图解析：全面理解用户当前指令并结合上下文\n• 方案规划：制定最佳回答结构与实施逻辑\n• 推理完成：准备生成高质量回复内容')}</div>
+    `;
     linesBadge = waited ? `${waited}` : 'thought';
   }
 
-  // 最终兜底
-  if (!detailCode || detailCode.trim() === '') {
-    detailCode = `[${badgeText}]\n操作：${summaryText}\n说明：${subtitleText || tip}\n状态：当前步骤已顺利完成`;
-  }
-
-  const rawCopyEscaped = escapeHtml(typeof detailCode === 'string' && !isDiff ? detailCode : (rawInput || summaryText));
+  const rawCopyEscaped = escapeHtml(copyText || summaryText);
 
   return `
     <details class="tool-call-card ${typeClass} ${isRunning ? 'is-running' : ''}">
@@ -300,10 +383,10 @@ function formatToolCallCard(t, index, isRunning = false) {
         ${subtitleText ? `<div class="tool-subtitle-row" title="${escapeHtml(subtitleText)}">${escapeHtml(subtitleText)}</div>` : ''}
       </summary>
       <div class="tool-call-body">
-        <button class="tool-copy-btn" onclick="event.stopPropagation(); navigator.clipboard.writeText(this.getAttribute('data-copy')); showToast('已复制工具内容');" data-copy="${rawCopyEscaped}" title="复制详情">
+        <button class="tool-copy-btn" onclick="event.stopPropagation(); navigator.clipboard.writeText(this.getAttribute('data-copy')); showToast('已复制内容');" data-copy="${rawCopyEscaped}" title="复制详情">
           <i data-lucide="copy" style="width:11px;height:11px;margin-right:4px;"></i>复制
         </button>
-        <div class="tool-code-box">${isDiff ? detailCode : escapeHtml(detailCode)}</div>
+        <div class="tool-code-box">${detailCode}</div>
       </div>
     </details>
   `;
@@ -320,6 +403,26 @@ function renderToolsTimeline(tools, activeIndex = -1) {
     }
   ];
   return `<div class="tools-timeline-container">${list.map((t, idx) => formatToolCallCard(t, idx, idx === activeIndex)).join('')}</div>`;
+}
+
+// 统一助手气泡内容更新器：彻底杜绝 toolsHtml 遗漏或被覆盖的问题！
+function updateAssistantBubble(targetNode, acc, toolEvents, isStreaming, meta = null) {
+  if (!targetNode || !targetNode.bubble) return;
+  const toolsHtml = renderToolsTimeline(toolEvents, isStreaming && toolEvents && toolEvents.length ? toolEvents.length - 1 : -1);
+  const cleanAcc = (acc || "").replace(/[\u200b\s]/g, "");
+  
+  let bodyHtml = "";
+  if (isStreaming && !cleanAcc) {
+    bodyHtml = `<div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考与组织回答...</span></div>`;
+  } else {
+    bodyHtml = formatMarkdown(acc, isStreaming);
+    if (!isStreaming && cleanAcc) {
+      bodyHtml += getMessageQuotaFooterHtml(cleanAcc, meta, meta?.model || state.selectedModel);
+    }
+  }
+  
+  targetNode.bubble.innerHTML = `${toolsHtml}${bodyHtml}`;
+  refreshIcons(targetNode.bubble);
 }
 
 // ---------- Web UI Authentication & Login Gate Control ----------
@@ -1401,12 +1504,10 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
   if (role === "assistant") {
     bubble = el("div", "message-bubble markdown-body");
     const clean = String(content || "").replace(/[\u200b\s]/g, "");
+    const toolsHtml = renderToolsTimeline(tools, -1);
     if (isStreaming && !clean) {
-      bubble.innerHTML = `
-        <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>
-      `;
+      bubble.innerHTML = `${toolsHtml}<div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考与组织回答...</span></div>`;
     } else {
-      const toolsHtml = renderToolsTimeline(tools, -1);
       bubble.innerHTML = `${toolsHtml}${formatMarkdown(content)}`;
       if (!isStreaming && clean) {
         bubble.innerHTML += getMessageQuotaFooterHtml(clean, meta, meta?.model || state.selectedModel);
@@ -1960,12 +2061,7 @@ function stopGenerating() {
       if (targetNode.row) targetNode.row.classList.remove("streaming");
       if (targetNode.bubble) {
         const cleanAcc = (clientRun.acc || "").replace(/[\u200b]/g, "").trim();
-        if (cleanAcc) {
-          targetNode.bubble.innerHTML = formatMarkdown(cleanAcc + "\n\n*(已停止生成)*", false);
-        } else {
-          targetNode.bubble.innerHTML = '<div style="font-size:13px;color:var(--text-dim);font-style:italic;">(已停止生成)</div>';
-        }
-        refreshIcons();
+        updateAssistantBubble(targetNode, cleanAcc ? cleanAcc + "\n\n*(已停止生成)*" : "(已停止生成)", clientRun.toolEvents || [], false);
       }
     }
   }
@@ -2169,19 +2265,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 waited: data.waited || 0
               });
             }
-            const cleanAcc = (acc || "").replace(/[\u200b\s]/g, "").trim();
             const targetNode = clientRun.asstNode || asstNode;
             if (targetNode && targetNode.bubble && state.activeId === conv.id) {
-              const toolsHtml = renderToolsTimeline(toolEvents, toolEvents.length - 1);
-              if (!cleanAcc) {
-                targetNode.bubble.innerHTML = `
-                  ${toolsHtml}
-                  <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
-                `;
-              } else {
-                targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, true)}`;
-              }
-              refreshIcons();
+              updateAssistantBubble(targetNode, acc, toolEvents, true);
               $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
             }
             return;
@@ -2193,9 +2279,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
             if (state.activeId === conv.id) {
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode && targetNode.bubble) {
-                const toolsHtml = renderToolsTimeline(toolEvents, -1);
-                targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, true)}`;
-                refreshIcons();
+                updateAssistantBubble(targetNode, acc, toolEvents, true);
                 $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
               }
             }
@@ -2215,15 +2299,12 @@ async function runConversationTurn(text, appendUserMsg = true) {
             if (data.quotaSnapshot) clientRun.lastQuotaSnapshot = data.quotaSnapshot;
             const targetNode = clientRun.asstNode || asstNode;
             if (targetNode && targetNode.bubble && state.activeId === conv.id) {
-              const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
               const metaSnapshot = {
                 duration: ((Date.now() - t0)/1000).toFixed(1),
                 model: state.selectedModel,
                 quotaSnapshot: data.quotaSnapshot
               };
-              const toolsHtml = renderToolsTimeline(toolEvents, -1);
-              targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, false)}${getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel)}`;
-              refreshIcons();
+              updateAssistantBubble(targetNode, acc, toolEvents, false, metaSnapshot);
             }
             if (conv && conv.messages && conv.messages.length > 0) {
               const lastMsg = conv.messages[conv.messages.length - 1];
@@ -2251,15 +2332,12 @@ async function runConversationTurn(text, appendUserMsg = true) {
             if (targetNode) {
               if (targetNode.row) targetNode.row.classList.remove("streaming");
               if (state.activeId === conv.id && targetNode.bubble) {
-                const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
                 const metaSnapshot = {
                   duration: ((Date.now() - t0)/1000).toFixed(1),
                   model: state.selectedModel,
                   quotaSnapshot: data.quotaSnapshot || clientRun.lastQuotaSnapshot
                 };
-                const toolsHtml = renderToolsTimeline(toolEvents, -1);
-                targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, false)}${getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel)}`;
-                refreshIcons();
+                updateAssistantBubble(targetNode, acc, toolEvents, false, metaSnapshot);
               }
             }
             done(() => resolve());
@@ -2359,11 +2437,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
               if (data.error) { streamError = new Error(data.error); done2(() => reject(streamError)); return; }
               if (data.progress) {
                 if (data.toolName) toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
-                if (state.activeId === conv.id) {
-                  const targetNode = clientRun.asstNode || asstNode;
-                  if (targetNode && !acc.replace(/​/g, '').trim()) {
-                    targetNode.bubble.innerHTML = `<div class="thinking-active-indicator" style="display:inline-flex;align-items:center;gap:8px;padding:4px 0;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(data.tip || '正在续接…')}</span></div>`;
-                  }
+                const targetNode = clientRun.asstNode || asstNode;
+                if (state.activeId === conv.id && targetNode && targetNode.bubble) {
+                  updateAssistantBubble(targetNode, acc, toolEvents, true);
+                  $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
                 }
                 return;
               }
@@ -2373,8 +2450,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 if (state.activeId === conv.id) {
                   const targetNode = clientRun.asstNode || asstNode;
                   if (targetNode && targetNode.bubble) {
-                    targetNode.bubble.innerHTML = formatMarkdown(acc, true);
-                    refreshIcons();
+                    updateAssistantBubble(targetNode, acc, toolEvents, true);
                     $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
                   }
                 }
@@ -2506,9 +2582,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
         });
 
         if (!hasError && state.activeId === conv.id && targetNode && targetNode.bubble) {
-          const toolsHtml = renderToolsTimeline(toolEvents, -1);
-          targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, false)}${getMessageQuotaFooterHtml(cleanAcc, msgMeta, state.selectedModel)}`;
-          refreshIcons();
+          updateAssistantBubble(targetNode, acc, toolEvents, false, msgMeta);
         }
       }
     }
@@ -3849,12 +3923,8 @@ function tryReconnectToOngoingRun() {
       if (data.toolName) {
         toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
       }
-      if (asstNode && !acc.replace(/​/g, '').trim()) {
-        const tip = data.tip || '正在思考…';
-        const wait = data.waited ? ` (${data.waited}s)` : '';
-        asstNode.bubble.innerHTML = `
-          <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tip)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(wait)}</span></div>
-        `;
+      if (asstNode) {
+        updateAssistantBubble(asstNode, acc, toolEvents, true);
       }
       return;
     }
@@ -3862,8 +3932,7 @@ function tryReconnectToOngoingRun() {
     if (data.delta != null && data.delta !== '​') {
       acc += data.delta;
       if (asstNode) {
-        asstNode.bubble.innerHTML = formatMarkdown(acc, true);
-        refreshIcons();
+        updateAssistantBubble(asstNode, acc, toolEvents, true);
         if (feed) feed.scrollTop = feed.scrollHeight;
       }
     }
@@ -3877,7 +3946,7 @@ function tryReconnectToOngoingRun() {
       if (asstNode) {
         const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
-        asstNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+        updateAssistantBubble(asstNode, acc, toolEvents, false, metaSnapshot);
         asstNode.row.classList.remove('streaming');
         state.streaming = false;
         updateSendButton();
