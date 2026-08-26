@@ -2076,7 +2076,15 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        ws.onerror = () => { done(() => reject(new Error('network error'))); };
+        ws.onerror = () => {
+          const cleanText = (acc || '').replace(/[\u200b\s]/g, '');
+          if (cleanText.length > 0 || receivedDone) {
+            receivedDone = true;
+            done(() => resolve());
+          } else {
+            done(() => reject(new Error('network error')));
+          }
+        };
         ws.onclose = () => {
           if (state.isUserAborted || (abortCtrl && abortCtrl.signal.aborted)) {
             receivedDone = true;

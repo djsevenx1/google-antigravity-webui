@@ -1818,14 +1818,14 @@ import { WebSocketServer } from 'ws';
 
 const wss = new WebSocketServer({ server, path: '/ws/chat' });
 
-// 每 8 秒发送 WebSocket 底层 Ping 包，防止 NAT/DDNS/反向代理因空闲而掐断连接
+// 发送 WebSocket 心跳包与保活，兼容各种反向代理/内网穿透/DDNS 网关
 const pingInterval = setInterval(() => {
   wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) return ws.terminate();
-    ws.isAlive = false;
-    try { ws.ping(); } catch (_) {}
+    try {
+      if (ws.readyState === 1) ws.ping();
+    } catch (_) {}
   });
-}, 8000);
+}, 15000);
 wss.on('close', () => clearInterval(pingInterval));
 
 wss.on('connection', (ws, req) => {
