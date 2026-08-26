@@ -523,23 +523,23 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   };
 
   let [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }),
+    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) }),
     fetchWithFallback([
       'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
       'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
     fetchWithFallback([
       'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
       'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
     fetchWithFallback([
       'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
       'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
     fetchWithFallback([
       'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
       'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) })
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) })
   ]);
 
   // 如果遇到 401，立即强制刷新 Token 并重试一次
@@ -552,23 +552,23 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
       }
       headers.Authorization = `Bearer ${token}`;
       [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }),
+        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) }),
         fetchWithFallback([
           'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
           'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
         fetchWithFallback([
           'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
           'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
         fetchWithFallback([
           'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
           'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) }),
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
         fetchWithFallback([
           'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
           'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(8000) })
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) })
       ]);
     }
   }
