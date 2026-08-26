@@ -892,8 +892,6 @@ body.hide-thinking-tools .tool-event-box {
   display: flex;
   gap: 14px;
   width: 100%;
-  content-visibility: auto;
-  contain-intrinsic-size: 0 120px;
   animation: fadeIn 0.15s ease-out;
 }
 

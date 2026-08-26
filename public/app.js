@@ -431,6 +431,23 @@ function renderToolsTimeline(tools, activeIndex = -1) {
   return `<div class="tools-timeline-container">${list.map((t, idx) => formatToolCallCard(t, idx, idx === activeIndex)).join('')}</div>`;
 }
 
+// ── 智能贴底平滑滚动逻辑 ──
+let _scrollRafId = null;
+function scrollToBottom(force = false) {
+  const feed = $("#chat-feed");
+  if (!feed) return;
+  const distFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+  if (force || distFromBottom < 300) {
+    feed.scrollTop = feed.scrollHeight;
+    if (!_scrollRafId) {
+      _scrollRafId = requestAnimationFrame(() => {
+        _scrollRafId = null;
+        if (feed) feed.scrollTop = feed.scrollHeight;
+      });
+    }
+  }
+}
+
 // 统一助手气泡内容更新器：彻底杜绝 toolsHtml 遗漏或被覆盖的问题！
 function updateAssistantBubble(targetNode, acc, toolEvents, isStreaming, meta = null) {
   if (!targetNode || !targetNode.bubble) return;
@@ -449,6 +466,7 @@ function updateAssistantBubble(targetNode, acc, toolEvents, isStreaming, meta = 
   
   targetNode.bubble.innerHTML = `${toolsHtml}${bodyHtml}`;
   refreshIcons(targetNode.bubble);
+  scrollToBottom(isStreaming);
 }
 
 // ---------- Web UI Authentication & Login Gate Control ----------
@@ -1461,7 +1479,9 @@ function paintActiveConv() {
       state.streaming = false;
     }
   }
-  feed.scrollTop = feed.scrollHeight;
+  scrollToBottom(true);
+  setTimeout(() => scrollToBottom(true), 60);
+  setTimeout(() => scrollToBottom(true), 200);
   refreshIcons();
   updateSendButton();
 }
@@ -1582,7 +1602,7 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
   row.append(avatar);
   row.append(contentCol);
   feed.append(row);
-  feed.scrollTop = feed.scrollHeight;
+  scrollToBottom(true);
   refreshIcons();
 
   return { row, bubble };
@@ -2158,6 +2178,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
   if (feed) feed.classList.remove("hidden");
 
   const asstNode = appendMsgRow("assistant", "", true);
+  scrollToBottom(true);
 
   state.streaming = true;
   state.isUserAborted = false;
