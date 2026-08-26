@@ -4550,10 +4550,14 @@ async function showAccountSwitcher() {
             <span style="font-size:13px;font-weight:600">${escapeHtml(a.name || a.label || a.email)}</span>
             ${isPrimary ? '<span style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:10px;padding:1px 5px;border-radius:4px;font-weight:600;">默认主账号</span>' : ''}
           </div>
-          <div style="font-size:11px;color:var(--text-muted)">${escapeHtml(a.email)}</div>
+          <div style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px;margin-top:2px;">
+            <span>${escapeHtml(a.email)}</span>
+            ${a.quotaSnapshot?.gemini5h != null ? `<span style="padding:1px 5px;border-radius:4px;font-size:10px;background:rgba(16,185,129,0.12);color:#10b981;font-weight:600;">Gemini: ${a.quotaSnapshot.gemini5h}%</span>` : ''}
+            ${a.quotaSnapshot?.claudeWeekly != null ? `<span style="padding:1px 5px;border-radius:4px;font-size:10px;background:rgba(249,115,22,0.12);color:#f97316;font-weight:600;">Claude: ${a.quotaSnapshot.claudeWeekly}%</span>` : ''}
+          </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
-          ${isActive ? '<span style="color:#10b981;font-weight:600;font-size:11.5px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,0.1);">当前生效</span>' : '<span style="color:var(--accent);font-size:11.5px;">点击切换</span>'}
+          ${isActive ? '<span style="color:#10b981;font-weight:600;font-size:11.5px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,0.1);" title="点击可重新校准该账号额度">当前生效 (点此查额度)</span>' : '<span style="color:var(--accent);font-size:11.5px;">切换并查额度</span>'}
           ${isPrimary 
             ? '<span style="font-size:11px;color:var(--text-dim);cursor:not-allowed;" title="默认主账号不可删除，保障系统基础登录态">🔒 固定</span>' 
             : `<button class="acct-del" data-email="${escapeHtml(a.email)}" style="font-size:11px;padding:2px 6px;border:none;background:rgba(239,68,68,0.1);color:var(--danger);border-radius:4px;cursor:pointer">删除</button>`
@@ -4602,7 +4606,25 @@ async function showAccountSwitcher() {
     item.onclick = async e => {
       if (e.target.classList.contains("acct-del")) return;
       const email = item.getAttribute("data-email");
-      if (email === activeEmail) return;
+      if (email === activeEmail) {
+        closeModal();
+        toast("正在对当前账号 " + email + " 执行实时额度检查与校准...");
+        try {
+          const r2 = await fetch("/api/accounts/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+          const d2 = await r2.json();
+          if (d2.quota) {
+            state.latestUsageData = d2.quota;
+            try { localStorage.setItem('agy-cached-usage', JSON.stringify(d2.quota)); } catch (_) {}
+            updateUsageSummary(d2.quota);
+            if (document.getElementById("usage-account-card")) {
+              renderUsageModalContent(d2.quota);
+            }
+          }
+          toast("当前账号额度检查已完成");
+          await refreshSystemStatus();
+        } catch (_) {}
+        return;
+      }
       closeModal();
       toast("正在切换到 " + email + " 并执行额度检查...");
       try {
