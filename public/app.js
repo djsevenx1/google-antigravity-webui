@@ -1745,16 +1745,16 @@ let currentWs = null;
 let pendingAttachments = null; // 待发送的附件 [{path, name, mimeType, size}]
 function updateSendButton() {
   const btn = $("#btn-send");
-  const icon = $("#send-icon");
+  if (!btn) return;
   if (state.streaming) {
     btn.classList.add("stop");
     btn.title = "停止生成";
-    icon.setAttribute("data-lucide", "square");
+    btn.innerHTML = '<i data-lucide="square" id="send-icon" style="width:16px;height:16px;"></i>';
     btn.disabled = false;
   } else {
     btn.classList.remove("stop");
     btn.title = "发送 (Enter)";
-    icon.setAttribute("data-lucide", "arrow-up");
+    btn.innerHTML = '<i data-lucide="arrow-up" id="send-icon" style="width:16px;height:16px;"></i>';
     btn.disabled = !state.selectedModel;
   }
   refreshIcons();
