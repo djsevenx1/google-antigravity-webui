@@ -2017,6 +2017,34 @@ async function runConversationTurn(text, appendUserMsg = true) {
             conv.convId = data.conversationId;
             saveConversations();
           }
+          if (data.liveQuotaUpdate && data.liveQuota) {
+            state.latestUsageData = data.liveQuota;
+            try { localStorage.setItem("agy-cached-usage", JSON.stringify(data.liveQuota)); } catch (_) {}
+            updateUsageSummary(data.liveQuota);
+            if (document.getElementById("usage-account-card")) {
+              renderUsageModalContent(data.liveQuota);
+            }
+            if (data.quotaSnapshot) clientRun.lastQuotaSnapshot = data.quotaSnapshot;
+            const targetNode = clientRun.asstNode || asstNode;
+            if (targetNode && targetNode.bubble && state.activeId === conv.id) {
+              const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
+              const metaSnapshot = {
+                duration: ((Date.now() - t0)/1000).toFixed(1),
+                model: state.selectedModel,
+                quotaSnapshot: data.quotaSnapshot
+              };
+              targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+              refreshIcons();
+            }
+            if (conv && conv.messages && conv.messages.length > 0) {
+              const lastMsg = conv.messages[conv.messages.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant' && lastMsg.meta) {
+                lastMsg.meta.quotaSnapshot = data.quotaSnapshot;
+                saveConversations();
+              }
+            }
+            return;
+          }
           if (data.done) {
             if (data.liveQuota) {
               state.latestUsageData = data.liveQuota;
@@ -2038,7 +2066,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 const metaSnapshot = {
                   duration: ((Date.now() - t0)/1000).toFixed(1),
                   model: state.selectedModel,
-                  quotaSnapshot: data.quotaSnapshot
+                  quotaSnapshot: data.quotaSnapshot || clientRun.lastQuotaSnapshot
                 };
                 targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
                 refreshIcons();
