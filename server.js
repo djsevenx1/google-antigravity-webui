@@ -2039,29 +2039,36 @@ wss.on('connection', (ws, req) => {
       clearInterval(heartbeat);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
 
-      // 1. 每条对话结束瞬间，立即向 Google 原生接口拉取当前生效账号扣减后的最新真实配额，并替换固化结果
+      // 1. 每条对话结束瞬间，立即向 Google 原生接口拉取当前生效账号扣减后的最新真实配额
       run.done = true;
       run.isRunning = false;
       profileFetchedAt = 0;
+      let freshQuota = null;
+      try {
+        const activeAcc = getActiveAccount();
+        const freshProfile = await refreshGoogleProfileInBackground(true, activeAcc);
+        freshQuota = buildLiveWindowsData(freshProfile, activeAcc);
+      } catch (_) {
+        const activeAcc = getActiveAccount();
+        freshQuota = buildLiveWindowsData(cachedGoogleProfile, activeAcc);
+      }
 
-      // 1. 立即计算当前快照并第一时间广播 done，0ms 恢复前端发送按钮，消除一切卡顿与等待
+      // 2. 构造当轮助手的完整元数据与配额快照
       const modelLower = String(model || '').toLowerCase();
       const isClaudeOrGpt = modelLower.includes('claude') || modelLower.includes('gpt') || modelLower.includes('oss');
-      const activeAcc = getActiveAccount();
-      const currentLiveBuild = buildLiveWindowsData(cachedGoogleProfile, activeAcc);
-      const initPoolW = isClaudeOrGpt ? currentLiveBuild?.windows?.claude5h : currentLiveBuild?.windows?.fiveHour;
-      const initWeekW = isClaudeOrGpt ? currentLiveBuild?.windows?.claudeWeekly : currentLiveBuild?.windows?.weekly;
-      const initialQuotaSnapshot = {
-        percent: initPoolW?.percent != null ? initPoolW.percent : null,
-        resetIn: initPoolW?.resetsIn || initPoolW?.resetText || null,
-        resetTime: initPoolW?.resetTime || null,
-        weeklyPercent: initWeekW?.percent != null ? initWeekW.percent : null,
-        weeklyResetIn: initWeekW?.resetsIn || initWeekW?.resetText || null,
-        weeklyResetTime: initWeekW?.resetTime || null,
+      const poolW = isClaudeOrGpt ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
+      const weekW = isClaudeOrGpt ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
+      const turnQuotaSnapshot = {
+        percent: poolW?.percent != null ? poolW.percent : null,
+        resetIn: poolW?.resetsIn || poolW?.resetText || null,
+        resetTime: poolW?.resetTime || null,
+        weeklyPercent: weekW?.percent != null ? weekW.percent : null,
+        weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
+        weeklyResetTime: weekW?.resetTime || null,
         model: model
       };
 
-      // 自动保存会话
+      // 3. 自动持久化保存到当前会话文件
       try {
         const filePath = getSessionFilePath(convKey);
         let sessionData = {
@@ -2085,7 +2092,7 @@ wss.on('connection', (ws, req) => {
             meta: {
               duration: Math.round((Date.now() - t0) / 100) / 10,
               model: model,
-              quotaSnapshot: initialQuotaSnapshot
+              quotaSnapshot: turnQuotaSnapshot
             }
           });
         }
@@ -2098,56 +2105,13 @@ wss.on('connection', (ws, req) => {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
 
-      // 立即广播 done，0 延迟完成对话闭环
+      // 4. 广播包含 100% 真实扣减配额的 done 事件！
       broadcast({
         done: true,
         conversationId: out ? out.conversationId : null,
-        liveQuota: currentLiveBuild,
-        quotaSnapshot: initialQuotaSnapshot
+        liveQuota: freshQuota,
+        quotaSnapshot: turnQuotaSnapshot
       });
-
-      // 2. 在后台并发向 Google 官方 CloudCode 上游发起真实扣减与倒计时拉取，拉取成功后推送 liveQuotaUpdate 实时覆盖
-      (async () => {
-        try {
-          const freshProfile = await refreshGoogleProfileInBackground(true, getActiveAccount());
-          const freshQuota = buildLiveWindowsData(freshProfile, getActiveAccount());
-          const poolW = isClaudeOrGpt ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
-          const weekW = isClaudeOrGpt ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
-          const liveTurnQuotaSnapshot = {
-            percent: poolW?.percent != null ? poolW.percent : null,
-            resetIn: poolW?.resetsIn || poolW?.resetText || null,
-            resetTime: poolW?.resetTime || null,
-            weeklyPercent: weekW?.percent != null ? weekW.percent : null,
-            weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
-            weeklyResetTime: weekW?.resetTime || null,
-            model: model
-          };
-
-          // 广播更新包，前端动态平滑刷新该标签
-          broadcast({
-            liveQuotaUpdate: true,
-            liveQuota: freshQuota,
-            quotaSnapshot: liveTurnQuotaSnapshot
-          });
-
-          // 同步更新持久化会话记录中的最新快照
-          try {
-            const filePath = getSessionFilePath(convKey);
-            if (fs.existsSync(filePath)) {
-              const sData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (sData && sData.messages && sData.messages.length > 0) {
-                const lastM = sData.messages[sData.messages.length - 1];
-                if (lastM && lastM.role === 'assistant' && lastM.meta) {
-                  lastM.meta.quotaSnapshot = liveTurnQuotaSnapshot;
-                  fs.writeFileSync(filePath, JSON.stringify(sData, null, 2), 'utf-8');
-                }
-              }
-            }
-          } catch (_) {}
-        } catch (e) {
-          debugLog('[ws/chat] background live quota sync failed:', e && e.message);
-        }
-      })();
     } catch (e) {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
