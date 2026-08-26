@@ -2527,6 +2527,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
       if (isNetErr && !isAbort && netRetryCount < MAX_NET_RETRIES) {
         netRetryCount++;
+        // 重试前稍作等待（1.5s），允许网络波动或服务端热重启完成
+        await new Promise(r => setTimeout(r, 1500));
         // 重试时不再追加用户消息（已 push 过），防止 msgs 滚雪球增长
         userMsgPushed = true;
         // 重试时用 subscribe 模式挂接到正在跑的 run，不创建新任务、不重复发 messages
@@ -2616,6 +2618,27 @@ async function runConversationTurn(text, appendUserMsg = true) {
           refreshIcons();
         }
       } else {
+        if (isNetErr) {
+          try {
+            const checkRes = await fetch("/api/sessions");
+            const checkData = await checkRes.json();
+            if (checkData && Array.isArray(checkData.sessions)) {
+              const s = checkData.sessions.find(item => item.id === conv.id);
+              if (s && Array.isArray(s.messages) && s.messages.length > 0) {
+                const last = s.messages[s.messages.length - 1];
+                if (last && last.role === 'assistant' && last.content && last.content.replace(/[\u200b\s]/g, '')) {
+                  conv.messages = s.messages;
+                  saveConversations();
+                  paintActiveConv();
+                  hasError = false;
+                  state.streaming = false;
+                  updateSendButton();
+                  return;
+                }
+              }
+            }
+          } catch (_) {}
+        }
         const isQuotaErr = e.quotaExceeded || /quota|limit reached|upgrade your subscription/i.test(errMsg);
         const errDetails = e.errorDetails || e.details || (e.stack && e.stack !== errMsg ? e.stack : '');
         const detailsBlock = (errDetails && errDetails !== errMsg) 
