@@ -210,11 +210,15 @@ function cleanArgVal(v) {
   if ((s.startsWith('"') && s.endsWith('"') && s.length >= 2) || (s.startsWith("'") && s.endsWith("'") && s.length >= 2)) {
     try {
       const parsed = JSON.parse(s);
-      if (typeof parsed === 'string') return parsed;
+      if (typeof parsed === 'string') s = parsed;
+      else s = s.slice(1, -1);
     } catch (_) {
       s = s.slice(1, -1);
     }
   }
+  if (s.includes('\\n')) s = s.replace(/\\n/g, '\n');
+  if (s.includes('\\t')) s = s.replace(/\\t/g, '\t');
+  if (s.includes('\\"')) s = s.replace(/\\"/g, '"');
   return s;
 }
 
@@ -309,10 +313,10 @@ function formatToolCallCard(t, index, isRunning = false) {
           <pre class="tool-output-content">${escapeHtml(output.trim())}</pre>
         </div>
       ` : `
-        <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
-          <div># 目标文件: ${escapeHtml(filePath || summaryText)}</div>
-          ${startLine ? `<div># 查看行号: 第 ${startLine} 行 至 第 ${endLine || '结束'} 行</div>` : ''}
-          <div style="color:#38bdf8;margin-top:4px;"># 状态：文件内容已读取并注入对话上下文</div>
+        <div style="font-family:monospace;color:var(--text-secondary);font-size:11.5px;line-height:1.6;">
+          <div style="color:var(--accent);font-weight:600;">📄 读取目标: ${escapeHtml(filePath || summaryText)}</div>
+          ${startLine ? `<div style="color:var(--text-dim);">行号范围: 第 ${startLine} 行 至 第 ${endLine || '结束'} 行</div>` : ''}
+          <div style="color:#38bdf8;margin-top:4px;">⚡ 已完成文件读取并送入模型推理</div>
         </div>
       `}
     `;
@@ -369,14 +373,22 @@ function formatToolCallCard(t, index, isRunning = false) {
         ` : ''}
       `;
     } else {
+      const codeToShow = replacementContent || targetContent || (output ? output.trim() : '');
       detailCode = `
         <div class="tool-file-header">
           <span class="file-path">✏️ ${escapeHtml(filePath || summaryText)}</span>
+          ${startLine ? `<span class="line-range">L${startLine} - ${endLine || ''}</span>` : ''}
         </div>
-        <div style="font-family:monospace;color:var(--text-dim);font-size:11.5px;line-height:1.6;">
-          <div># 操作说明: ${escapeHtml(subtitleText)}</div>
-          ${output ? `<div style="color:#34d399;margin-top:4px;">${escapeHtml(output.trim())}</div>` : `<div style="color:#34d399;margin-top:4px;"># 状态：代码变更已成功保存并应用</div>`}
-        </div>
+        ${subtitleText ? `<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:8px;font-style:italic;">${escapeHtml(subtitleText)}</div>` : ''}
+        ${codeToShow ? `
+          <div class="tool-output-section">
+            <pre class="tool-output-content" style="color:#e2e8f0;font-size:11.5px;margin:0;">${escapeHtml(codeToShow)}</pre>
+          </div>
+        ` : `
+          <div style="font-family:monospace;color:#38bdf8;font-size:11.5px;padding:6px 0;">
+            ⚡ 正在精准更新代码: <code>${escapeHtml(filePath || summaryText)}</code>
+          </div>
+        `}
       `;
     }
     const lines = (replacementContent || targetContent || '').split('\n').length;
