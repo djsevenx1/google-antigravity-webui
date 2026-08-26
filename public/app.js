@@ -238,9 +238,19 @@ function formatToolCallCard(t, index, isRunning = false) {
   const stepType = String(t.stepType || '').toLowerCase();
   const tip = t.tip || '';
   const waited = t.waited ? `${t.waited}s` : '';
-  const input = normalizeToolInput(t.input || t.toolInput || {});
+  const input = normalizeToolInput(t.input || t.toolInput || t.args || t.parameters || {});
   let rawInput = t.rawInput || (typeof input === 'object' && Object.keys(input).length ? JSON.stringify(input, null, 2) : (typeof input === 'string' ? input : ''));
   if (rawInput === '{}' || rawInput === '""') rawInput = '';
+  if (Object.keys(input).length === 0 && rawInput && rawInput.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(rawInput);
+      if (parsed && typeof parsed === 'object') {
+        for (const k of Object.keys(parsed)) {
+          input[k] = cleanArgVal(parsed[k]);
+        }
+      }
+    } catch (_) {}
+  }
   const output = cleanArgVal(t.output || input.output || '');
 
   let typeClass = 'type-generic';
@@ -720,6 +730,7 @@ async function loadConversations() {
       if (!state.activeId || !state.conversations.some((c) => c.id === state.activeId)) {
         state.activeId = state.conversations[0].id;
       }
+      saveConversations();
       renderConvList();
       paintActiveConv();
     } else {
