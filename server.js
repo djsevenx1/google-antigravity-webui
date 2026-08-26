@@ -1306,7 +1306,7 @@ function syncSessionWithTranscript(sessionData) {
             meta: { model: 'gemini-3.7-flash-high', syncedFromTranscript: true }
           });
           modified = true;
-        } else if (sessionMsgs[uIndex + 1].role === 'assistant' && (!sessionMsgs[uIndex + 1].content || sessionMsgs[uIndex + 1].content.trim() === '')) {
+        } else if (sessionMsgs[uIndex + 1].role === 'assistant' && (!sessionMsgs[uIndex + 1].content || sessionMsgs[uIndex + 1].content.replace(/[\u200b\s]/g, '') === '')) {
           sessionMsgs[uIndex + 1].content = t.assistant;
           modified = true;
         }
@@ -2402,11 +2402,11 @@ wss.on('connection', (ws, req) => {
           try { sessionData = JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch (_) {}
         }
         sessionData.messages = [...(run.initialMessages || [])];
-        const cleanAcc = (run.accumulated || '').replace(/[\u200b]/g, '').trim();
+        const cleanAcc = (run.accumulated || '').replace(/[\u200b\s]/g, '').trim();
         if (cleanAcc || run.toolEvents?.length) {
           sessionData.messages.push({
             role: 'assistant',
-            content: run.accumulated,
+            content: cleanAcc ? run.accumulated : '',
             tools: run.toolEvents?.length ? run.toolEvents : undefined,
             meta: {
               duration: Math.round((Date.now() - t0) / 100) / 10,
