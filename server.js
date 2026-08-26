@@ -653,27 +653,15 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   };
 
   let [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) }),
-    fetchWithFallback([
-      'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
-      'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
-    fetchWithFallback([
-      'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
-      'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
-    fetchWithFallback([
-      'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
-      'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
-    fetchWithFallback([
-      'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
-      'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) })
+    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(6000) }),
+    fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
+    fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
+    fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
+    fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) })
   ]);
 
   // 如果遇到 401，立即强制刷新 Token 并重试一次
-  if ((quotaSummaryRes.status === 'fulfilled' && !quotaSummaryRes.value) || (userinfoRes.status === 'fulfilled' && userinfoRes.value && userinfoRes.value.status === 401)) {
+  if ((quotaSummaryRes.status === 'fulfilled' && !quotaSummaryRes.value?.ok) || (userinfoRes.status === 'fulfilled' && userinfoRes.value?.status === 401)) {
     raw = await refreshAccessToken(raw);
     token = raw?.token?.access_token;
     if (token) {
@@ -682,23 +670,11 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
       }
       headers.Authorization = `Bearer ${token}`;
       [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) }),
-        fetchWithFallback([
-          'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
-          'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
-        fetchWithFallback([
-          'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
-          'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
-        fetchWithFallback([
-          'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
-          'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
-        fetchWithFallback([
-          'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
-          'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) })
+        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(6000) }),
+        fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
+        fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
+        fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
+        fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) })
       ]);
     }
   }
@@ -1012,14 +988,15 @@ app.get('/api/usage', async (req, res) => {
   const isStale = (Date.now() - profileFetchedAt > 60000) || !cachedGoogleProfile?.liveQuotaSummary || isExpired;
 
   let freshProfile = null;
-  if (force || isStale || !activeAcc?.quotaSummary) {
+  if (force) {
     profileFetchedAt = 0;
     freshProfile = await refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
+  } else if (isStale || !activeAcc?.quotaSummary) {
+    profileFetchedAt = Date.now();
+    refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
   }
 
-  const cliInstalled = cliAvailable();
-  const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
-  const googleAccount = cliAuthed ? getActiveGoogleProfile() : null;
+  const googleAccount = getActiveGoogleProfile();
   const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
 
   const liveBuild = buildLiveWindowsData(freshProfile || googleAccount || cachedGoogleProfile, activeAcc);
