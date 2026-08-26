@@ -159,7 +159,7 @@ const state = {
   streaming: false,
   pendingQueue: [],
   searchQuery: "",
-  showThinking: localStorage.getItem("agy-show-thinking") === "true", // 默认关 (false)
+  showThinking: localStorage.getItem("agy-show-thinking") !== "false", // 默认常开 (true)
   codeFile: null
 };
 
@@ -917,6 +917,10 @@ function applyThinkingVisibility(show, withToast = false) {
 }
 
 function initThinkingToggle() {
+  if (localStorage.getItem("agy-show-thinking") == null) {
+    try { localStorage.setItem("agy-show-thinking", "true"); } catch (_) {}
+    state.showThinking = true;
+  }
   applyThinkingVisibility(state.showThinking);
   const toggleRow = $("#toggle-thinking-row");
   const toggleInput = $("#toggle-thinking");
