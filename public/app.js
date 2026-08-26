@@ -1830,9 +1830,16 @@ function checkSlashAutocomplete() {
 
 // Auto-grow Input
 const inputArea = $("#input");
+let _resizeRaf = null;
 function autoResizeInput() {
-  inputArea.style.height = "auto";
-  inputArea.style.height = Math.min(inputArea.scrollHeight, 160) + "px";
+  if (_resizeRaf) return;
+  _resizeRaf = requestAnimationFrame(() => {
+    _resizeRaf = null;
+    if (!inputArea) return;
+    inputArea.style.height = "auto";
+    const newH = Math.min(inputArea.scrollHeight, 160);
+    inputArea.style.height = (newH > 40 ? newH : 40) + "px";
+  });
 }
 
 inputArea.addEventListener("input", () => {
