@@ -2311,50 +2311,114 @@ window.switchModelAndRetry = function(modelName) {
   window.retryLastConversationTurn();
 };
 
-function openPermissionModal(message, retryPrompt, toolName, toolInput) {
-  const toolLabel = toolName ? `<div style="margin-bottom:8px;font-size:13px;color:var(--text-primary);">工具: <code style="background:var(--bg-secondary);padding:2px 6px;border-radius:4px;font-size:12px;">${escapeHtml(toolName)}</code></div>` : '';
-  const inputSection = toolInput ? `
-    <div style="margin-bottom:8px;">
-      <details style="margin-bottom:4px;">
-        <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">查看工具输入</summary>
-        <pre style="margin-top:6px;background:var(--bg-primary);border:1px solid var(--border-color);padding:8px 10px;border-radius:4px;font-family:monospace;font-size:11.5px;max-height:200px;overflow-y:auto;white-space:pre-wrap;color:var(--text-primary);">${escapeHtml(toolInput)}</pre>
-      </details>
+function openPermissionModal(message, retryPrompt, toolName, toolInput, backendOptions) {
+  const toolNameMap = {
+    'run_command': { title: '执行系统终端命令', icon: 'terminal', color: '#f59e0b', tag: '高危命令' },
+    'write_to_file': { title: '创建 / 覆写文件', icon: 'file-plus', color: '#3b82f6', tag: '文件写入' },
+    'replace_file_content': { title: '局部编辑修改代码', icon: 'file-edit', color: '#10b981', tag: '代码编辑' },
+    'define_subagent': { title: '定义新子代理', icon: 'bot', color: '#a855f7', tag: '子代理' },
+    'invoke_subagent': { title: '调度执行子代理', icon: 'cpu', color: '#a855f7', tag: '代理调度' },
+    'delete_file': { title: '删除文件 / 目录', icon: 'trash-2', color: '#ef4444', tag: '高危删除' }
+  };
+  const tInfo = toolNameMap[toolName] || { title: toolName ? `工具调用: ${toolName}` : '系统操作权限申请', icon: 'shield-alert', color: '#f59e0b', tag: '权限验证' };
+
+  let formattedInput = toolInput || '';
+  try {
+    if (typeof formattedInput === 'string' && (formattedInput.startsWith('{') || formattedInput.startsWith('['))) {
+      formattedInput = JSON.stringify(JSON.parse(formattedInput), null, 2);
+    }
+  } catch (_) {}
+
+  const inputBlock = formattedInput ? `
+    <div style="margin-top:10px;">
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+        <i data-lucide="code" style="width:13px;height:13px;"></i> 操作参数 / 输入详情:
+      </div>
+      <pre style="background:var(--bg-primary);border:1px solid var(--border-color);padding:10px 12px;border-radius:6px;font-family:monospace;font-size:12px;max-height:220px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text-primary);margin:0;">${escapeHtml(formattedInput)}</pre>
     </div>` : '';
-  openModal("🛡️ CLI 权限确认", `
-    <div style="margin-bottom:12px;color:var(--text-muted);font-size:13px;">
-      模型在执行操作时触发了权限保护策略，请选择处理方式：
-    </div>
-    ${toolLabel}
-    ${inputSection}
-    <div style="background:var(--bg-primary);border:1px solid var(--border-color);padding:10px 12px;border-radius:var(--radius-sm);font-family:monospace;font-size:12.5px;max-height:180px;overflow-y:auto;white-space:pre-wrap;color:#f87171;margin-bottom:16px;">
-      ${escapeHtml(message)}
-    </div>
-    <div class="modal-footer" style="margin:-18px;margin-top:10px;padding:12px 18px;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-ghost" data-cancel>拒绝</button>
-      ${toolName ? `<button class="btn btn-ghost" id="btn-allow-remember">允许并记住</button>` : ''}
-      <button class="btn btn-primary" id="btn-approve-retry">允许并重试</button>
+
+  openModal("🛡️ 询问模式 · 操作授权确认", `
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="display:inline-flex;padding:4px;border-radius:6px;background:rgba(245,158,11,0.18);color:${tInfo.color};">
+            <i data-lucide="${tInfo.icon}" style="width:16px;height:16px;"></i>
+          </span>
+          <span style="font-weight:600;font-size:13.5px;color:var(--text-primary);">${escapeHtml(tInfo.title)}</span>
+        </div>
+        <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);">
+          🟡 询问模式
+        </span>
+      </div>
+
+      <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;">
+        ${escapeHtml(message || "当前处于【询问模式】，模型正在申请执行上述敏感操作，请确认是否允许：")}
+      </div>
+
+      ${inputBlock}
+
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+        <button class="btn btn-primary" id="btn-perm-approve-once" style="justify-content:center;padding:9px 14px;font-size:13px;font-weight:600;">
+          <i data-lucide="check" style="width:15px;height:15px;"></i> 单次允许本次操作 (保持询问模式)
+        </button>
+
+        ${toolName ? `
+        <button class="btn btn-ghost" id="btn-perm-allow-remember" style="justify-content:center;padding:8px 14px;font-size:12.5px;border:1px solid var(--border-color);background:var(--bg-secondary);">
+          <i data-lucide="shield-check" style="width:14px;height:14px;color:#10b981;"></i> 允许并记住该工具 (${escapeHtml(toolName)})
+        </button>` : ''}
+
+        <button class="btn btn-ghost" id="btn-perm-switch-auto" style="justify-content:center;padding:8px 14px;font-size:12.5px;border:1px solid var(--border-color);background:var(--bg-secondary);color:#10b981;">
+          <i data-lucide="zap" style="width:14px;height:14px;"></i> 切换至【🟢 自动批准模式】并执行
+        </button>
+
+        <button class="btn btn-ghost" data-cancel style="justify-content:center;padding:8px 14px;font-size:12.5px;color:var(--danger);border:1px solid rgba(239,68,68,0.2);">
+          <i data-lucide="x" style="width:14px;height:14px;"></i> 拒绝执行 (Deny)
+        </button>
+      </div>
     </div>
   `);
+
+  refreshIcons();
+
   $("#modal-root").querySelector("[data-cancel]").onclick = closeModal;
-  // 允许并重试：切换到自动批准模式，重发消息
-  $("#btn-approve-retry").onclick = () => {
-    if ($("#permissions")) {
-      $("#permissions").value = "approve";
-      localStorage.setItem("agy-permissions", "approve");
-    }
-    closeModal();
-    const lastRow = $("#chat-feed")?.lastElementChild;
-    if (lastRow && lastRow.classList.contains("error")) lastRow.remove();
-    runConversationTurn(retryPrompt, false);
-  };
-  // 允许并记住：先调用 server 把工具加到 allow 列表，再重试
-  const btnRemember = $("#btn-allow-remember");
+
+  // 1. 单次允许：重发消息，但不修改用户当前选择的【询问模式】配置
+  const btnApproveOnce = $("#btn-perm-approve-once");
+  if (btnApproveOnce) {
+    btnApproveOnce.onclick = () => {
+      closeModal();
+      const lastRow = $("#chat-feed")?.lastElementChild;
+      if (lastRow && lastRow.classList.contains("error")) lastRow.remove();
+      runConversationTurn(retryPrompt, false);
+    };
+  }
+
+  // 2. 允许并记住工具：白名单化该工具，保持询问模式
+  const btnRemember = $("#btn-perm-allow-remember");
   if (btnRemember) {
     btnRemember.onclick = async () => {
       try {
-        await fetch("/api/permissions/allow", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ toolName }) });
+        await fetch("/api/permissions/allow", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ toolName })
+        });
       } catch (_) {}
-      if ($("#permissions")) { $("#permissions").value = "approve"; localStorage.setItem("agy-permissions", "approve"); }
+      closeModal();
+      const lastRow = $("#chat-feed")?.lastElementChild;
+      if (lastRow && lastRow.classList.contains("error")) lastRow.remove();
+      runConversationTurn(retryPrompt, false);
+    };
+  }
+
+  // 3. 切换至自动批准模式：更改下拉选项并保存
+  const btnSwitchAuto = $("#btn-perm-switch-auto");
+  if (btnSwitchAuto) {
+    btnSwitchAuto.onclick = () => {
+      if ($("#permissions")) {
+        $("#permissions").value = "approve";
+        localStorage.setItem("agy-permissions", "approve");
+      }
       closeModal();
       const lastRow = $("#chat-feed")?.lastElementChild;
       if (lastRow && lastRow.classList.contains("error")) lastRow.remove();
@@ -3378,8 +3442,23 @@ async function initApp() {
   if (permSel) {
     const savedPerm = localStorage.getItem("agy-permissions") || "approve";
     permSel.value = savedPerm;
+    const syncPermIcon = () => {
+      const icon = permSel.parentElement?.querySelector("i");
+      if (icon) {
+        if (permSel.value === "ask") {
+          icon.setAttribute("data-lucide", "shield-alert");
+          icon.style.color = "#f59e0b";
+        } else {
+          icon.setAttribute("data-lucide", "shield-check");
+          icon.style.color = "#10b981";
+        }
+        refreshIcons();
+      }
+    };
+    syncPermIcon();
     permSel.addEventListener("change", (e) => {
       localStorage.setItem("agy-permissions", e.target.value);
+      syncPermIcon();
     });
   }
 
