@@ -192,6 +192,111 @@ function refreshIcons() {
   }
 }
 
+// ── 格式化工具卡片：对照终端与 Claude/OpenCode 风格设计，纯净精致 ──
+function formatToolCallCard(t, index, isRunning = false) {
+  const toolName = String(t.tool || t.toolName || t.name || '').toLowerCase();
+  const stepType = String(t.stepType || '').toLowerCase();
+  const tip = t.tip || '';
+  const waited = t.waited ? `${t.waited}s` : '';
+  const input = t.input || t.toolInput || {};
+  const rawInput = t.rawInput || (typeof input === 'object' ? JSON.stringify(input, null, 2) : String(input || ''));
+
+  let typeClass = 'type-generic';
+  let badgeText = 'Tool';
+  let iconHtml = '<i data-lucide="wrench" style="width:12px;height:12px;"></i>';
+  let summaryText = tip || toolName;
+  let subtitleText = '';
+  let detailCode = rawInput;
+  let isDiff = false;
+  let linesBadge = '';
+
+  if (toolName.includes('command') || toolName === 'bash') {
+    typeClass = 'type-bash';
+    badgeText = 'Bash';
+    iconHtml = '<span style="font-family:monospace;font-weight:700;font-size:12.5px;">$</span>';
+    const cmd = input.CommandLine || input.command || rawInput;
+    summaryText = cmd ? cmd.split('\n')[0] : (tip || '执行终端命令');
+    subtitleText = t.toolAction || t.toolSummary || tip || '';
+    if (subtitleText === summaryText) subtitleText = '';
+    detailCode = cmd || rawInput;
+    const lines = (detailCode || '').split('\n').length;
+    linesBadge = lines > 1 ? `${lines} lines` : (waited || 'run');
+  } else if (toolName.includes('view') || toolName.includes('read') || toolName === 'list_dir') {
+    typeClass = 'type-read';
+    badgeText = toolName === 'list_dir' ? 'List' : 'Read';
+    iconHtml = '<i data-lucide="file-text" style="width:12px;height:12px;"></i>';
+    const filePath = input.AbsolutePath || input.TargetFile || input.DirectoryPath || input.path || rawInput;
+    const fn = filePath ? filePath.split('/').pop() : '';
+    summaryText = fn || (filePath ? filePath.slice(-35) : (tip || '读取文件'));
+    subtitleText = t.toolAction || t.toolSummary || (filePath && filePath !== summaryText ? filePath : tip);
+    detailCode = `Path: ${filePath || ''}\n${input.StartLine ? `Lines: ${input.StartLine} - ${input.EndLine || ''}` : ''}`;
+    linesBadge = (input.StartLine && input.EndLine) ? `L${input.StartLine}-${input.EndLine}` : (waited || 'read');
+  } else if (toolName.includes('replace') || toolName.includes('write') || toolName.includes('edit')) {
+    typeClass = toolName.includes('write') ? 'type-write' : 'type-edit';
+    badgeText = toolName.includes('write') ? 'Write' : 'Edit';
+    iconHtml = '<i data-lucide="pen-tool" style="width:12px;height:12px;"></i>';
+    const filePath = input.TargetFile || input.AbsolutePath || input.path || '';
+    const fn = filePath ? filePath.split('/').pop() : '';
+    summaryText = fn || (filePath ? filePath.slice(-35) : '修改文件');
+    subtitleText = input.Description || input.Instruction || t.toolAction || t.toolSummary || tip || '';
+    
+    if (input.TargetContent || input.ReplacementContent) {
+      isDiff = true;
+      const targetLines = (input.TargetContent || '').split('\n').map(l => `<span class="diff-line-del">- ${escapeHtml(l)}</span>`).join('');
+      const replaceLines = (input.ReplacementContent || '').split('\n').map(l => `<span class="diff-line-add">+ ${escapeHtml(l)}</span>`).join('');
+      detailCode = `<div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;font-family:monospace;">Target: ${escapeHtml(filePath)}</div>${targetLines}${replaceLines}`;
+    } else if (input.CodeContent) {
+      detailCode = `Target: ${filePath}\n\n${input.CodeContent}`;
+    }
+    const lines = (input.CodeContent || input.ReplacementContent || '').split('\n').length;
+    linesBadge = lines > 1 ? `${lines} lines` : (waited || 'edit');
+  } else if (toolName.includes('search') || toolName.includes('grep') || toolName.includes('find')) {
+    typeClass = 'type-search';
+    badgeText = 'Search';
+    iconHtml = '<i data-lucide="search" style="width:12px;height:12px;"></i>';
+    const q = input.Query || input.Pattern || input.query || rawInput;
+    summaryText = q || tip || '搜索代码或文件';
+    subtitleText = input.SearchPath || input.SearchDirectory || t.toolAction || t.toolSummary || tip || '';
+    detailCode = JSON.stringify(input, null, 2);
+    linesBadge = waited || 'search';
+  } else if (stepType.includes('response') || stepType.includes('thought')) {
+    typeClass = 'type-thought';
+    badgeText = 'Thought';
+    iconHtml = '<i data-lucide="brain" style="width:12px;height:12px;"></i>';
+    summaryText = tip || 'Thought for a few seconds';
+    subtitleText = '';
+    detailCode = rawInput || tip || '正在深度思考中...';
+    linesBadge = waited || 'thought';
+  }
+
+  const rawCopyEscaped = escapeHtml(typeof detailCode === 'string' && !isDiff ? detailCode : rawInput);
+
+  return `
+    <details class="tool-call-card ${typeClass} ${isRunning ? 'is-running' : ''}">
+      <summary>
+        <div class="tool-call-header-row">
+          <span class="tool-chevron"><i data-lucide="chevron-right" style="width:13px;height:13px;"></i></span>
+          <span class="tool-icon-badge">${iconHtml}</span>
+          <span class="tool-main-summary" title="${escapeHtml(summaryText)}">${escapeHtml(summaryText)}</span>
+          ${linesBadge ? `<span class="tool-meta-badge">${escapeHtml(linesBadge)}</span>` : ''}
+        </div>
+        ${subtitleText ? `<div class="tool-subtitle-row" title="${escapeHtml(subtitleText)}">${escapeHtml(subtitleText)}</div>` : ''}
+      </summary>
+      <div class="tool-call-body">
+        <button class="tool-copy-btn" onclick="event.stopPropagation(); navigator.clipboard.writeText(this.getAttribute('data-copy')); showToast('已复制工具内容');" data-copy="${rawCopyEscaped}" title="复制详情">
+          <i data-lucide="copy" style="width:11px;height:11px;margin-right:4px;"></i>复制
+        </button>
+        <div class="tool-code-box">${isDiff ? detailCode : escapeHtml(detailCode)}</div>
+      </div>
+    </details>
+  `;
+}
+
+function renderToolsTimeline(tools, activeIndex = -1) {
+  if (!tools || !Array.isArray(tools) || tools.length === 0) return '';
+  return `<div class="tools-timeline-container">${tools.map((t, idx) => formatToolCallCard(t, idx, idx === activeIndex)).join('')}</div>`;
+}
+
 // ---------- Web UI Authentication & Login Gate Control ----------
 let authToken = localStorage.getItem("agy-auth-token") || sessionStorage.getItem("agy-auth-token") || "";
 
@@ -1262,15 +1367,8 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
         <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考中...</span></div>
       `;
     } else {
-      bubble.innerHTML = formatMarkdown(content);
-      if (tools && tools.length) {
-        const toolHtml = tools.map(t => {
-          const icon = t.tool === "run_command" ? "▶" : (t.tool === "view_file" ? "📄" : "🔧");
-          const label = t.tool === "run_command" ? "执行命令" : (t.tool === "view_file" ? "查看文件" : (t.tool || "工具"));
-          return `<details class="tool-event-box"><summary><span class="tool-icon">${icon}</span> <span class="tool-label">${escapeHtml(label)}</span> <span class="tool-step">${escapeHtml(t.stepType || "")}</span></summary><div class="tool-detail">${escapeHtml(t.tip || "")}</div></details>`;
-        }).join("");
-        bubble.innerHTML += toolHtml;
-      }
+      const toolsHtml = renderToolsTimeline(tools, -1);
+      bubble.innerHTML = `${toolsHtml}${formatMarkdown(content)}`;
       if (!isStreaming && clean) {
         bubble.innerHTML += getMessageQuotaFooterHtml(clean, meta, meta?.model || state.selectedModel);
       }
@@ -1986,16 +2084,31 @@ async function runConversationTurn(text, appendUserMsg = true) {
             const waitText = data.waited ? ` (${data.waited}s)` : "";
             // 收集工具执行事件
             if (data.toolName) {
-              toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: tipText, waited: data.waited || 0 });
+              toolEvents.push({
+                tool: data.toolName,
+                stepType: data.stepType || '',
+                tip: tipText,
+                input: data.toolInput || null,
+                rawInput: data.rawInput || '',
+                toolAction: data.toolAction || '',
+                toolSummary: data.toolSummary || '',
+                waited: data.waited || 0
+              });
             }
-            const cleanAcc = (acc || "").replace(/​/g, "").trim();
-            if (!cleanAcc && state.activeId === conv.id) {
-              const targetNode = clientRun.asstNode || asstNode;
-              if (targetNode && targetNode.bubble) {
+            const cleanAcc = (acc || "").replace(/[\u200b\s]/g, "").trim();
+            const targetNode = clientRun.asstNode || asstNode;
+            if (targetNode && targetNode.bubble && state.activeId === conv.id) {
+              const toolsHtml = renderToolsTimeline(toolEvents, toolEvents.length - 1);
+              if (!cleanAcc) {
                 targetNode.bubble.innerHTML = `
+                  ${toolsHtml}
                   <div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:13px;color:var(--accent);font-weight:500;">${escapeHtml(tipText)}</span><span style="font-size:11px;color:var(--text-dim);">${escapeHtml(waitText)}</span></div>
                 `;
+              } else {
+                targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, true)}`;
               }
+              refreshIcons();
+              $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
             }
             return;
           }
@@ -2006,7 +2119,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
             if (state.activeId === conv.id) {
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode && targetNode.bubble) {
-                targetNode.bubble.innerHTML = formatMarkdown(acc, true);
+                const toolsHtml = renderToolsTimeline(toolEvents, -1);
+                targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, true)}`;
                 refreshIcons();
                 $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
               }
@@ -2033,7 +2147,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 model: state.selectedModel,
                 quotaSnapshot: data.quotaSnapshot
               };
-              targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+              const toolsHtml = renderToolsTimeline(toolEvents, -1);
+              targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, false)}${getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel)}`;
               refreshIcons();
             }
             if (conv && conv.messages && conv.messages.length > 0) {
@@ -2068,7 +2183,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
                   model: state.selectedModel,
                   quotaSnapshot: data.quotaSnapshot || clientRun.lastQuotaSnapshot
                 };
-                targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
+                const toolsHtml = renderToolsTimeline(toolEvents, -1);
+                targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, false)}${getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel)}`;
                 refreshIcons();
               }
             }
@@ -2316,7 +2432,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
         });
 
         if (!hasError && state.activeId === conv.id && targetNode && targetNode.bubble) {
-          targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, msgMeta, state.selectedModel);
+          const toolsHtml = renderToolsTimeline(toolEvents, -1);
+          targetNode.bubble.innerHTML = `${toolsHtml}${formatMarkdown(acc, false)}${getMessageQuotaFooterHtml(cleanAcc, msgMeta, state.selectedModel)}`;
           refreshIcons();
         }
       }
