@@ -1221,10 +1221,77 @@ function syncSessionWithTranscript(sessionData) {
       }
     }
 
-    if (!turns.length) return sessionData;
+    const transcriptTools = [];
+    let pendingTool = null;
+    for (const step of steps) {
+      if (step.tool_calls && step.tool_calls.length) {
+        for (const tc of step.tool_calls) {
+          let args = tc.args || {};
+          const cleanedArgs = {};
+          for (const k of Object.keys(args)) {
+            let v = args[k];
+            if (typeof v === 'string') {
+              v = v.trim();
+              if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+                try { v = JSON.parse(v); } catch (_) { v = v.slice(1, -1); }
+              }
+            }
+            cleanedArgs[k] = v;
+          }
+          pendingTool = {
+            stepIndex: step.step_index,
+            name: tc.name,
+            args: cleanedArgs,
+            output: ''
+          };
+          transcriptTools.push(pendingTool);
+        }
+      } else if (step.type === 'GENERIC' && pendingTool && step.content) {
+        if (!pendingTool.output) {
+          pendingTool.output = String(step.content);
+        }
+      }
+    }
 
     let modified = false;
     const sessionMsgs = Array.isArray(sessionData.messages) ? [...sessionData.messages] : [];
+
+    // 自动补齐工具调用的具体代码参数与实际输出
+    if (transcriptTools.length > 0) {
+      const usedIndices = new Set();
+      for (const m of sessionMsgs) {
+        if (m.role === 'assistant' && Array.isArray(m.tools) && m.tools.length > 0) {
+          for (const t of m.tools) {
+            if (t.tool === 'thought') continue;
+            const tFile = t.input?.TargetFile || t.input?.AbsolutePath || t.input?.DirectoryPath || '';
+            const tCmd = t.input?.CommandLine || '';
+            let match = null;
+            if (t.stepIndex) {
+              match = transcriptTools.find(cand => Math.abs(cand.stepIndex - t.stepIndex) <= 1 && cand.name === t.tool);
+            }
+            if (!match && tFile) {
+              match = transcriptTools.find((cand, idx) => !usedIndices.has(idx) && cand.name === t.tool && cand.args.TargetFile === tFile);
+            }
+            if (!match && tCmd) {
+              match = transcriptTools.find((cand, idx) => !usedIndices.has(idx) && cand.name === t.tool && cand.args.CommandLine === tCmd);
+            }
+            if (!match) {
+              match = transcriptTools.find((cand, idx) => !usedIndices.has(idx) && cand.name === t.tool);
+            }
+            if (match) {
+              usedIndices.add(transcriptTools.indexOf(match));
+              t.input = { ...(match.args || {}), ...(t.input || {}) };
+              for (const k of ['TargetContent', 'ReplacementContent', 'CommandLine', 'CodeContent', 'Description', 'Instruction', 'StartLine', 'EndLine', 'toolAction', 'toolSummary']) {
+                if (match.args[k] != null) t.input[k] = match.args[k];
+              }
+              t.rawInput = JSON.stringify(t.input, null, 2);
+              if (match.output) t.output = match.output;
+              modified = true;
+            }
+          }
+        }
+      }
+    }
 
     for (let i = 0; i < turns.length; i++) {
       const t = turns[i];
@@ -2334,7 +2401,12 @@ wss.on('connection', (ws, req) => {
           });
         }
         if (out && out.conversationId) sessionData.convId = out.conversationId;
+        sessionData = syncSessionWithTranscript(sessionData);
         sessionData.updatedAt = Date.now();
+        const lastMsg = sessionData.messages[sessionData.messages.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant' && lastMsg.tools) {
+          run.toolEvents = lastMsg.tools;
+        }
         const tmpPath = `${filePath}.tmp.${Date.now()}`;
         fs.writeFileSync(tmpPath, JSON.stringify(sessionData, null, 2), 'utf-8');
         fs.renameSync(tmpPath, filePath);
@@ -2342,10 +2414,11 @@ wss.on('connection', (ws, req) => {
         debugLog('[ws/chat] auto-save session error:', err && err.message);
       }
 
-      // 4. 广播包含 100% 真实扣减配额的 done 事件！
+      // 4. 广播包含 100% 真实扣减配额与已补齐真实代码工具的 done 事件！
       broadcast({
         done: true,
         conversationId: out ? out.conversationId : null,
+        tools: run.toolEvents,
         liveQuota: freshQuota,
         quotaSnapshot: turnQuotaSnapshot
       });
