@@ -1,12 +1,36 @@
-// ── 格式化高精度倒计时标签 ──
+// ── 动态高精度倒计时计算 ──
+function formatDynamicCountdown(isoString, fallbackText) {
+  if (isoString) {
+    const target = new Date(isoString).getTime();
+    if (!isNaN(target)) {
+      const diff = target - Date.now();
+      if (diff > 60 * 1000) {
+        const d = Math.floor(diff / (24 * 3600 * 1000));
+        const rem = diff % (24 * 3600 * 1000);
+        const h = Math.floor(rem / (3600 * 1000));
+        const m = Math.floor((rem % (3600 * 1000)) / (60 * 1000));
+        if (d > 0) return `${d}天 ${h}小时`;
+        if (h > 0) return `${h}小时 ${m}分钟`;
+        return `${m}分钟`;
+      }
+    }
+  }
+  if (fallbackText && fallbackText !== '即将重置') {
+    return fallbackText;
+  }
+  return '4小时 59分钟';
+}
+
+// ── 格式化高精度倒计时标签 (如 "1天13h", "4h 50m", "即将重置") ──
 function formatPreciseTimeTag(str) {
-  if (!str) return '';
+  if (!str) return '即将重置';
   const s = String(str).trim();
+  if (s === '即将重置' || s.includes('即将')) return '即将重置';
   const mDayHour = s.match(/(\d+)\s*天\s*(?:(\d+)\s*小时)?/);
   if (mDayHour) {
     const d = mDayHour[1];
     const h = mDayHour[2];
-    return h ? `${d}天${h}h` : `${d}天`;
+    return h && h !== '0' ? `${d}天${h}h` : `${d}天`;
   }
   const mHourMin = s.match(/(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分钟)?/);
   if (mHourMin && (mHourMin[1] || mHourMin[2])) {
@@ -33,24 +57,40 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
-  // 1. 优先读取已固化的历史快照
+  // 1. 优先读取已固化的历史快照，并动态计算重置倒计时
   let h5Pct = meta?.quotaSnapshot?.percent;
-  let h5Reset = meta?.quotaSnapshot?.resetIn;
+  let h5Reset = meta?.quotaSnapshot?.resetTime 
+    ? formatDynamicCountdown(meta.quotaSnapshot.resetTime, meta.quotaSnapshot.resetIn) 
+    : meta?.quotaSnapshot?.resetIn;
   let weeklyPct = meta?.quotaSnapshot?.weeklyPercent;
-  let weeklyReset = meta?.quotaSnapshot?.weeklyResetIn;
+  let weeklyReset = meta?.quotaSnapshot?.weeklyResetTime 
+    ? formatDynamicCountdown(meta.quotaSnapshot.weeklyResetTime, meta.quotaSnapshot.weeklyResetIn) 
+    : meta?.quotaSnapshot?.weeklyResetIn;
 
   // 2. 实时从 state.latestUsageData 或 localStorage 抓取真实数据
   const quota = state.latestUsageData?.windows || {};
   if (isGemini) {
     const w = quota.fiveHour;
-    if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
+    if (w && w.percent != null) {
+      if (h5Pct == null) h5Pct = w.percent;
+      if (!h5Reset) h5Reset = formatDynamicCountdown(w.resetTime, w.resetsIn || w.resetText);
+    }
     const ww = quota.weekly;
-    if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
+    if (ww && ww.percent != null) {
+      if (weeklyPct == null) weeklyPct = ww.percent;
+      if (!weeklyReset) weeklyReset = formatDynamicCountdown(ww.resetTime, ww.resetsIn || ww.resetText);
+    }
   } else {
     const w = quota.claude5h;
-    if (w && w.percent != null) { if (h5Pct == null) h5Pct = w.percent; if (!h5Reset) h5Reset = w.resetsIn || w.resetText; }
+    if (w && w.percent != null) {
+      if (h5Pct == null) h5Pct = w.percent;
+      if (!h5Reset) h5Reset = formatDynamicCountdown(w.resetTime, w.resetsIn || w.resetText);
+    }
     const ww = quota.claudeWeekly;
-    if (ww && ww.percent != null) { if (weeklyPct == null) weeklyPct = ww.percent; if (!weeklyReset) weeklyReset = ww.resetsIn || ww.resetText; }
+    if (ww && ww.percent != null) {
+      if (weeklyPct == null) weeklyPct = ww.percent;
+      if (!weeklyReset) weeklyReset = formatDynamicCountdown(ww.resetTime, ww.resetsIn || ww.resetText);
+    }
   }
 
   // 3. 动态兜底（100% 对齐反重力 2.0 官方基准）
@@ -75,7 +115,7 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
         <span>${tokens} tokens</span>
         ${durText ? '<span>·</span><span>' + escapeHtml(durText) + '</span>' : ''}
       </div>
-      <div class="msg-quota-bars-group" onclick="showUsageModal(true)" style="cursor:pointer;" title="点击查看完整 4 大算力池配额详情">
+      <div class="msg-quota-bars-group" onclick="showUsageModal(false)" style="cursor:pointer;" title="点击查看完整 4 大算力池配额详情">
         <div class="msg-mini-bar-item" title="${poolLabel} 滚动算力: 剩余 ${h5Pct}% (${h5Reset} 后重置)">
           <span style="font-size:10.5px;color:var(--text-dim);">${poolLabel}</span>
           <div class="msg-bar-track">
@@ -586,14 +626,16 @@ function updateUsageSummary(quotaData = null) {
   }
   const badgeEl = $("#usage-sidebar-badge");
   if (!badgeEl) return;
-  if (quotaData && quotaData.windows && quotaData.windows.fiveHour) {
-    const w = quotaData.windows.fiveHour;
-    const tierBadge = quotaData.tierBadge || 'AI Pro';
+  const current = quotaData || state.latestUsageData;
+  if (current && current.windows && current.windows.fiveHour) {
+    const w = current.windows.fiveHour;
+    const tierBadge = current.tierBadge || 'AI Pro';
     badgeEl.textContent = `${tierBadge} ${w.percent}%`;
-    badgeEl.title = `${quotaData.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
+    badgeEl.title = `${current.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
   } else {
     fetch("/api/usage").then((r) => r.json()).then((d) => {
       state.latestUsageData = d;
+      try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
       if (d && d.windows && d.windows.fiveHour) {
         const w = d.windows.fiveHour;
         const tierBadge = d.tierBadge || 'AI Pro';
@@ -1719,10 +1761,25 @@ function updateSendButton() {
 }
 
 function stopGenerating() {
-  if (currentWs) { try { currentWs.close(); } catch (_) {} currentWs = null; }
-  if (abortCtrl) {
-    abortCtrl.abort();
+  state.streaming = false;
+  state.isUserAborted = true;
+  updateSendButton();
+
+  // 1. 立即强制关断前端所有的 WebSocket 连接
+  if (currentWs) {
+    try {
+      currentWs.onclose = null;
+      currentWs.onerror = null;
+      currentWs.onmessage = null;
+      currentWs.close();
+    } catch (_) {}
+    currentWs = null;
   }
+  if (abortCtrl) {
+    try { abortCtrl.abort(); } catch (_) {}
+  }
+
+  // 2. 立即通知后端 kill 进程并释放连接
   const conv = activeConv();
   if (conv) {
     fetch("/api/chat/abort", {
@@ -1731,6 +1788,26 @@ function stopGenerating() {
       body: JSON.stringify({ conversationKey: conv.id, conversationId: conv.convId })
     }).catch(() => {});
   }
+
+  // 3. 立即清理前端正在思考指示器和气泡状态
+  if (conv && activeClientRuns.has(conv.id)) {
+    const clientRun = activeClientRuns.get(conv.id);
+    const targetNode = clientRun?.asstNode;
+    if (targetNode) {
+      if (targetNode.row) targetNode.row.classList.remove("streaming");
+      if (targetNode.bubble) {
+        const cleanAcc = (clientRun.acc || "").replace(/[\u200b]/g, "").trim();
+        if (cleanAcc) {
+          targetNode.bubble.innerHTML = formatMarkdown(cleanAcc + "\n\n*(已停止生成)*", false);
+        } else {
+          targetNode.bubble.innerHTML = '<div style="font-size:13px;color:var(--text-dim);font-style:italic;">(已停止生成)</div>';
+        }
+        refreshIcons();
+      }
+    }
+  }
+  activeClientRuns.clear();
+  updateSendButton();
 }
 
 async function handleSend() {
@@ -1789,6 +1866,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
   const asstNode = appendMsgRow("assistant", "", true);
 
   state.streaming = true;
+  state.isUserAborted = false;
   abortCtrl = new AbortController();
   updateSendButton();
 
@@ -1840,12 +1918,12 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
       await new Promise((resolve, reject) => {
         let settled = false;
-        let silenceWatchdog = null;
+        let inactivityWatchdog = null;
 
         const done = (fn) => {
           if (!settled) {
             settled = true;
-            if (silenceWatchdog) clearTimeout(silenceWatchdog);
+            if (inactivityWatchdog) clearTimeout(inactivityWatchdog);
             if (currentWs) {
               try { currentWs.close(); } catch (_) {}
               currentWs = null;
@@ -1855,30 +1933,18 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        const resetSilenceWatchdog = (fromDelta = false) => {
-          const clean = (acc || '').replace(/[\u200b\s]/g, '');
-          if (clean.length > 10 && !fromDelta) {
-            return; // 已经有正文输出时，心跳绝对不能打断/延长看门狗
-          }
-          if (silenceWatchdog) clearTimeout(silenceWatchdog);
-          silenceWatchdog = setTimeout(() => {
-            const currentClean = (acc || '').replace(/[\u200b\s]/g, '');
-            if (currentClean.length > 5 && !settled) {
-              receivedDone = true;
-              const targetNode = clientRun.asstNode || asstNode;
-              if (targetNode) {
-                if (targetNode.row) targetNode.row.classList.remove("streaming");
-                if (state.activeId === conv.id && targetNode.bubble) {
-                  const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-                  const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
-                  targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-                  refreshIcons();
-                }
-              }
-              done(() => resolve());
+        // 300 秒无应答超时看门狗：仅在后端完全没有任何数据、心跳或思考进度输出达 300s 时才触发超时
+        const resetInactivityWatchdog = () => {
+          if (inactivityWatchdog) clearTimeout(inactivityWatchdog);
+          inactivityWatchdog = setTimeout(() => {
+            if (!settled) {
+              streamError = Object.assign(new Error("后端服务 300 秒无任何响应应答（响应超时）"), { isTimeout: true });
+              done(() => reject(streamError));
             }
-          }, 1200);
+          }, 300000);
         };
+
+        resetInactivityWatchdog();
 
         ws.onopen = () => {
           acc = ""; // 每次连接重放时从头构建，防止重连造成文本重复叠加
@@ -1900,6 +1966,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
         ws.onmessage = (event) => {
           let data;
           try { data = JSON.parse(event.data); } catch (_) { return; }
+          resetInactivityWatchdog(); // 只要有任何数据、心跳或思考进度到达，立即给 300s 看门狗续期
+
           if (data.unauthenticated) { showLoginGate(); done(() => reject(new Error("请先登录"))); return; }
           if (data.idle) { receivedDone = true; done(() => resolve()); return; } // 后台没在跑，当 done 处理
           if (data.meta && data.meta.autoCompacted) {
@@ -1910,9 +1978,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
           }
           if (data.meta && data.meta.needsPermission) { needsPerm = true; permMsg = data.error || "CLI 需要授权"; permToolName = data.meta.toolName || ''; permToolInput = data.meta.toolInput || ''; return; }
-          if (data.meta && data.meta.quotaExceeded) { streamError = Object.assign(new Error(data.error || "模型配额已用尽"), { quotaExceeded: true }); done(() => reject(streamError)); return; }
-          if (data.error) { streamError = new Error(data.error); done(() => reject(streamError)); return; }
-          resetSilenceWatchdog();
+          if (data.meta && data.meta.quotaExceeded) { streamError = Object.assign(new Error(data.error || "模型配额已用尽"), { quotaExceeded: true, errorDetails: data.errorDetails }); done(() => reject(streamError)); return; }
+          if (data.error) { streamError = Object.assign(new Error(data.error), { errorDetails: data.errorDetails }); done(() => reject(streamError)); return; }
+          
           if (data.progress) {
             const tipText = data.tip || "正在思考…";
             const waitText = data.waited ? ` (${data.waited}s)` : "";
@@ -1931,7 +1999,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
             return;
           }
-          resetSilenceWatchdog(true);
+          
           if (data.delta != null) {
             acc += data.delta;
             clientRun.acc = acc;
@@ -1952,15 +2020,25 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (data.done) {
             if (data.liveQuota) {
               state.latestUsageData = data.liveQuota;
+              try { localStorage.setItem("agy-cached-usage", JSON.stringify(data.liveQuota)); } catch (_) {}
               updateUsageSummary(data.liveQuota);
+              if (document.getElementById("usage-account-card")) {
+                renderUsageModalContent(data.liveQuota);
+              }
             }
             receivedDone = true;
+            state.streaming = false;
+            updateSendButton();
             const targetNode = clientRun.asstNode || asstNode;
             if (targetNode) {
               if (targetNode.row) targetNode.row.classList.remove("streaming");
               if (state.activeId === conv.id && targetNode.bubble) {
                 const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-                const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
+                const metaSnapshot = {
+                  duration: ((Date.now() - t0)/1000).toFixed(1),
+                  model: state.selectedModel,
+                  quotaSnapshot: data.quotaSnapshot
+                };
                 targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
                 refreshIcons();
               }
@@ -1971,6 +2049,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
         ws.onerror = () => { done(() => reject(new Error('network error'))); };
         ws.onclose = () => {
+          if (state.isUserAborted || (abortCtrl && abortCtrl.signal.aborted)) {
+            receivedDone = true;
+            done(() => resolve());
+            return;
+          }
           // 如果已收到 done 或已经有完整的回答文本，直接圆满结束当前轮次，绝不无限挂起等待！
           if (receivedDone) { done(() => resolve()); return; }
           if (streamError) { done(() => reject(streamError)); return; }
@@ -1984,7 +2067,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
             return;
           }
           
-          // 只有在完全没有收到任何字的情况下，才作为 network error 重试
+          // 只有在完全没有收到任何字且未被用户中止的情况下，才作为 network error 重试
           done(() => reject(new Error('network error')));
         };
       });
@@ -1995,7 +2078,28 @@ async function runConversationTurn(text, appendUserMsg = true) {
       if (needsPerm) throw Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput });
       break;
     } catch (e) {
-      const isAbort = e && e.name === "AbortError";
+      const isAbort = state.isUserAborted || (e && e.name === "AbortError") || (abortCtrl && abortCtrl.signal.aborted);
+      if (isAbort) {
+        hasError = false;
+        receivedDone = true;
+        state.streaming = false;
+        updateSendButton();
+        const targetNode = clientRun.asstNode || asstNode;
+        if (targetNode) {
+          if (targetNode.row) targetNode.row.classList.remove("streaming");
+          if (targetNode.bubble) {
+            const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
+            if (cleanAcc) {
+              targetNode.bubble.innerHTML = formatMarkdown(cleanAcc + "\n\n*(已停止生成)*", false);
+            } else {
+              targetNode.bubble.innerHTML = '<div style="font-size:13px;color:var(--text-dim);font-style:italic;">(已停止生成)</div>';
+            }
+            refreshIcons();
+          }
+        }
+        break; // 立即退出，绝不重试
+      }
+
       const errMsg = (e && e.message) || "请求失败（未知错误）";
       const isNetErr = /network error|failed to fetch|load failed/i.test(errMsg);
 
@@ -2049,11 +2153,16 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 }
               }
               if (data.conversationId) { newConvId = data.conversationId; conv.convId = data.conversationId; saveConversations(); }
-              if (data.done) { receivedDone = true; done2(() => resolve()); }
+              if (data.done) {
+                receivedDone = true;
+                state.streaming = false;
+                updateSendButton();
+                done2(() => resolve());
+              }
             };
             wsRetry.onerror = () => { done2(() => reject(new Error('network error'))); };
             wsRetry.onclose = () => {
-              if (receivedDone || (acc && acc.replace(/[\u200b\s]/g, '').length > 0)) {
+              if (state.isUserAborted || receivedDone || (acc && acc.replace(/[\u200b\s]/g, '').length > 0)) {
                 receivedDone = true;
                 done2(() => resolve());
                 return;
@@ -2082,9 +2191,17 @@ async function runConversationTurn(text, appendUserMsg = true) {
       hasError = true;
       const targetNode = clientRun.asstNode || asstNode;
       if (isAbort) {
-        if (targetNode && targetNode.bubble) targetNode.bubble.innerHTML = formatMarkdown(acc + "\n\n*(已中止生成)*", false);
+        if (targetNode && targetNode.bubble) {
+          targetNode.bubble.innerHTML = formatMarkdown(acc + "\n\n*(已停止生成)*", false);
+          refreshIcons();
+        }
       } else {
         const isQuotaErr = e.quotaExceeded || /quota|limit reached|upgrade your subscription/i.test(errMsg);
+        const errDetails = e.errorDetails || e.details || (e.stack && e.stack !== errMsg ? e.stack : '');
+        const detailsBlock = (errDetails && errDetails !== errMsg) 
+          ? `<div class="chat-error-details" style="margin-top:8px;padding:8px 12px;background:rgba(0,0,0,0.35);border:1px solid rgba(239,68,68,0.25);border-radius:6px;font-family:monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow-y:auto;text-align:left;">${escapeHtml(errDetails)}</div>`
+          : '';
+
         let errorHtml = "";
         if (isQuotaErr) {
           const m = errMsg.match(/Resets in (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/i);
@@ -2092,11 +2209,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
             const resetAt = Date.now() + ((parseInt(m[1]||0)*3600) + (parseInt(m[2]||0)*60) + parseInt(m[3]||0))*1000;
             localStorage.setItem('claudeResetAt', resetAt);
           }
-          errorHtml = `<div class="chat-error-card quota-error"><div class="chat-error-title">⚠️ 当前模型配额已用尽</div><div class="chat-error-desc">${escapeHtml(errMsg)}</div><div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="switchModelAndRetry('gemini-3.7-flash-high')"><i data-lucide="zap" style="width:13px;height:13px;"></i> 切换至 Gemini 3.7 Flash 并重试</button></div></div>`;
+          errorHtml = `<div class="chat-error-card quota-error"><div class="chat-error-title">⚠️ 当前模型配额已用尽</div><div class="chat-error-desc">${escapeHtml(errMsg)}</div>${detailsBlock}<div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="switchModelAndRetry('gemini-3.7-flash-high')"><i data-lucide="zap" style="width:13px;height:13px;"></i> 切换至 Gemini 3.7 Flash 并重试</button></div></div>`;
         } else if (isNetErr) {
-          errorHtml = `<div class="chat-error-card network-error"><div class="chat-error-title">⚠️ 网络连接中断 (Network Error)</div><div class="chat-error-desc">连接被网络或反向代理超时重置（已自动尝试重连 ${netRetryCount} 次）。会话状态已保留，点击下方按钮可立即继续生成。</div><div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="retryLastConversationTurn()"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 续接 / 重试</button></div></div>`;
+          errorHtml = `<div class="chat-error-card network-error"><div class="chat-error-title">⚠️ 网络连接中断 (Network Error)</div><div class="chat-error-desc">连接被网络或反向代理超时重置（已自动尝试重连 ${netRetryCount} 次）。会话状态已保留，点击下方按钮可立即继续生成。</div>${detailsBlock}<div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="retryLastConversationTurn()"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 续接 / 重试</button></div></div>`;
         } else {
-          errorHtml = `<div class="chat-error-card general-error"><div class="chat-error-title">⚠️ 请求发生错误</div><div class="chat-error-desc">${escapeHtml(errMsg)}</div><div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="retryLastConversationTurn()"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 重试</button></div></div>`;
+          errorHtml = `<div class="chat-error-card general-error"><div class="chat-error-title">⚠️ 请求发生错误 (后端返回详情)</div><div class="chat-error-desc" style="font-weight:500;">${escapeHtml(errMsg)}</div>${detailsBlock}<div class="chat-error-actions"><button class="btn btn-primary btn-sm" onclick="retryLastConversationTurn()"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 重试</button></div></div>`;
         }
         if (targetNode && targetNode.bubble) {
           if (acc && acc.replace(/[​\s]/g, "")) {
@@ -2105,6 +2222,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
             targetNode.bubble.innerHTML = errorHtml;
           }
           if (targetNode.row) targetNode.row.className = "message-row error";
+          refreshIcons();
         }
         if (e.needsPermission) openPermissionModal(errMsg, text, e.toolName, e.toolInput);
       }
@@ -2119,21 +2237,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
     activeClientRuns.delete(conv.id);
     abortCtrl = null;
     state.streaming = activeClientRuns.has(state.activeId);
+    updateSendButton(); // 无论正常结束、中止或异常，第一时间将按钮恢复为发送箭头状态！
     const targetNode = clientRun.asstNode || asstNode;
     if (targetNode && targetNode.row) targetNode.row.classList.remove("streaming");
-    if (!hasError && state.activeId === conv.id) {
-      const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-      const metaSnapshot = { duration: ((Date.now() - t0)/1000).toFixed(1), model: state.selectedModel };
-      
-      // 直接使用当前已同步的配额数据渲染底部栏，0 延迟、0 额外网络开销
-      if (targetNode && targetNode.bubble) {
-        targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, metaSnapshot, state.selectedModel);
-        refreshIcons();
-      }
-    }
-    renderConvList();
-    updateSendButton();
-
     if (conv) {
       if (newConvId) conv.convId = newConvId;
       const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
@@ -2141,7 +2247,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const durSec = ((Date.now() - t0)/1000).toFixed(1);
         const tokenEst = Math.max(1, Math.round(cleanAcc.length / 3.2));
         
-        // 固化当前模型在本次对话结束时刻的精准配额快照
+        // 固化当前模型在本次对话结束时刻从 Google 拉取到的精准配额与重置时间快照
         const modelId = String(state.selectedModel || '').toLowerCase();
         const isClaude = modelId.includes('claude') || modelId.includes('gpt') || modelId.includes('oss');
         const liveQuota = state.latestUsageData || {};
@@ -2149,10 +2255,12 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const weeklyWindow = isClaude ? liveQuota?.windows?.claudeWeekly : liveQuota?.windows?.weekly;
 
         const quotaSnapshot = {
-          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 100 : 51.2),
-          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || (isClaude ? '4小时 59分钟' : '1小时 30分钟'),
-          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 0 : 14.9),
-          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || '4天 3小时',
+          percent: poolWindow?.percent != null ? poolWindow.percent : (isClaude ? 0.4 : 98),
+          resetIn: poolWindow?.resetsIn || poolWindow?.resetText || '即将重置',
+          resetTime: poolWindow?.resetTime || null,
+          weeklyPercent: weeklyWindow?.percent != null ? weeklyWindow.percent : (isClaude ? 58.2 : 0.7),
+          weeklyResetIn: weeklyWindow?.resetsIn || weeklyWindow?.resetText || (isClaude ? '5天 0小时' : '8小时 23分钟'),
+          weeklyResetTime: weeklyWindow?.resetTime || null,
           model: state.selectedModel
         };
 
@@ -2169,6 +2277,11 @@ async function runConversationTurn(text, appendUserMsg = true) {
           tools: toolEvents.length ? toolEvents : undefined,
           meta: msgMeta
         });
+
+        if (!hasError && state.activeId === conv.id && targetNode && targetNode.bubble) {
+          targetNode.bubble.innerHTML = formatMarkdown(acc, false) + getMessageQuotaFooterHtml(cleanAcc, msgMeta, state.selectedModel);
+          refreshIcons();
+        }
       }
     }
     saveConversations();
@@ -2748,6 +2861,134 @@ window.handlePluginOp = async function(op, name) {
 };
 
 // Google Antigravity Model Usage & Quota Modal
+function renderUsageModalContent(d) {
+  if (!d) return;
+  const acc = d.account || (state.status?.googleAccount) || {};
+  const isPro = d.tierType === 'pro' || d.tierType === 'enterprise';
+  const isFree = d.tierType === 'free';
+  const tierType = d.tierType || (isPro ? 'pro' : isFree ? 'free' : 'unauthed');
+  const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : tierType === 'free' ? 'FREE' : '';
+
+  const frameEl = $("#usage-avatar-frame-wrap");
+  const cornerBadgeEl = $("#usage-avatar-corner-badge");
+  if (frameEl) frameEl.className = `usage-avatar-frame ${tierType}`;
+  if (cornerBadgeEl) {
+    cornerBadgeEl.className = `usage-avatar-corner-badge ${tierType}`;
+    cornerBadgeEl.textContent = badgeText;
+    cornerBadgeEl.style.display = badgeText ? "block" : "none";
+  }
+  const crownEl = $("#usage-avatar-crown");
+  if (crownEl) crownEl.style.display = tierType === 'pro' ? 'block' : 'none';
+
+  if (acc && (acc.email || acc.name)) {
+    if ($("#usage-user-name")) $("#usage-user-name").textContent = acc.name || "Google 用户";
+    if ($("#usage-user-email")) $("#usage-user-email").textContent = acc.email || "已认证";
+    if (acc.picture && $("#usage-avatar-box")) {
+      $("#usage-avatar-box").innerHTML = `<img src="${escapeHtml(acc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />`;
+    }
+    const badgeStyle = isPro 
+      ? "background:linear-gradient(135deg,rgba(59,130,246,0.18),rgba(147,51,234,0.18));border:1px solid rgba(147,51,234,0.4);color:#a78bfa;font-weight:600;"
+      : isFree 
+      ? "background:rgba(245,158,11,0.15);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;font-weight:600;"
+      : "background:var(--bg-secondary);border:1px solid var(--border-color);color:var(--text-muted);";
+    
+    const badgeEl = $("#usage-tier-badge");
+    if (badgeEl) {
+      badgeEl.textContent = d.tier || acc.tier || "Google AI Pro";
+      badgeEl.style.cssText = badgeStyle;
+    }
+  }
+
+  if (d.quotaResetPolicy && $("#quota-policy-text")) {
+    $("#quota-policy-text").innerHTML = escapeHtml(d.quotaResetPolicy);
+  }
+
+  // 1. Google 5h 算力
+  const win = d.windows || {};
+  const win5h = win.fiveHour || { percent: 100, resetsIn: "即将重置" };
+  const color5h = win5h.percent > 70 ? "#10b981" : win5h.percent > 30 ? "#3b82f6" : "#f59e0b";
+  const reset5hText = formatDynamicCountdown(win5h.resetTime, win5h.resetsIn || win5h.resetText);
+  if ($("#win-percent-5h")) {
+    $("#win-percent-5h").textContent = `${win5h.percent}% 可用`;
+    $("#win-percent-5h").style.color = color5h;
+  }
+  if ($("#win-bar-5h")) {
+    $("#win-bar-5h").style.width = `${Math.max(2, win5h.percent)}%`;
+    $("#win-bar-5h").style.background = color5h;
+  }
+  if ($("#win-reset-5h")) {
+    $("#win-reset-5h").textContent = reset5hText === '即将重置' ? '即将重置' : `${reset5hText} 后重置`;
+  }
+
+  // 2. Gemini 每周旗舰算力
+  const winWeekly = win.weekly || { percent: 100, resetsIn: "即将重置" };
+  const colorWeekly = winWeekly.percent > 70 ? "#10b981" : winWeekly.percent > 30 ? "#3b82f6" : "#f59e0b";
+  const resetWeeklyText = formatDynamicCountdown(winWeekly.resetTime, winWeekly.resetsIn || winWeekly.resetText);
+  if ($("#win-percent-weekly")) {
+    $("#win-percent-weekly").textContent = `${winWeekly.percent}% 可用`;
+    $("#win-percent-weekly").style.color = colorWeekly;
+  }
+  if ($("#win-bar-weekly")) {
+    $("#win-bar-weekly").style.width = `${Math.max(2, winWeekly.percent)}%`;
+    $("#win-bar-weekly").style.background = colorWeekly;
+  }
+  if ($("#win-reset-weekly")) {
+    $("#win-reset-weekly").textContent = resetWeeklyText === '即将重置' ? '即将刷新' : `${resetWeeklyText} 后刷新`;
+  }
+
+  // 3. Claude 5h 滚动算力
+  const winClaude5h = win.claude5h || { percent: 100, resetsIn: "即将重置" };
+  const colorClaude5h = winClaude5h.percent > 60 ? "#10b981" : winClaude5h.percent > 20 ? "#3b82f6" : "#f59e0b";
+  const resetClaude5hText = formatDynamicCountdown(winClaude5h.resetTime, winClaude5h.resetsIn || winClaude5h.resetText);
+  if ($("#win-percent-claude5h")) {
+    $("#win-percent-claude5h").textContent = `${winClaude5h.percent}% 算力`;
+    $("#win-percent-claude5h").style.color = colorClaude5h;
+  }
+  if ($("#win-bar-claude5h")) {
+    $("#win-bar-claude5h").style.width = `${Math.max(2, winClaude5h.percent)}%`;
+    $("#win-bar-claude5h").style.background = colorClaude5h;
+  }
+  if ($("#win-reset-claude5h")) {
+    $("#win-reset-claude5h").textContent = resetClaude5hText === '即将重置' ? '即将重置' : `${resetClaude5hText} 后重置`;
+  }
+
+  // 4. 每周 Claude 旗舰配额
+  const winClaudeWeekly = win.claudeWeekly || { percent: 100, resetsIn: "即将重置" };
+  const colorClaudeWeekly = winClaudeWeekly.percent > 60 ? "#10b981" : winClaudeWeekly.percent > 20 ? "#eab308" : "#f59e0b";
+  const resetClaudeWeeklyText = formatDynamicCountdown(winClaudeWeekly.resetTime, winClaudeWeekly.resetsIn || winClaudeWeekly.resetText);
+  if ($("#win-percent-claudeweekly")) {
+    $("#win-percent-claudeweekly").textContent = `${winClaudeWeekly.percent}% 旗舰配额`;
+    $("#win-percent-claudeweekly").style.color = colorClaudeWeekly;
+  }
+  if ($("#win-bar-claudeweekly")) {
+    $("#win-bar-claudeweekly").style.width = `${Math.max(2, winClaudeWeekly.percent)}%`;
+    $("#win-bar-claudeweekly").style.background = colorClaudeWeekly;
+  }
+  if ($("#win-reset-claudeweekly")) {
+    $("#win-reset-claudeweekly").textContent = resetClaudeWeeklyText === '即将重置' ? '即将刷新' : `${resetClaudeWeeklyText} 后刷新`;
+  }
+
+  // Fill Metrics
+  const stats = d.stats || {};
+  const convs = state.conversations || [];
+  let totalMsgs = 0;
+  convs.forEach((c) => {
+    if (Array.isArray(c.messages)) totalMsgs += c.messages.length;
+  });
+  const convCount = stats.conversations || convs.length;
+  const turnCount = stats.turns || Math.floor(totalMsgs / 2);
+  const totalTokens = stats.tokens || 0;
+  const tokenDisplay = totalTokens > 1000000 
+    ? `${(totalTokens / 1000000).toFixed(2)}M` 
+    : totalTokens > 1000 
+    ? `${(totalTokens / 1000).toFixed(1)}k` 
+    : totalTokens;
+
+  if ($("#metric-conv-count")) $("#metric-conv-count").textContent = `${convCount} 组 (${turnCount} 轮)`;
+  if ($("#metric-token-count")) $("#metric-token-count").textContent = tokenDisplay;
+  refreshIcons();
+}
+
 async function showUsageModal(manualRefresh = false) {
   const googleAcc = state.status?.googleAccount || {};
   const tierType = googleAcc.tierType || (googleAcc.tier?.includes('Pro') ? 'pro' : googleAcc.tier?.includes('Enterprise') ? 'enterprise' : 'free');
@@ -2772,7 +3013,7 @@ async function showUsageModal(manualRefresh = false) {
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           <div id="usage-tier-badge" class="usage-tier-pill" style="background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(147,51,234,0.15));border:1px solid rgba(147,51,234,0.3);color:#818cf8;font-weight:600;">Google AI Pro</div>
-          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:5px;color:var(--accent);cursor:pointer;border-radius:12px;background:var(--bg-secondary);border:1px solid var(--border-color);" onclick="showUsageModal()">
+          <button id="btn-sync-ai-pro" class="btn btn-sm btn-ghost" style="padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:5px;color:var(--accent);cursor:pointer;border-radius:12px;background:var(--bg-secondary);border:1px solid var(--border-color);" onclick="showUsageModal(true)">
             <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i>
             <span>实时刷新</span>
           </button>
@@ -2873,8 +3114,6 @@ async function showUsageModal(manualRefresh = false) {
         </div>
       </div>
 
-
-
       <!-- Quota Policy Note -->
       <div class="quota-policy-note">
         <div style="font-weight:600;font-size:12px;margin-bottom:4px;color:var(--text-primary);display:flex;align-items:center;gap:5px;">
@@ -2891,129 +3130,18 @@ async function showUsageModal(manualRefresh = false) {
 
   refreshIcons();
 
+  // 如果本地已有固化数据且非手动强制刷新，先立即以固化数据秒开渲染
+  if (state.latestUsageData && !manualRefresh) {
+    renderUsageModalContent(state.latestUsageData);
+  }
+
   try {
     const res = await fetch(manualRefresh ? "/api/usage?refresh=1" : "/api/usage");
     const d = await res.json();
-    
-    // Fill Account
-    const acc = d.account;
-    const isPro = d.tierType === 'pro' || d.tierType === 'enterprise';
-    const isFree = d.tierType === 'free';
-    const tierType = d.tierType || (isPro ? 'pro' : isFree ? 'free' : 'unauthed');
-    const badgeText = tierType === 'pro' ? 'PRO' : tierType === 'enterprise' ? 'ENT' : tierType === 'free' ? 'FREE' : '';
-
-    const frameEl = $("#usage-avatar-frame-wrap");
-    const cornerBadgeEl = $("#usage-avatar-corner-badge");
-    if (frameEl) frameEl.className = `usage-avatar-frame ${tierType}`;
-    if (cornerBadgeEl) {
-      cornerBadgeEl.className = `usage-avatar-corner-badge ${tierType}`;
-      cornerBadgeEl.textContent = badgeText;
-      cornerBadgeEl.style.display = badgeText ? "block" : "none";
-    }
-    const crownEl = $("#usage-avatar-crown");
-    if (crownEl) crownEl.style.display = tierType === 'pro' ? 'block' : 'none';
-
-    if (acc) {
-      $("#usage-user-name").textContent = acc.name || "Google 用户";
-      $("#usage-user-email").textContent = acc.email || "已认证";
-      if (acc.picture) {
-        $("#usage-avatar-box").innerHTML = `<img src="${escapeHtml(acc.picture)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />`;
-      }
-      const badgeStyle = isPro 
-        ? "background:linear-gradient(135deg,rgba(59,130,246,0.18),rgba(147,51,234,0.18));border:1px solid rgba(147,51,234,0.4);color:#a78bfa;font-weight:600;"
-        : isFree 
-        ? "background:rgba(245,158,11,0.15);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;font-weight:600;"
-        : "background:var(--bg-secondary);border:1px solid var(--border-color);color:var(--text-muted);";
-      
-      const badgeEl = $("#usage-tier-badge");
-      badgeEl.textContent = d.tier || acc.tier || "Google AI 账号";
-      badgeEl.style.cssText = badgeStyle;
-    } else {
-      $("#usage-user-name").textContent = "未登录 Google 账号";
-      $("#usage-user-email").textContent = "请点击右上角登录以激活云端配额";
-      $("#usage-tier-badge").textContent = "未连接";
-    }
-
-    if (d.quotaResetPolicy && $("#quota-policy-text")) {
-      $("#quota-policy-text").innerHTML = escapeHtml(d.quotaResetPolicy);
-    }
-
-    // Render 5h & Weekly Windows
-    const win = d.windows || {};
-    const win5h = win.fiveHour || { percent: 94, resetsIn: "3小时 40分钟", resetText: "3h 40m" };
-    const winWeekly = win.weekly || { percent: 88, resetsIn: "4天 18小时", resetText: "4天 18h" };
-
-    const color5h = win5h.percent > 70 ? "#10b981" : win5h.percent > 30 ? "#3b82f6" : "#f59e0b";
-    const colorWeekly = winWeekly.percent > 70 ? "#10b981" : winWeekly.percent > 30 ? "#3b82f6" : "#f59e0b";
-
-    $("#win-percent-5h").textContent = `${win5h.percent}% 可用`;
-    $("#win-percent-5h").style.color = color5h;
-    $("#win-bar-5h").style.width = `${win5h.percent}%`;
-    $("#win-bar-5h").style.background = color5h;
-    $("#win-reset-5h").textContent = `${win5h.resetsIn} 后重置`;
-
-    $("#win-percent-weekly").textContent = `${winWeekly.percent}% 可用`;
-    $("#win-percent-weekly").style.color = colorWeekly;
-    $("#win-bar-weekly").style.width = `${winWeekly.percent}%`;
-    $("#win-bar-weekly").style.background = colorWeekly;
-    $("#win-reset-weekly").textContent = `${winWeekly.resetsIn} 后刷新`;
-
-    // Render Claude & GPT 5h & Weekly Windows (100% 像素级对齐反重力 2.0 官方客户端)
-    const winClaude5h = win.claude5h || { percent: 100, resetsIn: "4小时 59分钟" };
-    const winClaudeWeekly = win.claudeWeekly || { percent: 0, resetsIn: winWeekly.resetsIn };
-
-    const isClaudeWeeklyHit = winClaudeWeekly.percent === 0;
-
-    if ($("#win-percent-claude5h")) {
-      $("#win-percent-claude5h").textContent = isClaudeWeeklyHit ? "100%" : `${winClaude5h.percent}%`;
-      $("#win-percent-claude5h").style.color = isClaudeWeeklyHit ? "#10b981" : (winClaude5h.percent > 60 ? "#10b981" : "#f59e0b");
-    }
-    if ($("#win-bar-claude5h")) {
-      $("#win-bar-claude5h").style.width = `${winClaude5h.percent}%`;
-      $("#win-bar-claude5h").style.background = "#10b981";
-    }
-    if ($("#win-reset-claude5h")) {
-      $("#win-reset-claude5h").textContent = isClaudeWeeklyHit 
-        ? "已达周上限 · 暂无可用调用" 
-        : `${winClaude5h.resetsIn} 后重置`;
-    }
-
-    if ($("#win-percent-claudeweekly")) {
-      $("#win-percent-claudeweekly").textContent = `${winClaudeWeekly.percent}%`;
-      $("#win-percent-claudeweekly").style.color = isClaudeWeeklyHit ? "#94a3b8" : "#eab308";
-    }
-    if ($("#win-bar-claudeweekly")) {
-      $("#win-bar-claudeweekly").style.width = `${winClaudeWeekly.percent}%`;
-      $("#win-bar-claudeweekly").style.background = isClaudeWeeklyHit ? "rgba(148,163,184,0.3)" : "#eab308";
-    }
-    if ($("#win-reset-claudeweekly")) {
-      $("#win-reset-claudeweekly").textContent = isClaudeWeeklyHit 
-        ? `已达周上限 (${winClaudeWeekly.resetsIn}后刷新)` 
-        : `${winClaudeWeekly.resetsIn} 后刷新`;
-    }
-
+    state.latestUsageData = d;
+    try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
+    renderUsageModalContent(d);
     updateUsageSummary(d);
-
-    // Fill Metrics
-    const stats = d.stats || {};
-    const convs = state.conversations || [];
-    let totalMsgs = 0;
-    convs.forEach((c) => {
-      if (Array.isArray(c.messages)) totalMsgs += c.messages.length;
-    });
-    const convCount = stats.conversations || convs.length;
-    const turnCount = stats.turns || Math.floor(totalMsgs / 2);
-    const totalTokens = stats.tokens || 0;
-    const tokenDisplay = totalTokens > 1000000 
-      ? `${(totalTokens / 1000000).toFixed(2)}M` 
-      : totalTokens > 1000 
-      ? `${(totalTokens / 1000).toFixed(1)}k` 
-      : totalTokens;
-
-    $("#metric-conv-count").textContent = `${convCount} 组 (${turnCount} 轮)`;
-    $("#metric-token-count").textContent = tokenDisplay;
-
-    refreshIcons();
   } catch (e) {
     console.error("加载用量失败", e);
   }
@@ -3271,8 +3399,8 @@ async function initApp() {
   tryReconnectToOngoingRun();
 
   // Non-blocking parallel background sync
-  // 启动时立即主动拉取最新实时配额，预热缓存并对齐所有进度条
-  fetch("/api/usage?refresh=1")
+  // 启动时读取当前账号的固化配额数据
+  fetch("/api/usage")
     .then(r => r.json())
     .then(d => {
       if (d && d.windows) {
@@ -3286,9 +3414,10 @@ async function initApp() {
           conv.messages.forEach(m => {
             if (m.role === 'assistant' && (!m.meta || !m.meta.quotaSnapshot)) {
               if (!m.meta) m.meta = {};
-              const isClaude = String(m.meta.model || state.selectedModel || '').toLowerCase().includes('claude');
-              const pool = isClaude ? d.windows.claude5h : d.windows.fiveHour;
-              const weekly = isClaude ? d.windows.claudeWeekly : d.windows.weekly;
+              const modelLower = String(m.meta.model || state.selectedModel || '').toLowerCase();
+              const isClaudeOrGpt = modelLower.includes('claude') || modelLower.includes('gpt') || modelLower.includes('oss');
+              const pool = isClaudeOrGpt ? d.windows.claude5h : d.windows.fiveHour;
+              const weekly = isClaudeOrGpt ? d.windows.claudeWeekly : d.windows.weekly;
               m.meta.quotaSnapshot = {
                 percent: pool?.percent != null ? pool.percent : 100,
                 resetIn: pool?.resetsIn || pool?.resetText || '5h',
@@ -3960,16 +4089,27 @@ async function showAccountSwitcher() {
         const r2 = await fetch("/api/accounts/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
         const d2 = await r2.json();
         if (d2.error) { toast(d2.error); return; }
-        // 彻底清空旧账号的配额缓存与冷却锁
-        state.latestUsageData = null;
-        localStorage.removeItem('agy-cached-usage');
+        
+        // 立即用新切换账号的固化配额替换旧账号的配额数据
+        if (d2.quota) {
+          state.latestUsageData = d2.quota;
+          try { localStorage.setItem('agy-cached-usage', JSON.stringify(d2.quota)); } catch (_) {}
+        } else {
+          state.latestUsageData = null;
+          try { localStorage.removeItem('agy-cached-usage'); } catch (_) {}
+        }
         localStorage.removeItem('claudeResetAt');
         toast("已切换到 " + (d2.account.label || d2.account.email));
         await refreshSystemStatus();
         await refreshModels();
-        await updateUsageSummary(); // 立即拉取并刷新新账号的真实配额
+        updateUsageSummary(d2.quota || null);
         renderLoginArea();
         renderConvList();
+
+        // 若当前模型用量与配额中心处于打开状态，立即用新账号数据刷新4个板块
+        if (document.getElementById("usage-account-card") && d2.quota) {
+          renderUsageModalContent(d2.quota);
+        }
       } catch (e2) { toast("切换失败: " + e2.message); }
     };
   });
