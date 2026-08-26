@@ -2552,7 +2552,21 @@ async function runConversationTurn(text, appendUserMsg = true) {
             wsRetry.onmessage = (event) => {
               let data;
               try { data = JSON.parse(event.data); } catch (_) { return; }
-              if (data.idle) { done2(() => resolve()); return; } // 后台没在跑
+              if (data.idle) {
+                // 后台已结束生成，立即从服务端拉取最新的会话持久化数据，回填可能因连接切换遗漏的正文回答
+                fetch('/api/sessions').then(r => r.json()).then(sData => {
+                  if (sData && Array.isArray(sData.sessions)) {
+                    const cur = sData.sessions.find(item => item.id === conv.id);
+                    if (cur && Array.isArray(cur.messages) && cur.messages.length > 0) {
+                      conv.messages = cur.messages;
+                      saveConversations();
+                      paintActiveConv();
+                    }
+                  }
+                }).catch(() => {});
+                done2(() => resolve());
+                return;
+              } // 后台没在跑
               if (data.error) { streamError = new Error(data.error); done2(() => reject(streamError)); return; }
               if (data.progress) {
                 if (data.toolName) toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
