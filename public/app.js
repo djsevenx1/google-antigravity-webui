@@ -4564,23 +4564,19 @@ async function showAccountSwitcher() {
     const isPrimary = !!a.isPrimary;
     rows += `
       <div class="acct-row" data-email="${escapeHtml(a.email)}" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;cursor:pointer;${isActive ? 'background:var(--bg-tertiary);' : ''};border:1px solid ${isPrimary ? 'rgba(245,158,11,0.3)' : 'var(--border-color)'};margin-bottom:6px;">
-        <div style="position:relative;">
-          <img src="${escapeHtml(a.picture || '')}" style="width:30px;height:30px;border-radius:50%" onerror="this.style.display='none'"/>
+        <div style="position:relative;flex-shrink:0;">
+          <img src="${escapeHtml(a.picture || '')}" style="width:32px;height:32px;border-radius:50%" onerror="this.style.display='none'"/>
           ${isPrimary ? '<span style="position:absolute;top:-4px;right:-4px;font-size:10px;">👑</span>' : ''}
         </div>
-        <div style="flex:1">
+        <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:6px;">
-            <span style="font-size:13px;font-weight:600">${escapeHtml(a.name || a.label || a.email)}</span>
-            ${isPrimary ? '<span style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:10px;padding:1px 5px;border-radius:4px;font-weight:600;">默认主账号</span>' : ''}
+            <span style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(a.name || a.label || a.email)}</span>
+            ${isPrimary ? '<span style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:10px;padding:1px 5px;border-radius:4px;font-weight:600;flex-shrink:0;">默认主账号</span>' : ''}
           </div>
-          <div style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px;margin-top:2px;">
-            <span>${escapeHtml(a.email)}</span>
-            ${a.quotaSnapshot?.gemini5h != null ? `<span style="padding:1px 5px;border-radius:4px;font-size:10px;background:rgba(16,185,129,0.12);color:#10b981;font-weight:600;">Gemini: ${a.quotaSnapshot.gemini5h}%</span>` : ''}
-            ${a.quotaSnapshot?.claudeWeekly != null ? `<span style="padding:1px 5px;border-radius:4px;font-size:10px;background:rgba(249,115,22,0.12);color:#f97316;font-weight:600;">Claude: ${a.quotaSnapshot.claudeWeekly}%</span>` : ''}
-          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(a.email)}</div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          ${isActive ? '<span style="color:#10b981;font-weight:600;font-size:11.5px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,0.1);" title="点击可重新校准该账号额度">当前生效 (点此查额度)</span>' : '<span style="color:var(--accent);font-size:11.5px;">切换并查额度</span>'}
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          ${isActive ? '<span style="color:#10b981;font-weight:600;font-size:12px;padding:2px 8px;border-radius:4px;background:rgba(16,185,129,0.1);">当前生效</span>' : '<span style="color:var(--accent);font-size:12px;">点击切换</span>'}
           ${isPrimary 
             ? '<span style="font-size:11px;color:var(--text-dim);cursor:not-allowed;" title="默认主账号不可删除，保障系统基础登录态">🔒 固定</span>' 
             : `<button class="acct-del" data-email="${escapeHtml(a.email)}" style="font-size:11px;padding:2px 6px;border:none;background:rgba(239,68,68,0.1);color:var(--danger);border-radius:4px;cursor:pointer">删除</button>`
