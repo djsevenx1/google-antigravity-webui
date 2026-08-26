@@ -4604,13 +4604,13 @@ async function showAccountSwitcher() {
       const email = item.getAttribute("data-email");
       if (email === activeEmail) return;
       closeModal();
-      toast("正在切换到 " + email + "...");
+      toast("正在切换到 " + email + " 并执行额度检查...");
       try {
         const r2 = await fetch("/api/accounts/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
         const d2 = await r2.json();
         if (d2.error) { toast(d2.error); return; }
         
-        // 立即用新切换账号的固化配额替换旧账号的配额数据
+        // 立即用新切换账号由 Google 官方返回的实时配额替换旧数据
         if (d2.quota) {
           state.latestUsageData = d2.quota;
           try { localStorage.setItem('agy-cached-usage', JSON.stringify(d2.quota)); } catch (_) {}
@@ -4619,7 +4619,7 @@ async function showAccountSwitcher() {
           try { localStorage.removeItem('agy-cached-usage'); } catch (_) {}
         }
         localStorage.removeItem('claudeResetAt');
-        toast("已切换到 " + (d2.account.label || d2.account.email));
+        toast("已切换到 " + (d2.account.label || d2.account.email) + "，额度检查已完成");
         await refreshSystemStatus();
         await refreshModels();
         updateUsageSummary(d2.quota || null);
@@ -4638,14 +4638,24 @@ async function showAccountSwitcher() {
     btn.onclick = async e => {
       e.stopPropagation();
       const email = btn.getAttribute("data-email");
+      toast("正在切除账号并检查剩余主账号额度...");
       const delRes = await fetch("/api/accounts/" + encodeURIComponent(email), { method: "DELETE" });
       const delData = await delRes.json();
       if (delData.error) {
-        toast("删除失败: " + delData.error);
+        toast("切除失败: " + delData.error);
       } else {
-        toast("已删除账号");
+        if (delData.quota) {
+          state.latestUsageData = delData.quota;
+          try { localStorage.setItem('agy-cached-usage', JSON.stringify(delData.quota)); } catch (_) {}
+          updateUsageSummary(delData.quota);
+          if (document.getElementById("usage-account-card")) {
+            renderUsageModalContent(delData.quota);
+          }
+        }
+        toast("已切除账号，主账号最新额度已同步");
         await refreshSystemStatus();
         await refreshModels();
+        renderLoginArea();
       }
       showAccountSwitcher();
     };
