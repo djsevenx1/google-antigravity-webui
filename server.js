@@ -1,14 +1,18 @@
 
-export function buildLiveWindowsData(profile = cachedGoogleProfile) {
+export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccount = null) {
   const activeToken = readActiveToken();
   const activeRt = activeToken?.token?.refresh_token;
   const accounts = listAccounts();
-  const acc = (activeRt ? accounts.find(a => a.tokenData?.token?.refresh_token === activeRt) : null) || accounts.find(a => a.email === profile?.email) || accounts[0];
+  const acc = targetAccount ||
+    (profile?.email ? accounts.find(a => a.email === profile.email) : null) ||
+    (activeRt ? accounts.find(a => a.tokenData?.token?.refresh_token === activeRt) : null) ||
+    accounts.find(a => a.email === profile?.email) ||
+    accounts[0];
 
   const summary = profile?.liveQuotaSummary || acc?.quotaSummary;
   const buckets = profile?.liveQuotaBuckets || acc?.quotaBuckets || [];
   const apiModels = profile?.liveModelsQuota || {};
-  const tierData = profile?.tierData || acc?.tierData || parseGoogleAccountTier(null, activeToken);
+  const tierData = profile?.tierData || acc?.tierData || parseGoogleAccountTier(null, acc?.tokenData || activeToken);
 
   const now = new Date();
   const fiveHourMs = 5 * 3600 * 1000;
@@ -17,17 +21,58 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile) {
   const fiveHourH = Math.floor(fiveHourRemainingMs / (3600 * 1000));
   const fiveHourM = Math.floor((fiveHourRemainingMs % (3600 * 1000)) / (60 * 1000));
 
-  const formatCountdown = (isoString, defaultText) => {
-    if (!isoString) return defaultText;
-    const diff = new Date(isoString).getTime() - Date.now();
-    if (diff <= 0) return '即将重置';
-    const d = Math.floor(diff / (24 * 3600 * 1000));
-    const rem = diff % (24 * 3600 * 1000);
-    const h = Math.floor(rem / (3600 * 1000));
-    const m = Math.floor((rem % (3600 * 1000)) / (60 * 1000));
-    if (d > 0) return `${d}天 ${h}小时`;
-    if (h > 0) return `${h}小时 ${m}分钟`;
-    return `${m}分钟`;
+  const formatCountdown = (bucket, defaultText = '5小时 0分钟') => {
+    if (!bucket) return defaultText;
+    const isoString = typeof bucket === 'string' ? bucket : bucket.resetTime;
+    const desc = typeof bucket === 'object' ? String(bucket.description || '').trim() : '';
+
+    // 1. 如果 resetTime 在未来，精确计算剩余时间
+    if (isoString) {
+      const diff = new Date(isoString).getTime() - Date.now();
+      if (diff > 60 * 1000) {
+        const d = Math.floor(diff / (24 * 3600 * 1000));
+        const rem = diff % (24 * 3600 * 1000);
+        const h = Math.floor(rem / (3600 * 1000));
+        const m = Math.floor((rem % (3600 * 1000)) / (60 * 1000));
+        if (d > 0) return `${d}天 ${h}小时`;
+        if (h > 0) return `${h}小时 ${m}分钟`;
+        return `${m}分钟`;
+      }
+    }
+
+    // 2. 解析 Google 官方返回的 description: e.g. "it will fully refresh in 4 hours, 54 minutes."
+    if (desc) {
+      const mEnDays = desc.match(/refresh in\s+(\d+)\s+days?(?:,\s*(\d+)\s+hours?)?/i);
+      if (mEnDays) {
+        const d = mEnDays[1];
+        const h = mEnDays[2] || '0';
+        return `${d}天 ${h}小时`;
+      }
+      const mEnHours = desc.match(/refresh in\s+(\d+)\s+hours?(?:,\s*(\d+)\s+minutes?)?/i);
+      if (mEnHours) {
+        const h = mEnHours[1];
+        const m = mEnHours[2] || '0';
+        return `${h}小时 ${m}分钟`;
+      }
+      const mEnMins = desc.match(/refresh in\s+(\d+)\s+minutes?/i);
+      if (mEnMins) {
+        return `${mEnMins[1]}分钟`;
+      }
+      const mCnDays = desc.match(/(\d+)\s*天\s*(?:(\d+)\s*小时)?/);
+      if (mCnDays) {
+        const d = mCnDays[1];
+        const h = mCnDays[2] || '0';
+        return `${d}天 ${h}小时`;
+      }
+      const mCnHours = desc.match(/(\d+)\s*小时\s*(?:(\d+)\s*分钟)?/);
+      if (mCnHours) {
+        const h = mCnHours[1];
+        const m = mCnHours[2] || '0';
+        return `${h}小时 ${m}分钟`;
+      }
+    }
+
+    return defaultText;
   };
 
   const utcDay = now.getUTCDay();
@@ -64,8 +109,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile) {
           percent: g5hPct,
           used: parseFloat((100 - g5hPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(gemini5hB?.resetTime, `${fiveHourH}小时 ${fiveHourM}分钟`),
-          resetText: formatCountdown(gemini5hB?.resetTime, `${fiveHourH}小时 ${fiveHourM}分钟`),
+          resetsIn: formatCountdown(gemini5hB, `${fiveHourH}小时 ${fiveHourM}分钟`),
+          resetText: formatCountdown(gemini5hB, `${fiveHourH}小时 ${fiveHourM}分钟`),
           resetTime: gemini5hB?.resetTime || null,
           status: g5hPct > 60 ? 'healthy' : g5hPct > 20 ? 'warning' : 'danger'
         },
@@ -76,32 +121,32 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile) {
           percent: gWeeklyPct,
           used: parseFloat((100 - gWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(geminiWeeklyB?.resetTime, weeklyRemainingStr),
-          resetText: formatCountdown(geminiWeeklyB?.resetTime, weeklyRemainingStr),
+          resetsIn: formatCountdown(geminiWeeklyB, weeklyRemainingStr),
+          resetText: formatCountdown(geminiWeeklyB, weeklyRemainingStr),
           resetTime: geminiWeeklyB?.resetTime || null,
           status: gWeeklyPct > 60 ? 'healthy' : gWeeklyPct > 20 ? 'warning' : 'danger'
         },
         claude5h: {
           title: 'Five Hour Limit Remaining',
-          cnTitle: 'Claude & GPT 5小时滚动算力',
+          cnTitle: 'Claude 5 小时滚动算力',
           sub: claude5hB?.description || 'Claude 3.7 / 4.6 实时分配配额',
           percent: c5hPct,
           used: parseFloat((100 - c5hPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(claude5hB?.resetTime, `${fiveHourH}小时 ${fiveHourM}分钟`),
-          resetText: formatCountdown(claude5hB?.resetTime, `${fiveHourH}小时 ${fiveHourM}分钟`),
+          resetsIn: formatCountdown(claude5hB, `${fiveHourH}小时 ${fiveHourM}分钟`),
+          resetText: formatCountdown(claude5hB, `${fiveHourH}小时 ${fiveHourM}分钟`),
           resetTime: claude5hB?.resetTime || null,
           status: c5hPct > 60 ? 'healthy' : c5hPct > 20 ? 'warning' : 'danger'
         },
         claudeWeekly: {
           title: 'Weekly Limit Remaining',
-          cnTitle: '每周 Claude & GPT 旗舰配额',
+          cnTitle: '每周 Claude 旗舰配额',
           sub: claudeWeeklyB?.description || 'Claude 官方周周期算力池',
           percent: cWeeklyPct,
           used: parseFloat((100 - cWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(claudeWeeklyB?.resetTime, weeklyRemainingStr),
-          resetText: formatCountdown(claudeWeeklyB?.resetTime, weeklyRemainingStr),
+          resetsIn: formatCountdown(claudeWeeklyB, weeklyRemainingStr),
+          resetText: formatCountdown(claudeWeeklyB, weeklyRemainingStr),
           resetTime: claudeWeeklyB?.resetTime || null,
           status: cWeeklyPct > 60 ? 'healthy' : cWeeklyPct > 20 ? 'warning' : 'danger'
         }
@@ -197,7 +242,7 @@ import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
-import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts } from './lib/accounts.js';
+import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts } from './lib/accounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -444,18 +489,16 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
   };
 }
 
-export async function refreshGoogleProfileInBackground(force = false) {
-  const activeToken = readActiveToken();
-  const activeRt = activeToken?.token?.refresh_token;
-  const accounts = listAccounts();
-  const currentAcc = (activeRt ? accounts.find(a => a.tokenData?.token?.refresh_token === activeRt) : null) || accounts.find(a => a.email === cachedGoogleProfile?.email) || accounts[0];
-  const fallbackEmail = currentAcc?.email || cachedGoogleProfile?.email || 'Google 用户';
+export async function refreshGoogleProfileInBackground(force = false, targetAccount = null) {
+  const currentAcc = targetAccount || getActiveAccount();
+  const rawToken = currentAcc?.tokenData || readActiveToken();
+  const fallbackEmail = currentAcc?.email || 'Google 用户';
 
-  if (!force && Date.now() - profileFetchedAt < 30000 && cachedGoogleProfile?.liveQuotaSummary && cachedGoogleProfile?.email === currentAcc?.email) {
+  if (!force && Date.now() - profileFetchedAt < 60000 && cachedGoogleProfile?.liveQuotaSummary && cachedGoogleProfile?.email === currentAcc?.email) {
     return cachedGoogleProfile || { email: fallbackEmail, error: "Token expired, please reconnect" };
   }
 
-  let raw = activeToken || currentAcc?.tokenData;
+  let raw = rawToken;
   if (!raw) return cachedGoogleProfile || { email: fallbackEmail, error: "Token expired, please reconnect" };
 
   // 确保 Token 未过期
@@ -482,7 +525,9 @@ export async function refreshGoogleProfileInBackground(force = false) {
     raw = await refreshAccessToken(raw);
     token = raw?.token?.access_token;
     if (token) {
-      writeActiveToken(raw);
+      if (currentAcc?.email === getActiveAccount()?.email) {
+        writeActiveToken(raw);
+      }
       headers.Authorization = `Bearer ${token}`;
       [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
         fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }),
@@ -533,15 +578,9 @@ export async function refreshGoogleProfileInBackground(force = false) {
   const currentName = profile.name || currentAcc?.name || (currentEmail ? currentEmail.split('@')[0] : 'Google 用户');
   const currentPicture = profile.picture || currentAcc?.picture || 'https://lh3.googleusercontent.com/a/ACg8ocKwc5Vq8Tz-kNZ0B4VyAGjfDb_sgaWv7a3nIvcK3VIPREFgAw=s96-c';
 
-  // 同步写回 accounts.json
+  // 固化并同步写回 accounts.json 中对应账号
   if (liveQuotaSummary || liveQuotaBuckets) {
-    const accList = listAccounts();
-    const idx = accList.findIndex(a => a.email === currentEmail);
-    if (idx >= 0) {
-      if (liveQuotaSummary) accList[idx].quotaSummary = liveQuotaSummary;
-      if (liveQuotaBuckets) accList[idx].quotaBuckets = liveQuotaBuckets;
-      saveAccounts(accList);
-    }
+    updateAccountQuota(currentEmail, liveQuotaSummary, liveQuotaBuckets);
   }
 
   cachedGoogleProfile = {
@@ -569,10 +608,8 @@ export async function refreshGoogleProfileInBackground(force = false) {
 }
 
 export function getActiveGoogleProfile() {
-  const activeToken = readActiveToken();
-  const activeRt = activeToken?.token?.refresh_token;
-  const accounts = listAccounts();
-  const acc = (activeRt ? accounts.find(a => a.tokenData?.token?.refresh_token === activeRt) : null) || accounts.find(a => a.email === cachedGoogleProfile?.email) || accounts[0];
+  const acc = getActiveAccount();
+  const activeToken = acc?.tokenData || readActiveToken();
 
   if (cachedGoogleProfile && acc && cachedGoogleProfile.email === acc.email) {
     if (acc.name && (!cachedGoogleProfile.name || cachedGoogleProfile.name === 'Google 用户')) {
@@ -801,15 +838,22 @@ function getModelMetadata(modelId, tierData = {}) {
 }
 
 app.get('/api/usage', async (req, res) => {
-  // 每次调用 /api/usage 都强制从 Google 上游拉取最新真实配额数据
-  profileFetchedAt = 0;
-  const freshProfile = await refreshGoogleProfileInBackground(true).catch(() => {});
+  const force = req.query.refresh === '1' || req.query.force === '1';
+  const activeAcc = getActiveAccount();
+  
+  // 默认返回当前生效账号的固化配额；仅当显式刷新或该账号尚未固化配额时，才请求 Google 上游
+  let freshProfile = null;
+  if (force || !activeAcc?.quotaSummary) {
+    profileFetchedAt = 0;
+    freshProfile = await refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
+  }
+
   const cliInstalled = cliAvailable();
   const cliAuthed = cliInstalled ? await cliAuthenticated() : false;
   const googleAccount = cliAuthed ? getActiveGoogleProfile() : null;
   const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
 
-  const liveBuild = buildLiveWindowsData(freshProfile || cachedGoogleProfile);
+  const liveBuild = buildLiveWindowsData(freshProfile || googleAccount || cachedGoogleProfile, activeAcc);
   const windows = liveBuild.windows;
 
   // 动态读取 CLI 真实模型列表
@@ -1315,28 +1359,42 @@ app.post('/api/accounts/add', async (req, res) => {
 });
 
 app.post('/api/accounts/switch', async (req, res) => {
-  const hasRunning = Array.from(activeRuns.values()).some(r => r.isRunning);
-  if (hasRunning) {
-    return send(res, 400, { error: '当前正在生成回答中，禁止切换账号。请等待生成完成或点击停止后再切换。' });
-  }
   const { email } = req.body || {};
   if (!email) return send(res, 400, { error: '缺少 email' });
+
+  // 终止任何正在进行的后台流，确保账号切换即刻生效
+  for (const [k, r] of activeRuns.entries()) {
+    if (r.isRunning) {
+      try { r.abortController?.abort(); } catch (_) {}
+      r.isRunning = false;
+      r.done = true;
+    }
+  }
+
   const r = await switchAccount(email);
   if (!r.ok) return send(res, 400, { error: r.error });
   debugLog('[accounts] switched to:', r.account.email || r.account.label);
-  // 切换后彻底清空所有内存缓存与 CLI 登录态，并删除旧缓存文件
+  // 切换后清空旧内存缓存与 CLI 登录态
   profileFetchedAt = 0;
   cachedGoogleProfile = null;
   try { if (fs.existsSync(PROFILE_CACHE_FILE)) fs.unlinkSync(PROFILE_CACHE_FILE); } catch (_) {}
   invalidateCliAuth();
-  // 立即同步拉取新账号的 Profile 与 4 维真实配额
-  const newProfile = await refreshGoogleProfileInBackground(true).catch(() => {});
-  const newQuota = buildLiveWindowsData();
+  
+  // 切换到目标账号：如果有固化配额则直接加载；如果尚无固化配额则从 Google 拉取一次并固化
+  let switchedAcc = getActiveAccount() || r.account;
+  let newProfile = null;
+  if (!switchedAcc?.quotaSummary) {
+    newProfile = await refreshGoogleProfileInBackground(true, switchedAcc).catch(() => {});
+    switchedAcc = getActiveAccount() || r.account;
+  } else {
+    newProfile = getActiveGoogleProfile();
+  }
+  const newQuota = buildLiveWindowsData(newProfile || cachedGoogleProfile, switchedAcc);
   send(res, 200, { ...r, profile: newProfile, quota: newQuota });
 });
 
 app.delete('/api/accounts/:email', (req, res) => {
-  const hasRunning = Array.from(activeRuns.values()).some(r => r.isRunning);
+  const hasRunning = Array.from(activeRuns.values()).some(r => r.isRunning === true && !r.done && (Date.now() - (r.startTime || 0) < 60000));
   if (hasRunning) {
     return send(res, 400, { error: '当前正在生成回答中，禁止删除账号。请等待生成完成或停止后再操作。' });
   }
@@ -1354,13 +1412,19 @@ app.delete('/api/accounts/:email', (req, res) => {
 app.post('/api/chat/abort', (req, res) => {
   const { conversationKey, conversationId } = req.body || {};
   const key = conversationKey || conversationId;
-  const run = key ? activeRuns.get(key) : null;
-  if (run && run.isRunning) {
-    debugLog(`[api/chat/abort] user aborted run for ${key}`);
-    try { run.abortController.abort(); } catch (_) {}
-    run.isRunning = false;
+  let abortedCount = 0;
+  for (const [key, run] of activeRuns.entries()) {
+    if (!conversationKey || key === conversationKey || key === conversationId) {
+      if (run && run.isRunning) {
+        debugLog(`[api/chat/abort] user aborted run for ${key}`);
+        try { run.abortController?.abort(); } catch (_) {}
+        run.isRunning = false;
+        run.done = true;
+        abortedCount++;
+      }
+    }
   }
-  send(res, 200, { ok: true });
+  send(res, 200, { ok: true, abortedCount });
 });
 
 // ---------- Streaming chat (Server-Sent Events) ----------
@@ -1542,19 +1606,22 @@ app.post('/api/chat', async (req, res) => {
       })}\n\n`);
     } else {
       const errMsg = (e && e.message) || 'CLI 未返回内容（未知错误）';
+      const errDetails = e && (e.stack || e.details || (typeof e === 'string' ? e : ''));
       if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
         broadcastEvent(`data: ${JSON.stringify({
           meta: {
             quotaExceeded: true,
             description: '当前 Antigravity 账号配额已用尽。'
           },
-          error: errMsg
+          error: errMsg,
+          errorDetails: errDetails
         })}\n\n`);
       } else {
-        broadcastEvent(`data: ${JSON.stringify({ error: errMsg })}\n\n`);
+        broadcastEvent(`data: ${JSON.stringify({ error: errMsg, errorDetails: errDetails })}\n\n`);
       }
     }
   } finally {
+    run.done = true;
     run.isRunning = false;
     clearInterval(heartbeat);
     try { res.end(); } catch (_) {}
@@ -1938,26 +2005,32 @@ wss.on('connection', (ws, req) => {
       clearInterval(heartbeat);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
 
-      // 1. 每条对话结束瞬间，立即向 Google 原生接口拉取扣减后的最新真实配额
+      // 1. 每条对话结束瞬间，立即向 Google 原生接口拉取当前生效账号扣减后的最新真实配额，并替换固化结果
       run.done = true;
+      run.isRunning = false;
       profileFetchedAt = 0;
       let freshQuota = null;
       try {
-        const freshProfile = await refreshGoogleProfileInBackground(true);
-        freshQuota = buildLiveWindowsData(freshProfile);
+        const activeAcc = getActiveAccount();
+        const freshProfile = await refreshGoogleProfileInBackground(true, activeAcc);
+        freshQuota = buildLiveWindowsData(freshProfile, activeAcc);
       } catch (_) {
-        freshQuota = buildLiveWindowsData(cachedGoogleProfile);
+        const activeAcc = getActiveAccount();
+        freshQuota = buildLiveWindowsData(cachedGoogleProfile, activeAcc);
       }
 
-      // 2. 构造当轮助手的完整元数据与配额快照
-      const isClaude = String(model || '').toLowerCase().includes('claude');
-      const poolW = isClaude ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
-      const weekW = isClaude ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
+      // 2. 构造当轮助手的完整元数据与配额快照 (对齐 Claude, GPT-OSS 和 Gemini)
+      const modelLower = String(model || '').toLowerCase();
+      const isClaudeOrGpt = modelLower.includes('claude') || modelLower.includes('gpt') || modelLower.includes('oss');
+      const poolW = isClaudeOrGpt ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
+      const weekW = isClaudeOrGpt ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
       const turnQuotaSnapshot = {
         percent: poolW?.percent != null ? poolW.percent : null,
         resetIn: poolW?.resetsIn || poolW?.resetText || null,
+        resetTime: poolW?.resetTime || null,
         weeklyPercent: weekW?.percent != null ? weekW.percent : null,
         weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
+        weeklyResetTime: weekW?.resetTime || null,
         model: model
       };
 
@@ -2010,12 +2083,13 @@ wss.on('connection', (ws, req) => {
       debugLog('[ws/chat] cliProvider ERROR:', e && e.message);
       run.error = e;
       const errMsg = (e && e.message) || 'CLI 未返回内容';
+      const errDetails = e && (e.stack || e.details || (typeof e === 'string' ? e : ''));
       if (e && e.needsPermission) {
-        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"], toolName: e.toolName || '', toolInput: e.toolInput || '' }, error: errMsg });
+        broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"], toolName: e.toolName || '', toolInput: e.toolInput || '' }, error: errMsg, errorDetails: errDetails });
       } else if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
-        broadcast({ meta: { quotaExceeded: true, description: '配额已用尽' }, error: errMsg });
+        broadcast({ meta: { quotaExceeded: true, description: '配额已用尽' }, error: errMsg, errorDetails: errDetails });
       } else {
-        broadcast({ error: errMsg });
+        broadcast({ error: errMsg, errorDetails: errDetails });
       }
     } finally {
       run.isRunning = false;
