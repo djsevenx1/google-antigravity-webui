@@ -653,23 +653,23 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   };
 
   let [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) }),
+    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) }),
     fetchWithFallback([
       'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
       'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
     fetchWithFallback([
       'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
       'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
     fetchWithFallback([
       'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
       'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
     fetchWithFallback([
       'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
       'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels'
-    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) })
+    ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) })
   ]);
 
   // 如果遇到 401，立即强制刷新 Token 并重试一次
@@ -682,23 +682,23 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
       }
       headers.Authorization = `Bearer ${token}`;
       [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) }),
+        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) }),
         fetchWithFallback([
           'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
           'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
         fetchWithFallback([
           'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
           'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
         fetchWithFallback([
           'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
           'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) }),
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) }),
         fetchWithFallback([
           'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
           'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels'
-        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(3000) })
+        ], { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(10000) })
       ]);
     }
   }
@@ -1005,9 +1005,14 @@ app.get('/api/usage', async (req, res) => {
   const force = req.query.refresh === '1' || req.query.force === '1';
   const activeAcc = getActiveAccount();
   
-  // 默认返回当前生效账号的固化配额；仅当显式刷新或该账号尚未固化配额时，才请求 Google 上游
+  // 检查当前账号的配额是否已失效或过期（超过 60s 或重置时间在过去）
+  const isExpired = activeAcc?.quotaSummary?.groups?.some(g => 
+    g.buckets?.some(b => b.resetTime && new Date(b.resetTime).getTime() < Date.now())
+  );
+  const isStale = (Date.now() - profileFetchedAt > 60000) || !cachedGoogleProfile?.liveQuotaSummary || isExpired;
+
   let freshProfile = null;
-  if (force || !activeAcc?.quotaSummary) {
+  if (force || isStale || !activeAcc?.quotaSummary) {
     profileFetchedAt = 0;
     freshProfile = await refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
   }
