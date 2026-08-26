@@ -969,10 +969,6 @@ function updateUsageSummary(quotaData = null) {
       badgeEl.textContent = `${tierBadge} ${w.percent}%`;
       badgeEl.title = `${data.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
     }
-    const topbarVal = $("#topbar-quota-val");
-    if (topbarVal) {
-      topbarVal.textContent = `${w.percent}%`;
-    }
   };
 
   if (current && current.windows && current.windows.fiveHour) {
@@ -1036,16 +1032,6 @@ function renderLoginArea() {
     }
 
     area.append(userWrap);
-
-    // 顶栏实时配额胶囊（点击直达 4 大算力池配额中心）
-    const quotaBtn = el("button", "btn btn-ghost btn-sm");
-    quotaBtn.id = "topbar-quota-btn";
-    quotaBtn.style.cssText = "display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:14px;background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.3);font-size:11.5px;color:var(--accent);font-weight:600;cursor:pointer;";
-    quotaBtn.title = "点击查看 Google AI Pro 4 大算力池实时配额与用量详情";
-    quotaBtn.onclick = () => showUsageModal();
-    const curPct = state.latestUsageData?.windows?.fiveHour?.percent ?? 42.9;
-    quotaBtn.innerHTML = `<i data-lucide="zap" style="width:12px;height:12px;"></i><span id="topbar-quota-val">${curPct}%</span>`;
-    area.append(quotaBtn);
 
     const sidebarUserCard = $("#sidebar-user-card");
     if (sidebarUserCard) {
