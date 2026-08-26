@@ -1611,20 +1611,21 @@ app.post('/api/accounts/switch', async (req, res) => {
   try { if (fs.existsSync(PROFILE_CACHE_FILE)) fs.unlinkSync(PROFILE_CACHE_FILE); } catch (_) {}
   invalidateCliAuth();
   
-  // 切换到目标账号：如果有固化配额则直接加载；如果尚无固化配额则从 Google 拉取一次并固化
+  // 每次切换账号时，强制直连 Google 官方接口执行一次实时额度检查与校准！
   let switchedAcc = getActiveAccount() || r.account;
   let newProfile = null;
-  if (!switchedAcc?.quotaSummary) {
-    newProfile = await refreshGoogleProfileInBackground(true, switchedAcc).catch(() => {});
+  try {
+    debugLog(`[accounts/switch] 正在为切换后的账号 ${switchedAcc.email} 执行实时额度检查...`);
+    newProfile = await refreshGoogleProfileInBackground(true, switchedAcc);
     switchedAcc = getActiveAccount() || r.account;
-  } else {
-    newProfile = getActiveGoogleProfile();
+  } catch (err) {
+    debugLog('[accounts/switch] quota check error:', err && err.message);
   }
   const newQuota = buildLiveWindowsData(newProfile || cachedGoogleProfile, switchedAcc);
   send(res, 200, { ...r, profile: newProfile, quota: newQuota });
 });
 
-app.delete('/api/accounts/:email', (req, res) => {
+app.delete('/api/accounts/:email', async (req, res) => {
   const hasRunning = Array.from(activeRuns.values()).some(r => r.isRunning === true && !r.done && (Date.now() - (r.startTime || 0) < 60000));
   if (hasRunning) {
     return send(res, 400, { error: '当前正在生成回答中，禁止删除账号。请等待生成完成或停止后再操作。' });
@@ -1632,12 +1633,26 @@ app.delete('/api/accounts/:email', (req, res) => {
   const email = req.params.email;
   const r = removeAccount(email);
   if (!r.ok) return send(res, 400, { error: r.error });
-  debugLog('[accounts] removed:', email);
-  // 删除后清缓存重新同步
+  debugLog('[accounts] removed (切除账号):', email);
+  // 删除后清空旧缓存与 CLI 登录态
   profileFetchedAt = 0;
   cachedGoogleProfile = null;
+  try { if (fs.existsSync(PROFILE_CACHE_FILE)) fs.unlinkSync(PROFILE_CACHE_FILE); } catch (_) {}
   invalidateCliAuth();
-  send(res, 200, { ok: true });
+  
+  // 切除/删除账号后，立即对当前生效的主账号执行一次额度检查！
+  const activeAcc = getActiveAccount();
+  let freshProfile = null;
+  if (activeAcc) {
+    try {
+      debugLog(`[accounts/remove] 切除账号后，正在对当前主账号 ${activeAcc.email} 执行实时额度检查...`);
+      freshProfile = await refreshGoogleProfileInBackground(true, activeAcc);
+    } catch (err) {
+      debugLog('[accounts/remove] quota check error:', err && err.message);
+    }
+  }
+  const freshQuota = buildLiveWindowsData(freshProfile || cachedGoogleProfile, activeAcc);
+  send(res, 200, { ok: true, quota: freshQuota, profile: freshProfile, account: activeAcc });
 });
 
 app.post('/api/chat/abort', (req, res) => {
