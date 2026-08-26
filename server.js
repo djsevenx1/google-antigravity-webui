@@ -2008,17 +2008,21 @@ wss.on('connection', (ws, req) => {
             onProgress: (p) => {
               lastDataAt = Date.now();
               const waited = Math.round((Date.now() - t0) / 1000);
-              if (p && p.toolName) {
-                run.toolEvents.push({
-                  tool: p.toolName,
-                  stepType: p.stepType || '',
-                  tip: p.tip || '',
-                  input: p.toolInput || null,
-                  rawInput: p.rawInput || '',
-                  toolAction: p.toolAction || '',
-                  toolSummary: p.toolSummary || '',
-                  waited
-                });
+              if (p && (p.toolName || p.stepType)) {
+                const tName = p.toolName || (p.stepType === 'checkpoint' ? 'sync' : 'thought');
+                const lastEvt = run.toolEvents[run.toolEvents.length - 1];
+                if (!lastEvt || lastEvt.tool !== tName || tName !== 'thought') {
+                  run.toolEvents.push({
+                    tool: tName,
+                    stepType: p.stepType || '',
+                    tip: p.tip || (tName === 'thought' ? 'Thought for a few seconds' : ''),
+                    input: p.toolInput || null,
+                    rawInput: p.rawInput || '',
+                    toolAction: p.toolAction || '',
+                    toolSummary: p.toolSummary || '',
+                    waited
+                  });
+                }
               }
               broadcast({ progress: true, waited, ...p });
             },

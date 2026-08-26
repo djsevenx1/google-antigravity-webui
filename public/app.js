@@ -259,14 +259,14 @@ function formatToolCallCard(t, index, isRunning = false) {
     subtitleText = input.SearchPath || input.SearchDirectory || t.toolAction || t.toolSummary || tip || '';
     detailCode = JSON.stringify(input, null, 2);
     linesBadge = waited || 'search';
-  } else if (stepType.includes('response') || stepType.includes('thought')) {
+  } else if (toolName === 'thought' || toolName === 'sync' || stepType.includes('response') || stepType.includes('thought') || stepType.includes('checkpoint')) {
     typeClass = 'type-thought';
     badgeText = 'Thought';
     iconHtml = '<i data-lucide="brain" style="width:12px;height:12px;"></i>';
-    summaryText = tip || 'Thought for a few seconds';
-    subtitleText = '';
-    detailCode = rawInput || tip || '正在深度思考中...';
-    linesBadge = waited || 'thought';
+    summaryText = 'Thought for a few seconds';
+    subtitleText = tip && tip !== 'Thought for a few seconds' ? tip : '';
+    detailCode = rawInput || tip || '深度推理与上下文思考完成。';
+    linesBadge = waited ? `${waited}` : 'thought';
   }
 
   const rawCopyEscaped = escapeHtml(typeof detailCode === 'string' && !isDiff ? detailCode : rawInput);
