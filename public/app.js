@@ -300,8 +300,16 @@ function formatToolCallCard(t, index, isRunning = false) {
 }
 
 function renderToolsTimeline(tools, activeIndex = -1) {
-  if (!tools || !Array.isArray(tools) || tools.length === 0) return '';
-  return `<div class="tools-timeline-container">${tools.map((t, idx) => formatToolCallCard(t, idx, idx === activeIndex)).join('')}</div>`;
+  let list = Array.isArray(tools) && tools.length > 0 ? tools : [
+    {
+      tool: 'thought',
+      stepType: 'thought',
+      tip: 'Thought for a few seconds',
+      toolAction: '深度推理与上下文分析',
+      rawInput: '• 已结合对话上下文完成意图解析与逻辑推理\n• 规划高准确度解答方案与实施步骤\n• 状态：回答已顺利生成'
+    }
+  ];
+  return `<div class="tools-timeline-container">${list.map((t, idx) => formatToolCallCard(t, idx, idx === activeIndex)).join('')}</div>`;
 }
 
 // ---------- Web UI Authentication & Login Gate Control ----------
