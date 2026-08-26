@@ -959,24 +959,29 @@ function updateUsageSummary(quotaData = null) {
     state.latestUsageData = quotaData;
     try { localStorage.setItem("agy-cached-usage", JSON.stringify(quotaData)); } catch (_) {}
   }
-  const badgeEl = $("#usage-sidebar-badge");
-  if (!badgeEl) return;
   const current = quotaData || state.latestUsageData;
+  const applyQuotaDisplay = (data) => {
+    if (!data || !data.windows || !data.windows.fiveHour) return;
+    const w = data.windows.fiveHour;
+    const tierBadge = data.tierBadge || 'AI Pro';
+    const badgeEl = $("#usage-sidebar-badge");
+    if (badgeEl) {
+      badgeEl.textContent = `${tierBadge} ${w.percent}%`;
+      badgeEl.title = `${data.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
+    }
+    const topbarVal = $("#topbar-quota-val");
+    if (topbarVal) {
+      topbarVal.textContent = `${w.percent}%`;
+    }
+  };
+
   if (current && current.windows && current.windows.fiveHour) {
-    const w = current.windows.fiveHour;
-    const tierBadge = current.tierBadge || 'AI Pro';
-    badgeEl.textContent = `${tierBadge} ${w.percent}%`;
-    badgeEl.title = `${current.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
+    applyQuotaDisplay(current);
   } else {
     fetch("/api/usage").then((r) => r.json()).then((d) => {
       state.latestUsageData = d;
       try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
-      if (d && d.windows && d.windows.fiveHour) {
-        const w = d.windows.fiveHour;
-        const tierBadge = d.tierBadge || 'AI Pro';
-        badgeEl.textContent = `${tierBadge} ${w.percent}%`;
-        badgeEl.title = `${d.tier || '账号配额'}: ${w.percent}% (${w.resetsIn || ''}后重置)`;
-      }
+      applyQuotaDisplay(d);
     }).catch(() => {});
   }
 }
@@ -1030,8 +1035,17 @@ function renderLoginArea() {
       userWrap.append(tierPill);
     }
 
-
     area.append(userWrap);
+
+    // 顶栏实时配额胶囊（点击直达 4 大算力池配额中心）
+    const quotaBtn = el("button", "btn btn-ghost btn-sm");
+    quotaBtn.id = "topbar-quota-btn";
+    quotaBtn.style.cssText = "display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:14px;background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.3);font-size:11.5px;color:var(--accent);font-weight:600;cursor:pointer;";
+    quotaBtn.title = "点击查看 Google AI Pro 4 大算力池实时配额与用量详情";
+    quotaBtn.onclick = () => showUsageModal();
+    const curPct = state.latestUsageData?.windows?.fiveHour?.percent ?? 42.9;
+    quotaBtn.innerHTML = `<i data-lucide="zap" style="width:12px;height:12px;"></i><span id="topbar-quota-val">${curPct}%</span>`;
+    area.append(quotaBtn);
 
     const sidebarUserCard = $("#sidebar-user-card");
     if (sidebarUserCard) {
@@ -4624,7 +4638,11 @@ async function showAccountSwitcher() {
         </div>
       </div>
     </div>
-    <div class="modal-footer" style="margin-top:12px">
+    <div class="modal-footer" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
+      <button class="btn btn-ghost btn-sm" id="btn-open-usage-from-switcher" style="color:var(--accent);display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;">
+        <i data-lucide="gauge" style="width:13px;height:13px;"></i>
+        <span>查看配额中心</span>
+      </button>
       <button class="btn btn-ghost" data-cancel>关闭</button>
     </div>
   `;
@@ -4634,6 +4652,13 @@ async function showAccountSwitcher() {
   
   const modal = document.getElementById("modal-root");
   modal.querySelector("[data-cancel]").onclick = closeModal;
+  const btnUsageFromSwitcher = modal.querySelector("#btn-open-usage-from-switcher");
+  if (btnUsageFromSwitcher) {
+    btnUsageFromSwitcher.onclick = () => {
+      closeModal();
+      showUsageModal();
+    };
+  }
   
   document.querySelectorAll(".acct-row").forEach(item => {
     item.onclick = async e => {
