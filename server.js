@@ -109,8 +109,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: g5hPct,
           used: parseFloat((100 - g5hPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(gemini5hB, `${fiveHourH}小时 ${fiveHourM}分钟`),
-          resetText: formatCountdown(gemini5hB, `${fiveHourH}小时 ${fiveHourM}分钟`),
+          resetsIn: formatCountdown(gemini5hB, '查询中'),
+          resetText: formatCountdown(gemini5hB, '查询中'),
           resetTime: gemini5hB?.resetTime || null,
           status: g5hPct > 60 ? 'healthy' : g5hPct > 20 ? 'warning' : 'danger'
         },
@@ -121,8 +121,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: gWeeklyPct,
           used: parseFloat((100 - gWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(geminiWeeklyB, weeklyRemainingStr),
-          resetText: formatCountdown(geminiWeeklyB, weeklyRemainingStr),
+          resetsIn: formatCountdown(geminiWeeklyB, '查询中'),
+          resetText: formatCountdown(geminiWeeklyB, '查询中'),
           resetTime: geminiWeeklyB?.resetTime || null,
           status: gWeeklyPct > 60 ? 'healthy' : gWeeklyPct > 20 ? 'warning' : 'danger'
         },
@@ -133,8 +133,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: c5hPct,
           used: parseFloat((100 - c5hPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(claude5hB, `${fiveHourH}小时 ${fiveHourM}分钟`),
-          resetText: formatCountdown(claude5hB, `${fiveHourH}小时 ${fiveHourM}分钟`),
+          resetsIn: formatCountdown(claude5hB, '查询中'),
+          resetText: formatCountdown(claude5hB, '查询中'),
           resetTime: claude5hB?.resetTime || null,
           status: c5hPct > 60 ? 'healthy' : c5hPct > 20 ? 'warning' : 'danger'
         },
@@ -145,8 +145,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: cWeeklyPct,
           used: parseFloat((100 - cWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(claudeWeeklyB, weeklyRemainingStr),
-          resetText: formatCountdown(claudeWeeklyB, weeklyRemainingStr),
+          resetsIn: formatCountdown(claudeWeeklyB, '查询中'),
+          resetText: formatCountdown(claudeWeeklyB, '查询中'),
           resetTime: claudeWeeklyB?.resetTime || null,
           status: cWeeklyPct > 60 ? 'healthy' : cWeeklyPct > 20 ? 'warning' : 'danger'
         }
@@ -1621,7 +1621,9 @@ app.post('/api/chat', async (req, res) => {
     if (out && out.conversationId && conversationKey) {
       setConversation(conversationKey, out.conversationId);
     }
-    broadcastEvent(`data: ${JSON.stringify({ done: true, conversationId: out ? out.conversationId : null })}\n\n`);
+    let sseQuota = null;
+    try { sseQuota = buildLiveWindowsData(cachedGoogleProfile, getActiveAccount()); } catch(_) {}
+    broadcastEvent(`data: ${JSON.stringify({ done: true, conversationId: out ? out.conversationId : null, liveQuota: sseQuota })}\n\n`);
     run.done = true;
   } catch (e) {
     debugLog(`[api/chat] cliProvider ERROR after ${Date.now() - t0}ms:`, e && e.message);
@@ -2007,7 +2009,16 @@ wss.on('connection', (ws, req) => {
               lastDataAt = Date.now();
               const waited = Math.round((Date.now() - t0) / 1000);
               if (p && p.toolName) {
-                run.toolEvents.push({ tool: p.toolName, stepType: p.stepType || '', tip: p.tip || '', waited });
+                run.toolEvents.push({
+                  tool: p.toolName,
+                  stepType: p.stepType || '',
+                  tip: p.tip || '',
+                  input: p.toolInput || null,
+                  rawInput: p.rawInput || '',
+                  toolAction: p.toolAction || '',
+                  toolSummary: p.toolSummary || '',
+                  waited
+                });
               }
               broadcast({ progress: true, waited, ...p });
             },
@@ -2023,6 +2034,7 @@ wss.on('connection', (ws, req) => {
           if (/trajectory not found|conversation not found/i.test(err && err.message || '')) {
             debugLog(`[ws/chat] trajectory not found for ${conversationId}, resetting conversationId and retrying`);
             conversationId = null;
+            // eslint-disable-next-line no-undef
             if (conversationKey) deleteConversation(conversationKey);
             continue;
           }
@@ -2039,6 +2051,71 @@ wss.on('connection', (ws, req) => {
       clearInterval(heartbeat);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
 
+      // 0. 自动检查 agy 修改的 JS 文件语法，有错则广播给前端
+      try {
+        const { execFileSync } = await import('node:child_process');
+        const workspaceDir = process.env.WORKSPACE_ROOT || path.join(__dirname, 'home/.gemini/antigravity-cli/scratch');
+        const checkDir = fs.existsSync(workspaceDir) ? workspaceDir : __dirname;
+        // 检查最近 2 分钟内修改的 .js 文件
+        const now = Date.now();
+        const checkFile = (dir) => {
+          if (!fs.existsSync(dir)) return;
+          for (const name of fs.readdirSync(dir)) {
+            const fp = path.join(dir, name);
+            const st = fs.statSync(fp);
+            if (st.isDirectory() && !name.startsWith('.') && name !== 'node_modules') {
+              checkFile(fp);
+            } else if (name.endsWith('.js') && (now - st.mtimeMs) < 120000) {
+              try {
+                execFileSync('node', ['--check', fp], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+                debugLog(`[syntax-check] ✅ ${name}`);
+              } catch (e) {
+                const errMsg = String(e.stderr || e.message).split('\n').slice(0, 3).join(' ');
+                debugLog(`[syntax-check] ❌ ${name}: ${errMsg}`);
+                broadcast({ delta: '\n\n⚠️ **语法检查失败** ' + name + '\n' + errMsg + '\n' });
+                // 自动发消息让 agy 修复语法错误(反馈循环)
+                if (!run.syntaxFixed) {
+                  run.syntaxFixed = true;
+                  setTimeout(async () => {
+                    try {
+                      broadcast({ delta: '\n\n🔄 正在自动修复语法错误...\n' });
+                      const fixMsg = [{ role: 'user', content: '你刚才修改的文件 ' + name + ' 有语法错误:\n' + errMsg + '\n请立即修复这个语法错误,修复后再用 node --check 验证。' }];
+                      const systemPrompt = { role: 'user', content: '【系统规则】你修改任何 JavaScript 文件后,必须立即执行 node --check <文件路径> 验证语法,确保无语法错误后再结束。' };
+                      await cliProvider({
+                        model, messages: [systemPrompt, ...fixMsg], effort, permissions,
+                        conversationId: out ? out.conversationId : conversationId,
+                        onDelta: (d) => broadcast({ delta: d }),
+                        onProgress: (p) => broadcast({ progress: true, ...p }),
+                        signal: runAbortController.signal,
+                        onConversationId: (id) => broadcast({ conversationId: id })
+                      });
+                      broadcast({ delta: '\n✅ 语法错误已修复\n' });
+                    } catch (e) {
+                      broadcast({ delta: '\n⚠️ 自动修复失败: ' + (e.message || '') + '\n' });
+                    }
+                  }, 1000);
+                }
+              }
+            }
+          }
+        };
+        checkDir(checkDir);
+        // 也检查项目根目录的 server.js / lib/*.js / public/app.js
+        for (const f of ['server.js', 'public/app.js']) {
+          const fp = path.join(__dirname, f);
+          if (fs.existsSync(fp) && (now - fs.statSync(fp).mtimeMs) < 120000) {
+            try {
+              execFileSync('node', ['--check', fp], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+              debugLog(`[syntax-check] ✅ ${f}`);
+            } catch (e) {
+              const errMsg = String(e.stderr || e.message).split('\n').slice(0, 3).join(' ');
+              debugLog(`[syntax-check] ❌ ${f}: ${errMsg}`);
+              broadcast({ delta: '\n\n⚠️ **语法检查失败** ' + f + '\n' + errMsg + '\n' });
+            }
+          }
+        }
+      } catch (_) {}
+
       // 1. 每条对话结束瞬间，立即向 Google 原生接口拉取当前生效账号扣减后的最新真实配额
       run.done = true;
       run.isRunning = false;
@@ -2054,17 +2131,12 @@ wss.on('connection', (ws, req) => {
       }
 
       // 2. 构造当轮助手的完整元数据与配额快照
-      const modelLower = String(model || '').toLowerCase();
-      const isClaudeOrGpt = modelLower.includes('claude') || modelLower.includes('gpt') || modelLower.includes('oss');
-      const poolW = isClaudeOrGpt ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
-      const weekW = isClaudeOrGpt ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
+      // 存全4个窗口的配额快照(不只按模型分)
       const turnQuotaSnapshot = {
-        percent: poolW?.percent != null ? poolW.percent : null,
-        resetIn: poolW?.resetsIn || poolW?.resetText || null,
-        resetTime: poolW?.resetTime || null,
-        weeklyPercent: weekW?.percent != null ? weekW.percent : null,
-        weeklyResetIn: weekW?.resetsIn || weekW?.resetText || null,
-        weeklyResetTime: weekW?.resetTime || null,
+        gemini5h: freshQuota?.windows?.fiveHour || null,
+        geminiWeekly: freshQuota?.windows?.weekly || null,
+        claude5h: freshQuota?.windows?.claude5h || null,
+        claudeWeekly: freshQuota?.windows?.claudeWeekly || null,
         model: model
       };
 
