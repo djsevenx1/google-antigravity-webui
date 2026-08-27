@@ -15,17 +15,18 @@ function saveLocalQuota(q) {
   try { fs.writeFileSync(LOCAL_QUOTA_FILE, JSON.stringify(q, null, 2)); } catch(_) {}
 }
 
-// 从企业版API校正配额(每天第一次)
-async function calibrateQuotaFromAPI() {
+const QUOTA_CALIBRATE_TTL = 2 * 3600 * 1000; // 2 小时校正周期 (7,200,000 ms)
+
+// 从 Google 官方 API 校正配额 (每 2 小时校正一次)
+async function calibrateQuotaFromAPI(force = false) {
   const q = loadLocalQuota();
-  if (q && q.lastCalibrate) {
-    const today = new Date().toDateString();
-    const lastCalDay = new Date(q.lastCalibrate).toDateString();
-    if (today === lastCalDay) return q; // 今天已校正过
+  if (!force && q && q.lastCalibrate) {
+    const elapsed = Date.now() - new Date(q.lastCalibrate).getTime();
+    if (elapsed < QUOTA_CALIBRATE_TTL) return q; // 2 小时内已校正过，直接复用
   }
-  // 调企业版API拉真实配额
+  // 调官方 API 拉真实配额
   const activeAcc = getActiveAccount();
-  const profile = await refreshGoogleProfileInBackground(true, activeAcc);
+  const profile = await refreshGoogleProfileInBackground(force, activeAcc);
   const summary = profile?.liveQuotaSummary;
   if (!summary || !Array.isArray(summary.groups)) return q || null;
   
@@ -624,7 +625,21 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   const rawToken = currentAcc?.tokenData || readActiveToken();
   const fallbackEmail = currentAcc?.email || 'Google 用户';
 
-  if (!force && Date.now() - profileFetchedAt < 60000 && cachedGoogleProfile?.liveQuotaSummary && cachedGoogleProfile?.email === currentAcc?.email) {
+  const lastUpdated = currentAcc?.quotaUpdatedAt || profileFetchedAt;
+  const isWithin2Hours = (Date.now() - lastUpdated) < QUOTA_CALIBRATE_TTL;
+
+  // 如果非强制刷新，且当前账号在 2 小时内已有配额数据，直接秒回本地缓存
+  if (!force && isWithin2Hours && (cachedGoogleProfile?.liveQuotaSummary || currentAcc?.quotaSummary)) {
+    if (!cachedGoogleProfile || cachedGoogleProfile.email !== currentAcc?.email) {
+      cachedGoogleProfile = {
+        email: currentAcc?.email,
+        name: currentAcc?.name,
+        picture: currentAcc?.picture,
+        liveQuotaSummary: currentAcc?.quotaSummary,
+        liveQuotaBuckets: currentAcc?.quotaBuckets,
+        liveApiConnected: true
+      };
+    }
     return cachedGoogleProfile || { email: fallbackEmail, error: "Token expired, please reconnect" };
   }
 
@@ -981,17 +996,14 @@ app.get('/api/usage', async (req, res) => {
   const force = req.query.refresh === '1' || req.query.force === '1';
   const activeAcc = getActiveAccount();
   
-  // 检查当前账号的配额是否已失效或过期（超过 60s 或重置时间在过去）
-  const isExpired = activeAcc?.quotaSummary?.groups?.some(g => 
-    g.buckets?.some(b => b.resetTime && new Date(b.resetTime).getTime() < Date.now())
-  );
-  const isStale = (Date.now() - profileFetchedAt > 60000) || !cachedGoogleProfile?.liveQuotaSummary || isExpired;
+  const lastUpdated = activeAcc?.quotaUpdatedAt || profileFetchedAt;
+  const isStale = (Date.now() - lastUpdated > QUOTA_CALIBRATE_TTL) || (!activeAcc?.quotaSummary && !cachedGoogleProfile?.liveQuotaSummary);
 
   let freshProfile = null;
   if (force) {
     profileFetchedAt = 0;
     freshProfile = await refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
-  } else if (isStale || !activeAcc?.quotaSummary) {
+  } else if (isStale) {
     profileFetchedAt = Date.now();
     refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
   }
@@ -1587,18 +1599,13 @@ app.post('/api/accounts/switch', async (req, res) => {
   const r = await switchAccount(email);
   if (!r.ok) return send(res, 400, { error: r.error });
   debugLog('[accounts] switched to:', r.account.email || r.account.label);
-  // 切换后清空旧内存缓存与 CLI 登录态
-  profileFetchedAt = 0;
-  cachedGoogleProfile = null;
-  try { if (fs.existsSync(PROFILE_CACHE_FILE)) fs.unlinkSync(PROFILE_CACHE_FILE); } catch (_) {}
   invalidateCliAuth();
   
-  // 每次切换账号时，强制直连 Google 官方接口执行一次实时额度检查与校准！
+  // 切换账号：优先复用该账号 2 小时内缓存配额，实现 0 毫秒秒切！
   let switchedAcc = getActiveAccount() || r.account;
   let newProfile = null;
   try {
-    debugLog(`[accounts/switch] 正在为切换后的账号 ${switchedAcc.email} 执行实时额度检查...`);
-    newProfile = await refreshGoogleProfileInBackground(true, switchedAcc);
+    newProfile = await refreshGoogleProfileInBackground(false, switchedAcc);
     switchedAcc = getActiveAccount() || r.account;
   } catch (err) {
     debugLog('[accounts/switch] quota check error:', err && err.message);
@@ -1616,19 +1623,14 @@ app.delete('/api/accounts/:email', async (req, res) => {
   const r = removeAccount(email);
   if (!r.ok) return send(res, 400, { error: r.error });
   debugLog('[accounts] removed (切除账号):', email);
-  // 删除后清空旧缓存与 CLI 登录态
-  profileFetchedAt = 0;
-  cachedGoogleProfile = null;
-  try { if (fs.existsSync(PROFILE_CACHE_FILE)) fs.unlinkSync(PROFILE_CACHE_FILE); } catch (_) {}
   invalidateCliAuth();
   
-  // 切除/删除账号后，立即对当前生效的主账号执行一次额度检查！
+  // 切除/删除账号后，复用当前主账号 2 小时内配额
   const activeAcc = getActiveAccount();
   let freshProfile = null;
   if (activeAcc) {
     try {
-      debugLog(`[accounts/remove] 切除账号后，正在对当前主账号 ${activeAcc.email} 执行实时额度检查...`);
-      freshProfile = await refreshGoogleProfileInBackground(true, activeAcc);
+      freshProfile = await refreshGoogleProfileInBackground(false, activeAcc);
     } catch (err) {
       debugLog('[accounts/remove] quota check error:', err && err.message);
     }
@@ -2340,18 +2342,16 @@ wss.on('connection', (ws, req) => {
         }
       } catch (_) {}
 
-      // 1. 每条对话结束瞬间，立即向 Google 原生接口拉取当前生效账号扣减后的最新真实配额
+      // 1. 每条对话结束瞬间，优先从 2 小时本地校正缓存中读取最新配额
       run.done = true;
       run.isRunning = false;
-      profileFetchedAt = 0;
-      // 配额获取:优先本地计算(每天企业版API校正一次)
       let freshQuota = null;
       try {
-        await calibrateQuotaFromAPI(); // 每天第一次校正
+        await calibrateQuotaFromAPI(false); // 每 2 小时校正一次
         freshQuota = buildLocalQuotaWindows();
         if (!freshQuota) {
           const activeAcc = getActiveAccount();
-          const freshProfile = await refreshGoogleProfileInBackground(true, activeAcc);
+          const freshProfile = await refreshGoogleProfileInBackground(false, activeAcc);
           freshQuota = buildLiveWindowsData(freshProfile, activeAcc);
         }
       } catch (_) {
