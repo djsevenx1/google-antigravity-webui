@@ -2186,11 +2186,25 @@ wss.on('connection', (ws, req) => {
     ws.on('close', () => run.listeners.delete(wsListener));
 
     let lastDataAt = Date.now();
+    let currentStatusTip = '正在连接模型并解析任务意图...';
 
     const heartbeat = setInterval(() => {
-      if (Date.now() - lastDataAt >= 1500) {
+      if (Date.now() - lastDataAt >= 1000) {
         const waited = Math.round((Date.now() - t0) / 1000);
-        broadcast({ progress: true, waited, tip: '正在思考…' });
+        let dynamicTip = currentStatusTip;
+        if (!run.toolEvents || run.toolEvents.length === 0) {
+          if (waited <= 2) dynamicTip = '正在连接模型并解析任务意图...';
+          else if (waited <= 7) dynamicTip = '正在进行深度逻辑推理与代码分析...';
+          else dynamicTip = '深度思考中，正在组织专业技术方案...';
+        } else {
+          const last = run.toolEvents[run.toolEvents.length - 1];
+          if (last && (last.state === 'ACTIVE' || !last.output)) {
+            dynamicTip = last.toolAction || last.tip || `正在执行: ${last.tool}...`;
+          } else {
+            dynamicTip = `已执行 ${run.toolEvents.length} 项工具，正在组织生成回答...`;
+          }
+        }
+        broadcast({ progress: true, waited, tip: dynamicTip, activeStatus: dynamicTip });
         lastDataAt = Date.now();
       }
     }, 1000);
@@ -2222,6 +2236,9 @@ wss.on('connection', (ws, req) => {
             onProgress: (p) => {
               lastDataAt = Date.now();
               const waited = Math.round((Date.now() - t0) / 1000);
+              if (p && p.tip) {
+                currentStatusTip = p.tip;
+              }
               if (p && (p.toolName || p.stepType)) {
                 const tName = p.toolName || (p.stepType === 'checkpoint' ? 'sync' : 'thought');
                 let existingEvt = null;
