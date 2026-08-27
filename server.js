@@ -221,14 +221,32 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
     const claudeWeeklyB = claudeGroup?.buckets?.find(b => b.window === 'weekly' || b.bucketId?.includes('weekly')) || claudeGroup?.buckets?.[0];
     const claude5hB = claudeGroup?.buckets?.find(b => b.window === '5h' || b.bucketId?.includes('5h')) || claudeGroup?.buckets?.[1];
 
-    const gWeeklyPct = geminiWeeklyB && geminiWeeklyB.remainingFraction != null ? parseFloat((geminiWeeklyB.remainingFraction * 100).toFixed(1)) : 52.0;
-    const g5hPct = gemini5hB && gemini5hB.remainingFraction != null ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 63.5;
+    const lq = acc?.localQuota;
+    const gWeeklyPct = lq?.geminiWeekly?.remainingFraction != null 
+      ? parseFloat((lq.geminiWeekly.remainingFraction * 100).toFixed(1)) 
+      : (geminiWeeklyB && geminiWeeklyB.remainingFraction != null ? parseFloat((geminiWeeklyB.remainingFraction * 100).toFixed(1)) : 52.0);
+    const g5hPct = lq?.gemini5h?.remainingFraction != null 
+      ? parseFloat((lq.gemini5h.remainingFraction * 100).toFixed(1)) 
+      : (gemini5hB && gemini5hB.remainingFraction != null ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 63.5);
 
-    const cWeeklyPct = claudeWeeklyB && claudeWeeklyB.remainingFraction != null ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 59.2;
-    const c5hPct = claude5hB && claude5hB.remainingFraction != null ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100;
+    const cWeeklyPct = lq?.claudeWeekly?.remainingFraction != null 
+      ? parseFloat((lq.claudeWeekly.remainingFraction * 100).toFixed(1)) 
+      : (claudeWeeklyB && claudeWeeklyB.remainingFraction != null ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 59.2);
+    const c5hPct = lq?.claude5h?.remainingFraction != null 
+      ? parseFloat((lq.claude5h.remainingFraction * 100).toFixed(1)) 
+      : (claude5hB && claude5hB.remainingFraction != null ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100);
+
+    const g5hReset = lq?.gemini5h?.resetTime || gemini5hB?.resetTime || null;
+    const gWeeklyReset = lq?.geminiWeekly?.resetTime || geminiWeeklyB?.resetTime || null;
+    const c5hReset = lq?.claude5h?.resetTime || claude5hB?.resetTime || null;
+    const cWeeklyReset = lq?.claudeWeekly?.resetTime || claudeWeeklyB?.resetTime || null;
+
+    const notice = lq?.lastDeduct 
+      ? `已启用本地高精度 Token 扣减引擎 (每2小时校正, 上次扣减: ${new Date(lq.lastDeduct).toLocaleTimeString()})`
+      : (summary.description || '已连接 Google Antigravity 官方云端实时配额 API (CloudCode v1internal)');
 
     return {
-      topNotice: summary.description || '已连接 Google Antigravity 官方云端实时配额 API (CloudCode v1internal)',
+      topNotice: notice,
       liveConnected: true,
       groups: summary.groups,
       windows: {
@@ -239,9 +257,9 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: g5hPct,
           used: parseFloat((100 - g5hPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(gemini5hB, '查询中'),
-          resetText: formatCountdown(gemini5hB, '查询中'),
-          resetTime: gemini5hB?.resetTime || null,
+          resetsIn: formatCountdown(g5hReset, '查询中'),
+          resetText: formatCountdown(g5hReset, '查询中'),
+          resetTime: g5hReset,
           status: g5hPct > 60 ? 'healthy' : g5hPct > 20 ? 'warning' : 'danger'
         },
         weekly: {
@@ -251,9 +269,9 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: gWeeklyPct,
           used: parseFloat((100 - gWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(geminiWeeklyB, '查询中'),
-          resetText: formatCountdown(geminiWeeklyB, '查询中'),
-          resetTime: geminiWeeklyB?.resetTime || null,
+          resetsIn: formatCountdown(gWeeklyReset, '查询中'),
+          resetText: formatCountdown(gWeeklyReset, '查询中'),
+          resetTime: gWeeklyReset,
           status: gWeeklyPct > 60 ? 'healthy' : gWeeklyPct > 20 ? 'warning' : 'danger'
         },
         claude5h: {
@@ -263,9 +281,9 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: c5hPct,
           used: parseFloat((100 - c5hPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(claude5hB, '查询中'),
-          resetText: formatCountdown(claude5hB, '查询中'),
-          resetTime: claude5hB?.resetTime || null,
+          resetsIn: formatCountdown(c5hReset, '查询中'),
+          resetText: formatCountdown(c5hReset, '查询中'),
+          resetTime: c5hReset,
           status: c5hPct > 60 ? 'healthy' : c5hPct > 20 ? 'warning' : 'danger'
         },
         claudeWeekly: {
@@ -275,9 +293,9 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: cWeeklyPct,
           used: parseFloat((100 - cWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(claudeWeeklyB, '查询中'),
-          resetText: formatCountdown(claudeWeeklyB, '查询中'),
-          resetTime: claudeWeeklyB?.resetTime || null,
+          resetsIn: formatCountdown(cWeeklyReset, '查询中'),
+          resetText: formatCountdown(cWeeklyReset, '查询中'),
+          resetTime: cWeeklyReset,
           status: cWeeklyPct > 60 ? 'healthy' : cWeeklyPct > 20 ? 'warning' : 'danger'
         }
       }
@@ -372,7 +390,7 @@ import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
-import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts } from './lib/accounts.js';
+import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts, syncAccountLocalQuota, deductAccountQuota } from './lib/accounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 LOCAL_QUOTA_FILE = path.join(__dirname, "data", "local_quota.json");
@@ -2271,10 +2289,16 @@ wss.on('connection', (ws, req) => {
       clearInterval(heartbeat);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
 
-      // 本地配额扣减:从 agy result.usage 拿 token 消耗
-      if (out && out.usage) {
-        deductLocalQuota(model, out.usage);
-        debugLog(`[quota] 扣减: model=${model} tokens=${out.usage.total_tokens}`);
+      // 本地配额扣减: 从 agy result.usage 或按输入输出真实长度推算 token 消耗，精准扣减当前账号
+      const promptLen = (messagesWithRules || []).reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
+      const answerLen = (run.accumulated || '').length;
+      const estTokens = Math.round(promptLen / 3.5) + Math.round(answerLen / 3.2);
+      const totalTokens = out?.usage?.total_tokens || (estTokens > 0 ? estTokens : 1000);
+
+      const activeAcc = getActiveAccount();
+      if (activeAcc) {
+        deductAccountQuota(activeAcc.email, model, totalTokens);
+        debugLog(`[localQuota] 扣减成功: 账号=${activeAcc.email} 模型=${model} tokens=${totalTokens}`);
       }
 
       // 0. 自动检查 agy 修改的 JS 文件语法，有错则广播给前端
@@ -2342,22 +2366,10 @@ wss.on('connection', (ws, req) => {
         }
       } catch (_) {}
 
-      // 1. 每条对话结束瞬间，优先从 2 小时本地校正缓存中读取最新配额
+      // 1. 每条对话结束瞬间，直接读取融合了本地实时扣减的配额快照
       run.done = true;
       run.isRunning = false;
-      let freshQuota = null;
-      try {
-        await calibrateQuotaFromAPI(false); // 每 2 小时校正一次
-        freshQuota = buildLocalQuotaWindows();
-        if (!freshQuota) {
-          const activeAcc = getActiveAccount();
-          const freshProfile = await refreshGoogleProfileInBackground(false, activeAcc);
-          freshQuota = buildLiveWindowsData(freshProfile, activeAcc);
-        }
-      } catch (_) {
-        const activeAcc = getActiveAccount();
-        freshQuota = buildLocalQuotaWindows() || buildLiveWindowsData(cachedGoogleProfile, activeAcc);
-      }
+      const freshQuota = buildLiveWindowsData(cachedGoogleProfile, activeAcc);
 
       // 2. 构造当轮助手的完整元数据与配额快照
       // 存全4个窗口的配额快照(不只按模型分)
