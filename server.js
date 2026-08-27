@@ -222,19 +222,27 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
     const claude5hB = claudeGroup?.buckets?.find(b => b.window === '5h' || b.bucketId?.includes('5h')) || claudeGroup?.buckets?.[1];
 
     const lq = acc?.localQuota;
-    const gWeeklyPct = lq?.geminiWeekly?.remainingFraction != null 
-      ? parseFloat((lq.geminiWeekly.remainingFraction * 100).toFixed(1)) 
-      : (geminiWeeklyB && geminiWeeklyB.remainingFraction != null ? parseFloat((geminiWeeklyB.remainingFraction * 100).toFixed(1)) : 52.0);
-    const g5hPct = lq?.gemini5h?.remainingFraction != null 
-      ? parseFloat((lq.gemini5h.remainingFraction * 100).toFixed(1)) 
-      : (gemini5hB && gemini5hB.remainingFraction != null ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 63.5);
 
-    const cWeeklyPct = lq?.claudeWeekly?.remainingFraction != null 
+    const gWeeklyOfficial = geminiWeeklyB && geminiWeeklyB.remainingFraction != null ? parseFloat((geminiWeeklyB.remainingFraction * 100).toFixed(1)) : 52.0;
+    const g5hOfficial = gemini5hB && gemini5hB.remainingFraction != null ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 63.5;
+    const cWeeklyOfficial = claudeWeeklyB && claudeWeeklyB.remainingFraction != null ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 59.2;
+    const c5hOfficial = claude5hB && claude5hB.remainingFraction != null ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100;
+
+    const gWeeklyPct = (lq?.geminiWeekly?.remainingFraction != null && (lq.geminiWeekly.remainingFraction > 0 || gWeeklyOfficial === 0))
+      ? parseFloat((lq.geminiWeekly.remainingFraction * 100).toFixed(1)) 
+      : gWeeklyOfficial;
+
+    const g5hPct = (lq?.gemini5h?.remainingFraction != null && (lq.gemini5h.remainingFraction > 0 || g5hOfficial === 0))
+      ? parseFloat((lq.gemini5h.remainingFraction * 100).toFixed(1)) 
+      : g5hOfficial;
+
+    const cWeeklyPct = (lq?.claudeWeekly?.remainingFraction != null && (lq.claudeWeekly.remainingFraction > 0 || cWeeklyOfficial === 0))
       ? parseFloat((lq.claudeWeekly.remainingFraction * 100).toFixed(1)) 
-      : (claudeWeeklyB && claudeWeeklyB.remainingFraction != null ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 59.2);
-    const c5hPct = lq?.claude5h?.remainingFraction != null 
+      : cWeeklyOfficial;
+
+    const c5hPct = (lq?.claude5h?.remainingFraction != null && (lq.claude5h.remainingFraction > 0 || c5hOfficial === 0))
       ? parseFloat((lq.claude5h.remainingFraction * 100).toFixed(1)) 
-      : (claude5hB && claude5hB.remainingFraction != null ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100);
+      : c5hOfficial;
 
     const g5hReset = lq?.gemini5h?.resetTime || gemini5hB?.resetTime || null;
     const gWeeklyReset = lq?.geminiWeekly?.resetTime || geminiWeeklyB?.resetTime || null;
@@ -640,7 +648,7 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
 
 export async function refreshGoogleProfileInBackground(force = false, targetAccount = null) {
   const currentAcc = targetAccount || getActiveAccount();
-  const rawToken = currentAcc?.tokenData || readActiveToken();
+  const rawToken = readActiveToken() || currentAcc?.tokenData;
   const fallbackEmail = currentAcc?.email || 'Google 用户';
 
   const lastUpdated = currentAcc?.quotaUpdatedAt || profileFetchedAt;
@@ -1018,18 +1026,16 @@ app.get('/api/usage', async (req, res) => {
   const isStale = (Date.now() - lastUpdated > QUOTA_CALIBRATE_TTL) || (!activeAcc?.quotaSummary && !cachedGoogleProfile?.liveQuotaSummary);
 
   let freshProfile = null;
-  if (force) {
-    profileFetchedAt = 0;
-    freshProfile = await refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
-  } else if (isStale) {
+  if (force || isStale) {
     profileFetchedAt = Date.now();
-    refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
+    freshProfile = await refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
   }
 
+  const currentActive = getActiveAccount() || activeAcc;
   const googleAccount = getActiveGoogleProfile();
   const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
 
-  const liveBuild = buildLiveWindowsData(freshProfile || googleAccount || cachedGoogleProfile, activeAcc);
+  const liveBuild = buildLiveWindowsData(freshProfile || googleAccount || cachedGoogleProfile, currentActive);
   const windows = liveBuild.windows;
 
   // 动态读取 CLI 真实模型列表
