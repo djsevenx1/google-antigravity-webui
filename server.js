@@ -2307,7 +2307,7 @@ wss.on('connection', (ws, req) => {
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
 
       // 本地配额扣减: 从 agy result.usage 或按输入输出真实长度推算 token 消耗，精准扣减当前账号
-      const promptLen = (messagesWithRules || []).reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
+      const promptLen = (effectiveMessages || []).reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
       const answerLen = (run.accumulated || '').length;
       const estTokens = Math.round(promptLen / 3.5) + Math.round(answerLen / 3.2);
       const totalTokens = out?.usage?.total_tokens || (estTokens > 0 ? estTokens : 1000);
