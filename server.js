@@ -2312,16 +2312,23 @@ wss.on('connection', (ws, req) => {
       clearInterval(heartbeat);
       if (out && out.conversationId && conversationKey) setConversation(conversationKey, out.conversationId);
 
-      // 本地配额扣减: 从 agy result.usage 或按输入输出真实长度推算 token 消耗，精准扣减当前账号
-      const promptLen = (effectiveMessages || []).reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
-      const answerLen = (run.accumulated || '').length;
-      const estTokens = Math.round(promptLen / 3.5) + Math.round(answerLen / 3.2);
-      const totalTokens = out?.usage?.total_tokens || (estTokens > 0 ? estTokens : 1000);
+      // 本地配额扣减: 计算本轮对话的真实 Token 消耗，防止将整场历史会话重复累加
+      let turnTokens = 0;
+      if (out?.usage?.total_tokens && out.usage.total_tokens > 0) {
+        turnTokens = out.usage.total_tokens;
+      } else {
+        const lastUserMsg = (effectiveMessages || []).slice(-1)[0];
+        const userChars = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content.length : 100;
+        const answerChars = (run.accumulated || '').length;
+        const toolChars = (run.toolEvents || []).reduce((s, t) => s + (t.output ? String(t.output).length : 0), 0);
+        const estTurn = Math.round((userChars + answerChars + Math.min(toolChars, 3000)) / 1.8) + 800;
+        turnTokens = Math.min(Math.max(estTurn, 500), 20000);
+      }
 
       const activeAcc = getActiveAccount();
       if (activeAcc) {
-        deductAccountQuota(activeAcc.email, model, totalTokens);
-        debugLog(`[localQuota] 扣减成功: 账号=${activeAcc.email} 模型=${model} tokens=${totalTokens}`);
+        deductAccountQuota(activeAcc.email, model, turnTokens);
+        debugLog(`[localQuota] 扣减成功: 账号=${activeAcc.email} 模型=${model} 本轮tokens=${turnTokens}`);
       }
 
       // 0. 自动检查 agy 修改的 JS 文件语法，有错则广播给前端
