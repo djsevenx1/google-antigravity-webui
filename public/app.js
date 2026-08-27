@@ -488,14 +488,36 @@ function scrollToBottom(force = false) {
 }
 
 // 统一助手气泡内容更新器：彻底杜绝 toolsHtml 遗漏或被覆盖的问题！
-function updateAssistantBubble(targetNode, acc, toolEvents, isStreaming, meta = null) {
+// 统一助手气泡内容更新器：支持实时工作状态提示与精确耗时秒数
+function updateAssistantBubble(targetNode, acc, toolEvents, isStreaming, meta = null, activeTip = null, waited = 0) {
   if (!targetNode || !targetNode.bubble) return;
   const toolsHtml = renderToolsTimeline(toolEvents, isStreaming && toolEvents && toolEvents.length ? toolEvents.length - 1 : -1);
   const cleanAcc = (acc || "").replace(/[\u200b\s]/g, "");
   
   let bodyHtml = "";
   if (isStreaming && !cleanAcc) {
-    bodyHtml = `<div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考与组织回答...</span></div>`;
+    let displayTip = activeTip;
+    if (!displayTip) {
+      if (toolEvents && toolEvents.length > 0) {
+        const last = toolEvents[toolEvents.length - 1];
+        if (last && (last.state === 'ACTIVE' || !last.output)) {
+          displayTip = last.toolAction || last.tip || `正在执行: ${last.tool}`;
+        } else {
+          displayTip = `已执行 ${toolEvents.length} 项工具，正在组织回答`;
+        }
+      } else {
+        displayTip = "正在思考与组织回答";
+      }
+    }
+    const waitSuffix = waited > 0 ? ` (${waited}s)` : "";
+    bodyHtml = `
+      <div class="thinking-active-indicator" style="display:flex;align-items:center;gap:7px;">
+        <span class="thinking-dots"><i></i><i></i><i></i></span>
+        <span class="thinking-status-text" style="font-size:12.5px;color:var(--text-muted);font-weight:500;transition:all 0.2s ease;">
+          ${escapeHtml(displayTip)}${waitSuffix}
+        </span>
+      </div>
+    `;
   } else {
     bodyHtml = formatMarkdown(acc, isStreaming);
     if (!isStreaming && cleanAcc) {
@@ -1596,7 +1618,7 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     const clean = String(content || "").replace(/[\u200b\s]/g, "");
     const toolsHtml = renderToolsTimeline(tools, -1);
     if (isStreaming && !clean) {
-      bubble.innerHTML = `${toolsHtml}<div class="thinking-active-indicator"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="font-size:12.5px;color:var(--text-muted);">正在思考与组织回答...</span></div>`;
+      bubble.innerHTML = `${toolsHtml}<div class="thinking-active-indicator" style="display:flex;align-items:center;gap:7px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span class="thinking-status-text" style="font-size:12.5px;color:var(--text-muted);font-weight:500;">正在连接模型并解析任务意图 (0s)...</span></div>`;
     } else {
       bubble.innerHTML = `${toolsHtml}${formatMarkdown(content)}`;
       if (!isStreaming && clean) {
@@ -2242,10 +2264,35 @@ async function runConversationTurn(text, appendUserMsg = true) {
     abortCtrl: abortCtrl,
     ws: null,
     t0: Date.now(),
-    model: state.selectedModel
+    model: state.selectedModel,
+    latestTip: '正在连接模型并解析任务意图...',
+    latestWaited: 0,
+    statusTicker: null
   };
   activeClientRuns.set(conv.id, clientRun);
   renderConvList();
+
+  // 启动前端实时状态秒级刷新定时器：保证每秒精准刷新耗时与当前工作状态
+  clientRun.statusTicker = setInterval(() => {
+    if (!state.streaming || (clientRun.acc && clientRun.acc.replace(/[\u200b\s]/g, '').length > 0)) {
+      if (clientRun.statusTicker) { clearInterval(clientRun.statusTicker); clientRun.statusTicker = null; }
+      return;
+    }
+    const sec = Math.round((Date.now() - clientRun.t0) / 1000);
+    clientRun.latestWaited = sec;
+    let tip = clientRun.latestTip;
+    if (!tip || tip.startsWith('正在思考')) {
+      if (!toolEvents || toolEvents.length === 0) {
+        if (sec <= 2) tip = '正在连接模型并解析任务意图...';
+        else if (sec <= 7) tip = '正在进行深度逻辑推理与代码分析...';
+        else tip = '深度思考中，正在组织专业技术方案...';
+      }
+    }
+    const targetNode = clientRun.asstNode || asstNode;
+    if (targetNode && targetNode.bubble && state.activeId === conv.id) {
+      updateAssistantBubble(targetNode, clientRun.acc, toolEvents, true, null, tip, sec);
+    }
+  }, 1000);
 
   let hasError = false;
   let wakeLock = null;
@@ -2282,6 +2329,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
         const done = (fn) => {
           if (!settled) {
             settled = true;
+            if (clientRun.statusTicker) {
+              clearInterval(clientRun.statusTicker);
+              clientRun.statusTicker = null;
+            }
             if (inactivityWatchdog) clearTimeout(inactivityWatchdog);
             if (currentWs) {
               try { currentWs.close(); } catch (_) {}
@@ -2342,7 +2393,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
           
           if (data.progress) {
             const tipText = data.tip || "正在思考…";
-            const waitText = data.waited ? ` (${data.waited}s)` : "";
+            clientRun.latestTip = tipText;
+            const waitedSec = data.waited != null ? data.waited : Math.round((Date.now() - clientRun.t0)/1000);
+            clientRun.latestWaited = waitedSec;
             // 收集工具执行事件
             if (data.toolName) {
               let existing = null;
@@ -2362,6 +2415,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 if (data.toolState) existing.state = data.toolState;
                 if (data.duration) existing.duration = data.duration;
                 if (data.waited) existing.waited = data.waited;
+                if (data.toolAction) existing.toolAction = data.toolAction;
+                if (data.toolSummary) existing.toolSummary = data.toolSummary;
               } else {
                 toolEvents.push({
                   tool: data.toolName,
@@ -2381,13 +2436,17 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
             const targetNode = clientRun.asstNode || asstNode;
             if (targetNode && targetNode.bubble && state.activeId === conv.id) {
-              updateAssistantBubble(targetNode, acc, toolEvents, true);
+              updateAssistantBubble(targetNode, acc, toolEvents, true, null, clientRun.latestTip, clientRun.latestWaited);
               $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
             }
             return;
           }
           
           if (data.delta != null) {
+            if (clientRun.statusTicker) {
+              clearInterval(clientRun.statusTicker);
+              clientRun.statusTicker = null;
+            }
             acc += data.delta;
             clientRun.acc = acc;
             if (state.activeId === conv.id) {
@@ -2687,6 +2746,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
     }
   }
   } finally {
+    if (clientRun && clientRun.statusTicker) {
+      clearInterval(clientRun.statusTicker);
+      clientRun.statusTicker = null;
+    }
     if (wakeLock) {
       try { wakeLock.release().catch(() => {}); } catch (_) {}
       wakeLock = null;
