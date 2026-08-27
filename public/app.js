@@ -2343,15 +2343,34 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        // 300 秒无应答超时看门狗：仅在后端完全没有任何数据、心跳或思考进度输出达 300s 时才触发超时
+        // 45 秒静默守护看门狗：如果 45s 内未收到任何数据或心跳，主动检测服务端落盘状态，自愈恢复
         const resetInactivityWatchdog = () => {
           if (inactivityWatchdog) clearTimeout(inactivityWatchdog);
-          inactivityWatchdog = setTimeout(() => {
+          inactivityWatchdog = setTimeout(async () => {
             if (!settled) {
-              streamError = Object.assign(new Error("后端服务 300 秒无任何响应应答（响应超时）"), { isTimeout: true });
+              try {
+                const checkRes = await fetch("/api/sessions");
+                const checkData = await checkRes.json();
+                if (checkData && Array.isArray(checkData.sessions)) {
+                  const s = checkData.sessions.find(item => item.id === conv.id);
+                  if (s && Array.isArray(s.messages) && s.messages.length > 0) {
+                    const last = s.messages[s.messages.length - 1];
+                    if (last && last.role === 'assistant' && last.content && last.content.replace(/[\u200b\s]/g, '')) {
+                      conv.messages = s.messages;
+                      saveConversations();
+                      paintActiveConv();
+                      receivedDone = true;
+                      done(() => resolve());
+                      return;
+                    }
+                  }
+                }
+              } catch (_) {}
+
+              streamError = Object.assign(new Error("网络连接无应答或服务已重启（已自动同步最新进度）"), { isTimeout: true });
               done(() => reject(streamError));
             }
-          }, 300000);
+          }, 45000);
         };
 
         resetInactivityWatchdog();
@@ -2520,16 +2539,34 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        ws.onerror = () => {
+        ws.onerror = async () => {
           const cleanText = (acc || '').replace(/[\u200b\s]/g, '');
           if (cleanText.length > 0 || receivedDone) {
             receivedDone = true;
             done(() => resolve());
-          } else {
-            done(() => reject(new Error('network error')));
+            return;
           }
+          try {
+            const checkRes = await fetch("/api/sessions");
+            const checkData = await checkRes.json();
+            if (checkData && Array.isArray(checkData.sessions)) {
+              const s = checkData.sessions.find(item => item.id === conv.id);
+              if (s && Array.isArray(s.messages) && s.messages.length > 0) {
+                const last = s.messages[s.messages.length - 1];
+                if (last && last.role === 'assistant' && last.content && last.content.replace(/[\u200b\s]/g, '')) {
+                  conv.messages = s.messages;
+                  saveConversations();
+                  paintActiveConv();
+                  receivedDone = true;
+                  done(() => resolve());
+                  return;
+                }
+              }
+            }
+          } catch (_) {}
+          done(() => reject(new Error('network error')));
         };
-        ws.onclose = () => {
+        ws.onclose = async () => {
           if (state.isUserAborted || (abortCtrl && abortCtrl.signal.aborted)) {
             receivedDone = true;
             done(() => resolve());
@@ -2548,6 +2585,25 @@ async function runConversationTurn(text, appendUserMsg = true) {
             return;
           }
           
+          try {
+            const checkRes = await fetch("/api/sessions");
+            const checkData = await checkRes.json();
+            if (checkData && Array.isArray(checkData.sessions)) {
+              const s = checkData.sessions.find(item => item.id === conv.id);
+              if (s && Array.isArray(s.messages) && s.messages.length > 0) {
+                const last = s.messages[s.messages.length - 1];
+                if (last && last.role === 'assistant' && last.content && last.content.replace(/[\u200b\s]/g, '')) {
+                  conv.messages = s.messages;
+                  saveConversations();
+                  paintActiveConv();
+                  receivedDone = true;
+                  done(() => resolve());
+                  return;
+                }
+              }
+            }
+          } catch (_) {}
+
           // 只有在完全没有收到任何字且未被用户中止的情况下，才作为 network error 重试
           done(() => reject(new Error('network error')));
         };
