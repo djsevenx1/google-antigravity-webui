@@ -1646,7 +1646,7 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
       html += `<div class="user-msg-images" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:${raw ? '8px' : '0'};">`;
       images.forEach(imgPath => {
         const fn = imgPath.split('/').pop();
-        html += `<img src="/api/assets/files/${encodeURIComponent(fn)}" style="max-width:240px;max-height:180px;border-radius:8px;cursor:pointer;border:1px solid rgba(255,255,255,0.2);object-fit:cover;background:rgba(0,0,0,0.2);" onclick="window.open(this.src)" title="点击查看大图" />`;
+        html += `<img src="/api/assets/files/${encodeURIComponent(fn)}" style="max-width:240px;max-height:180px;border-radius:8px;cursor:pointer;border:1px solid rgba(255,255,255,0.2);object-fit:cover;background:rgba(0,0,0,0.2);" onclick="openImageLightbox(this.src)" title="点击查看大图" />`;
       });
       html += `</div>`;
     }
@@ -4253,6 +4253,21 @@ function tryReconnectToOngoingRun() {
 const fileInput = $("#file-input");
 const btnAttach = $("#btn-attach");
 const attachPreview = $("#attachment-preview");
+
+// 图片查看 lightbox：点击图片弹层显示大图 + 关闭 X（不跳转、不用返回键，避免聊天窗口被返回）
+window.openImageLightbox = function(src) {
+  let overlay = document.getElementById('img-lightbox');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'img-lightbox';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:99999;display:none;align-items:center;justify-content:center;cursor:pointer';
+    overlay.innerHTML = '<span style="position:absolute;top:14px;right:22px;font-size:38px;color:#fff;line-height:1;cursor:pointer;font-family:sans-serif;">&times;</span><img style="max-width:92vw;max-height:92vh;object-fit:contain;border-radius:6px;" />';
+    overlay.addEventListener('click', () => { overlay.style.display = 'none'; });
+    document.body.appendChild(overlay);
+  }
+  overlay.querySelector('img').src = src;
+  overlay.style.display = 'flex';
+};
 
 if (btnAttach) {
   btnAttach.addEventListener("click", () => fileInput.click());
