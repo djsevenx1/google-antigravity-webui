@@ -2237,7 +2237,13 @@ wss.on('connection', (ws, req) => {
 
     // 复用 Run Registry：如果已有同会话的后台任务
     let existingRun = activeRuns.get(convKey);
-    const isNewTurn = !existingRun || !existingRun.isRunning || (Array.isArray(messages) && messages.length > (existingRun.initialMessages?.length || 0));
+    const _lastUser = Array.isArray(messages) ? [...messages].reverse().find(m => m && m.role === 'user') : null;
+    const _initLastUser = (existingRun && Array.isArray(existingRun.initialMessages)) ? [...existingRun.initialMessages].reverse().find(m => m && m.role === 'user') : null;
+    const _lu = _lastUser ? JSON.stringify(_lastUser.content) : '';
+    const _ilu = _initLastUser ? JSON.stringify(_initLastUser.content) : '';
+    // 以「最后一条 user 消息是否变化」判断新 turn，而非 messages.length——
+    // syncSession 会给前端追加 assistant 消息导致 length 增长，旧的 length 判断会误判新 turn、abort 正在跑的任务、agy 续接同一 user 出同样回复（重复）
+    const isNewTurn = !existingRun || !existingRun.isRunning || (_lu && _lu !== _ilu);
 
     if (existingRun && existingRun.isRunning && !isNewTurn) {
       // 仅当是完全相同的轮次且正在跑时才 attach（例如刷新页面重新连接）
