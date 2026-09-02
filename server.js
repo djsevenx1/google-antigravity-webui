@@ -1349,6 +1349,60 @@ function syncSessionWithTranscript(sessionData) {
   return sessionData;
 }
 
+// ── CloudCLI 方向：subscribe 没命中 activeRuns 时，从 transcript_full 磁盘兜底还原当前 turn 已输出部分 ──
+function replayTranscriptTailToWs(ws, convId) {
+  if (!convId) return false;
+  const candidatePaths = [
+    path.join(BRAIN_DIR, convId, '.system_generated', 'logs', 'transcript_full.jsonl'),
+    path.join('/vol5/@apphome/claude code/.gemini/antigravity-cli/brain', convId, '.system_generated', 'logs', 'transcript_full.jsonl')
+  ];
+  const p = candidatePaths.find(x => { try { return fs.existsSync(x); } catch (_) { return false; } });
+  if (!p) return false;
+  try {
+    const lines = fs.readFileSync(p, 'utf-8').trim().split('\n');
+    const steps = lines.map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
+    let lastUserIdx = -1;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i] && steps[i].type === 'USER_INPUT') { lastUserIdx = i; break; }
+    }
+    if (lastUserIdx === -1) return false;
+    const tail = steps.slice(lastUserIdx + 1);
+    if (!tail.length) return false;
+    let sent = false;
+    for (const step of tail) {
+      if (!step) continue;
+      if (Array.isArray(step.tool_calls) && step.tool_calls.length) {
+        for (const tc of step.tool_calls) {
+          try { ws.send(JSON.stringify({ progress: true, toolName: tc.name || 'tool', toolInput: tc.args || {}, toolState: 'DONE', tip: tc.name || 'tool' })); sent = true; } catch (_) {}
+        }
+      }
+      if (step.type === 'PLANNER_RESPONSE' && step.content) {
+        try { ws.send(JSON.stringify({ delta: step.content })); sent = true; } catch (_) {}
+      }
+    }
+    return sent;
+  } catch (_) { return false; }
+}
+
+// ── 流事件磁盘持久化：server 自己把 delta/progress 增量写盘，弥补 agy transcript 不存增量 ──
+function getStreamFilePath(convKey) {
+  const safe = String(convKey || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  return path.join(SESSIONS_DIR, `${safe}.stream.jsonl`);
+}
+function appendStreamEvent(convKey, str) {
+  try { fs.appendFileSync(getStreamFilePath(convKey), str + '\n'); } catch (_) {}
+}
+function truncateStreamFile(convKey) {
+  try { fs.writeFileSync(getStreamFilePath(convKey), ''); } catch (_) {}
+}
+function readStreamEvents(convKey) {
+  try {
+    const p = getStreamFilePath(convKey);
+    if (!fs.existsSync(p)) return [];
+    return fs.readFileSync(p, 'utf-8').split('\n').filter(Boolean);
+  } catch (_) { return []; }
+}
+
 // 获取所有会话列表
 app.get('/api/sessions', (_req, res) => {
   try {
@@ -2081,27 +2135,39 @@ wss.on('connection', (ws, req) => {
     if (body.action === 'subscribe' && conversationKey) {
       const convKey = conversationKey || clientConvId || 'default-chat';
       const existingRun = activeRuns.get(convKey);
-      if (existingRun) {
-        debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=${existingRun.isRunning}, done=${existingRun.done}, events=${existingRun.events.length})`);
-        
-        // 无论正在运行还是刚完成，都把所有事件完整回放给前端客户端
+      if (existingRun && existingRun.isRunning) {
+        debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=true, events=${existingRun.events.length})`);
+        // 只有正在运行的任务才回放事件
         for (const ev of existingRun.events) {
           const match = ev.match(/^data: (.+)$/s);
           if (match) { try { ws.send(match[1]); } catch (_) {} }
         }
-
-        if (existingRun.isRunning) {
-          const wsListener = (chunk) => {
-            const m = chunk.match(/^data: (.+)$/s);
-            if (m) { try { ws.send(m[1]); } catch (_) {} }
-          };
-          existingRun.listeners.add(wsListener);
-          ws.on('close', () => existingRun.listeners.delete(wsListener));
-        }
+        const wsListener = (chunk) => {
+          const m = chunk.match(/^data: (.+)$/s);
+          if (m) { try { ws.send(m[1]); } catch (_) {} }
+        };
+        existingRun.listeners.add(wsListener);
+        ws.on('close', () => existingRun.listeners.delete(wsListener));
         return;
       }
-      // 后台没有正在跑的任务，通知前端同步完成
-      ws.send(JSON.stringify({ done: true, conversationId: clientConvId || null }));
+      // 已完成或已失败的 run：清理掉，不走回放
+      if (existingRun) {
+        debugLog(`[ws/chat] subscribe: stale run ${convKey} (isRunning=${existingRun.isRunning}, done=${existingRun.done}), cleaning up`);
+        activeRuns.delete(convKey);
+      }
+      // 后台没有正在跑的任务：从磁盘兜底还原当前 turn 已输出部分（CloudCLI 方向，不依赖内存 activeRuns）
+      // 优先读 server 自己持久化的流增量（含正在输出的纯文本），其次读 agy transcript_full
+      let replayed = false;
+      const streamEvs = readStreamEvents(convKey);
+      if (streamEvs.length) {
+        for (const line of streamEvs) {
+          try { const o = JSON.parse(line); if (o && o.done) continue; ws.send(line); } catch (_) { try { ws.send(line); } catch (__) {} }
+        }
+        replayed = true;
+      } else {
+        replayed = replayTranscriptTailToWs(ws, clientConvId || getConversation(conversationKey));
+      }
+      ws.send(JSON.stringify({ done: true, conversationId: clientConvId || null, replayedFromDisk: replayed }));
       return;
     }
 
@@ -2118,8 +2184,7 @@ wss.on('connection', (ws, req) => {
     if (permRaw === 'approve' || permRaw === '') { applyAutoAllow(); } else if (permRaw === 'ask') { applyAskMode(); }
 
     const convKey = conversationKey || clientConvId || 'default-chat';
-    let conversationId = clientConvId || null;
-    if (!conversationId && conversationKey) conversationId = getConversation(conversationKey);
+    let conversationId = (conversationKey && getConversation(conversationKey)) || null;
 
     // 保留完整对话历史，交给 Antigravity 原生 --conversation 和 Gemini 百万超长上下文管理
     const effectiveMessages = [...messages];
@@ -2175,10 +2240,12 @@ wss.on('connection', (ws, req) => {
       error: null
     };
     activeRuns.set(convKey, run);
+    truncateStreamFile(convKey); // 新 turn 开始：清空磁盘流文件，避免多轮叠加
 
     const broadcast = (obj) => {
       const str = JSON.stringify(obj);
       run.events.push(`data: ${str}\n\n`);
+      appendStreamEvent(convKey, str); // 同步持久化到磁盘，刷新后即使 activeRuns 没命中也能回放
       for (const l of run.listeners) {
         try { l(`data: ${str}\n\n`); } catch (_) {}
       }
