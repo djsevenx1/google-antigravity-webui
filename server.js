@@ -1484,9 +1484,18 @@ app.post('/api/sessions', (req, res) => {
 app.delete('/api/sessions/:id', (req, res) => {
   const filePath = getSessionFilePath(req.params.id);
   try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // 读 convId，用于删后端 agy conversation（brain transcript）
+    let convId = null;
+    try { convId = JSON.parse(fs.readFileSync(filePath, 'utf8')).convId || null; } catch (_) {}
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    // 删硬盘流文件（stream.jsonl）
+    try { fs.unlinkSync(getStreamFilePath(req.params.id)); } catch (_) {}
+    // 删后端 agy conversation（brain/<convId> transcript）—— 前端删对话，后端也删
+    if (convId) {
+      try { fs.rmSync(path.join(BRAIN_DIR, convId), { recursive: true, force: true }); } catch (_) {}
     }
+    // 删会话→conversationId 映射
+    try { deleteConversation(req.params.id); } catch (_) {}
     send(res, 200, { ok: true });
   } catch (e) {
     send(res, 500, { error: e.message });
@@ -1751,7 +1760,7 @@ app.post('/api/chat', async (req, res) => {
 
   if (permRaw === 'approve' || permRaw === '') { applyAutoAllow(); } else if (permRaw === 'ask') { applyAskMode(); }
 
-  const convKey = conversationKey || clientConvId || 'default-chat';
+  const convKey = conversationKey || clientConvId || `anon-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
   let conversationId = clientConvId || null;
   if (!conversationId && conversationKey) conversationId = getConversation(conversationKey);
 
@@ -2133,15 +2142,11 @@ wss.on('connection', (ws, req) => {
 
     // ── subscribe 模式：刷新/重开/切回页面后，前端请求挂接到后台任务，自动回放已生成及正在生成的全部流式内容 ──
     if (body.action === 'subscribe' && conversationKey) {
-      const convKey = conversationKey || clientConvId || 'default-chat';
+      const convKey = conversationKey || clientConvId || `anon-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
       const existingRun = activeRuns.get(convKey);
       if (existingRun && existingRun.isRunning) {
-        debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=true, events=${existingRun.events.length})`);
-        // 只有正在运行的任务才回放事件
-        for (const ev of existingRun.events) {
-          const match = ev.match(/^data: (.+)$/s);
-          if (match) { try { ws.send(match[1]); } catch (_) {} }
-        }
+        debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=true, events=${existingRun.events.length}) — 不回放历史，只接后续实时流`);
+        // 不把历史 events 当思考回放（避免混淆）；前端历史靠 GET /api/sessions 拉取，这里只挂接后续实时流
         const wsListener = (chunk) => {
           const m = chunk.match(/^data: (.+)$/s);
           if (m) { try { ws.send(m[1]); } catch (_) {} }
@@ -2157,15 +2162,11 @@ wss.on('connection', (ws, req) => {
       }
       // 后台没有正在跑的任务：从磁盘兜底还原当前 turn 已输出部分（CloudCLI 方向，不依赖内存 activeRuns）
       // 优先读 server 自己持久化的流增量（含正在输出的纯文本），其次读 agy transcript_full
-      let replayed = false;
+      // 不把历史当思考回放：后台没跑的任务，只回放 error（若有），历史靠 GET /api/sessions
       const streamEvs = readStreamEvents(convKey);
-      if (streamEvs.length) {
-        for (const line of streamEvs) {
-          try { const o = JSON.parse(line); if (o && o.done) continue; ws.send(line); } catch (_) { try { ws.send(line); } catch (__) {} }
-        }
-        replayed = true;
-      } else {
-        replayed = replayTranscriptTailToWs(ws, clientConvId || getConversation(conversationKey));
+      let replayed = false;
+      for (const line of streamEvs) {
+        try { const o = JSON.parse(line); if (o && o.error) { ws.send(line); replayed = true; } } catch (_) {}
       }
       ws.send(JSON.stringify({ done: true, conversationId: clientConvId || null, replayedFromDisk: replayed }));
       return;
@@ -2183,7 +2184,7 @@ wss.on('connection', (ws, req) => {
 
     if (permRaw === 'approve' || permRaw === '') { applyAutoAllow(); } else if (permRaw === 'ask') { applyAskMode(); }
 
-    const convKey = conversationKey || clientConvId || 'default-chat';
+    const convKey = conversationKey || clientConvId || `anon-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
     let conversationId = (conversationKey && getConversation(conversationKey)) || null;
 
     // 保留完整对话历史，交给 Antigravity 原生 --conversation 和 Gemini 百万超长上下文管理
@@ -2537,6 +2538,9 @@ wss.on('connection', (ws, req) => {
         broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"], toolName: e.toolName || '', toolInput: e.toolInput || '' }, error: errMsg, errorDetails: errDetails });
       } else if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
         broadcast({ meta: { quotaExceeded: true, description: '配额已用尽' }, error: errMsg, errorDetails: errDetails });
+      } else if (/Agent execution terminated/i.test(errMsg) && model && /gemini/i.test(model)) {
+        // agy 吞详情只报通用 terminated + gemini 模型 → G1 credits 耗尽，明确告诉用户是额度问题
+        broadcast({ meta: { quotaExceeded: true, description: 'Gemini 额度（G1 credits）已用完，请等待额度恢复' }, error: 'Gemini 额度（G1 credits）已用完，agy 返回 0 token terminated', errorDetails: errDetails });
       } else {
         broadcast({ error: errMsg, errorDetails: errDetails });
       }
