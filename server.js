@@ -1480,22 +1480,41 @@ app.post('/api/sessions', (req, res) => {
   }
 });
 
-// 删除单个会话
+// 删除单个会话：同时清理本地会话、磁盘流、Run任务、官方 agy 数据库与 brain 目录
 app.delete('/api/sessions/:id', (req, res) => {
-  const filePath = getSessionFilePath(req.params.id);
+  const sid = req.params.id;
+  const filePath = getSessionFilePath(sid);
   try {
-    // 读 convId，用于删后端 agy conversation（brain transcript）
     let convId = null;
-    try { convId = JSON.parse(fs.readFileSync(filePath, 'utf8')).convId || null; } catch (_) {}
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    if (fs.existsSync(filePath)) {
+      try { convId = JSON.parse(fs.readFileSync(filePath, 'utf8')).convId || null; } catch (_) {}
+      try { fs.unlinkSync(filePath); } catch (_) {}
+    }
     // 删硬盘流文件（stream.jsonl）
-    try { fs.unlinkSync(getStreamFilePath(req.params.id)); } catch (_) {}
-    // 删后端 agy conversation（brain/<convId> transcript）—— 前端删对话，后端也删
+    try { fs.unlinkSync(getStreamFilePath(sid)); } catch (_) {}
+
+    // 中断并清理后台 Run Registry
+    const run = activeRuns.get(sid);
+    if (run) {
+      try { run.abortController?.abort(); } catch (_) {}
+      run.isRunning = false;
+      activeRuns.delete(sid);
+    }
+
+    // 清理内存映射
+    deleteConversation(sid);
+
+    // 删后端 agy 原生 conversation（brain/<convId> transcript + SQLite DB）
     if (convId) {
       try { fs.rmSync(path.join(BRAIN_DIR, convId), { recursive: true, force: true }); } catch (_) {}
+      const agyDir = path.join(os.homedir(), '.gemini', 'antigravity-cli');
+      const convDbPath = path.join(agyDir, 'conversations', `${convId}.db`);
+      const convDbShm = path.join(agyDir, 'conversations', `${convId}.db-shm`);
+      const convDbWal = path.join(agyDir, 'conversations', `${convId}.db-wal`);
+      for (const p of [convDbPath, convDbShm, convDbWal]) {
+        try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
+      }
     }
-    // 删会话→conversationId 映射
-    try { deleteConversation(req.params.id); } catch (_) {}
     send(res, 200, { ok: true });
   } catch (e) {
     send(res, 500, { error: e.message });
@@ -1529,23 +1548,43 @@ app.post('/api/sessions/migrate', (req, res) => {
 });
 
 // 会话→官方 conversation_id 的映射，用于多轮续接（P2）。
-// 带 TTL + 容量上限，避免 Map 无限增长（内存泄漏）。
+// 带 TTL + 容量上限 + 磁盘 sessions 兜底读取，避免重启后串会话。
 const conversations = new Map();
 const CONV_TTL_MS = 6 * 60 * 60 * 1000; // 6 小时未活动视为过期
 const CONV_MAX = 500;
+
 function getConversation(sid) {
+  if (!sid) return null;
   const e = conversations.get(sid);
-  if (!e) return null;
-  if (Date.now() - e.at > CONV_TTL_MS) { conversations.delete(sid); return null; }
-  return e.id;
+  if (e && Date.now() - e.at <= CONV_TTL_MS) {
+    return e.id;
+  }
+  // 内存未命中或过期时，从持久化磁盘 session 读取，防止重启后串会话
+  try {
+    const filePath = getSessionFilePath(sid);
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (data && data.convId) {
+        conversations.set(sid, { id: data.convId, at: Date.now() });
+        return data.convId;
+      }
+    }
+  } catch (_) {}
+  return null;
 }
+
 function setConversation(sid, id) {
+  if (!sid || !id) return;
   conversations.set(sid, { id, at: Date.now() });
   if (conversations.size > CONV_MAX) {
     let oldestKey = null, oldestAt = Infinity;
     for (const [k, v] of conversations) if (v.at < oldestAt) { oldestAt = v.at; oldestKey = k; }
     if (oldestKey) conversations.delete(oldestKey);
   }
+}
+
+function deleteConversation(sid) {
+  if (sid) conversations.delete(sid);
 }
 
 // ---------- 借鉴 cloudcli 架构：解耦后台执行与前端网络连接 (Run Registry) ----------
