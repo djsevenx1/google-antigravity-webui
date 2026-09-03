@@ -223,35 +223,22 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
 
     const lq = acc?.localQuota;
 
-    const gWeeklyOfficial = geminiWeeklyB && geminiWeeklyB.remainingFraction != null ? parseFloat((geminiWeeklyB.remainingFraction * 100).toFixed(1)) : 52.0;
-    const g5hOfficial = gemini5hB && gemini5hB.remainingFraction != null ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 63.5;
-    const cWeeklyOfficial = claudeWeeklyB && claudeWeeklyB.remainingFraction != null ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 59.2;
-    const c5hOfficial = claude5hB && claude5hB.remainingFraction != null ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100;
+    const gWeeklyOfficial = geminiWeeklyB && geminiWeeklyB.remainingFraction != null ? parseFloat((geminiWeeklyB.remainingFraction * 100).toFixed(1)) : 100.0;
+    const g5hOfficial = gemini5hB && gemini5hB.remainingFraction != null ? parseFloat((gemini5hB.remainingFraction * 100).toFixed(1)) : 100.0;
+    const cWeeklyOfficial = claudeWeeklyB && claudeWeeklyB.remainingFraction != null ? parseFloat((claudeWeeklyB.remainingFraction * 100).toFixed(1)) : 100.0;
+    const c5hOfficial = claude5hB && claude5hB.remainingFraction != null ? parseFloat((claude5hB.remainingFraction * 100).toFixed(1)) : 100.0;
 
-    const gWeeklyPct = (lq?.geminiWeekly?.remainingFraction != null && (lq.geminiWeekly.remainingFraction > 0 || gWeeklyOfficial === 0))
-      ? parseFloat((lq.geminiWeekly.remainingFraction * 100).toFixed(1)) 
-      : gWeeklyOfficial;
+    const gWeeklyPct = gWeeklyOfficial;
+    const g5hPct = g5hOfficial;
+    const cWeeklyPct = cWeeklyOfficial;
+    const c5hPct = c5hOfficial;
 
-    const g5hPct = (lq?.gemini5h?.remainingFraction != null && (lq.gemini5h.remainingFraction > 0 || g5hOfficial === 0))
-      ? parseFloat((lq.gemini5h.remainingFraction * 100).toFixed(1)) 
-      : g5hOfficial;
+    const g5hReset = gemini5hB?.resetTime || lq?.gemini5h?.resetTime || null;
+    const gWeeklyReset = geminiWeeklyB?.resetTime || lq?.geminiWeekly?.resetTime || null;
+    const c5hReset = claude5hB?.resetTime || lq?.claude5h?.resetTime || null;
+    const cWeeklyReset = claudeWeeklyB?.resetTime || lq?.claudeWeekly?.resetTime || null;
 
-    const cWeeklyPct = (lq?.claudeWeekly?.remainingFraction != null && (lq.claudeWeekly.remainingFraction > 0 || cWeeklyOfficial === 0))
-      ? parseFloat((lq.claudeWeekly.remainingFraction * 100).toFixed(1)) 
-      : cWeeklyOfficial;
-
-    const c5hPct = (lq?.claude5h?.remainingFraction != null && (lq.claude5h.remainingFraction > 0 || c5hOfficial === 0))
-      ? parseFloat((lq.claude5h.remainingFraction * 100).toFixed(1)) 
-      : c5hOfficial;
-
-    const g5hReset = lq?.gemini5h?.resetTime || gemini5hB?.resetTime || null;
-    const gWeeklyReset = lq?.geminiWeekly?.resetTime || geminiWeeklyB?.resetTime || null;
-    const c5hReset = lq?.claude5h?.resetTime || claude5hB?.resetTime || null;
-    const cWeeklyReset = lq?.claudeWeekly?.resetTime || claudeWeeklyB?.resetTime || null;
-
-    const notice = lq?.lastDeduct 
-      ? `已启用本地高精度 Token 扣减引擎 (每2小时校正, 上次扣减: ${new Date(lq.lastDeduct).toLocaleTimeString()})`
-      : (summary.description || '已连接 Google Antigravity 官方云端实时配额 API (CloudCode v1internal)');
+    const notice = summary.description || '已连接 Google Antigravity 官方云端实时配额 API (CloudCode v1internal)';
 
     return {
       topNotice: notice,
@@ -265,8 +252,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: g5hPct,
           used: parseFloat((100 - g5hPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(g5hReset, '查询中'),
-          resetText: formatCountdown(g5hReset, '查询中'),
+          resetsIn: formatCountdown(gemini5hB || g5hReset, `${fiveHourH}小时 ${fiveHourM}分钟`),
+          resetText: formatCountdown(gemini5hB || g5hReset, `${fiveHourH}小时 ${fiveHourM}分钟`),
           resetTime: g5hReset,
           status: g5hPct > 60 ? 'healthy' : g5hPct > 20 ? 'warning' : 'danger'
         },
@@ -277,8 +264,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: gWeeklyPct,
           used: parseFloat((100 - gWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(gWeeklyReset, '查询中'),
-          resetText: formatCountdown(gWeeklyReset, '查询中'),
+          resetsIn: formatCountdown(geminiWeeklyB || gWeeklyReset, weeklyRemainingStr),
+          resetText: formatCountdown(geminiWeeklyB || gWeeklyReset, weeklyRemainingStr),
           resetTime: gWeeklyReset,
           status: gWeeklyPct > 60 ? 'healthy' : gWeeklyPct > 20 ? 'warning' : 'danger'
         },
@@ -289,8 +276,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: c5hPct,
           used: parseFloat((100 - c5hPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(c5hReset, '查询中'),
-          resetText: formatCountdown(c5hReset, '查询中'),
+          resetsIn: formatCountdown(claude5hB || c5hReset, `${fiveHourH}小时 ${fiveHourM}分钟`),
+          resetText: formatCountdown(claude5hB || c5hReset, `${fiveHourH}小时 ${fiveHourM}分钟`),
           resetTime: c5hReset,
           status: c5hPct > 60 ? 'healthy' : c5hPct > 20 ? 'warning' : 'danger'
         },
@@ -301,8 +288,8 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
           percent: cWeeklyPct,
           used: parseFloat((100 - cWeeklyPct).toFixed(1)),
           total: 100,
-          resetsIn: formatCountdown(cWeeklyReset, '查询中'),
-          resetText: formatCountdown(cWeeklyReset, '查询中'),
+          resetsIn: formatCountdown(claudeWeeklyB || cWeeklyReset, weeklyRemainingStr),
+          resetText: formatCountdown(claudeWeeklyB || cWeeklyReset, weeklyRemainingStr),
           resetTime: cWeeklyReset,
           status: cWeeklyPct > 60 ? 'healthy' : cWeeklyPct > 20 ? 'warning' : 'danger'
         }
@@ -386,19 +373,22 @@ export function buildLiveWindowsData(profile = cachedGoogleProfile, targetAccoun
 
 import { readFile, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+
+
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import express from 'express';
 import session from 'express-session';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import config from './lib/config.js';
 import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
-import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts, syncAccountLocalQuota, deductAccountQuota, syncAccountUpstreamQuota } from './lib/accounts.js';
+import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts, syncAccountLocalQuota, deductAccountQuota } from './lib/accounts.js';
 
 // 每 2 小时定时直连 Google 上游拉取并替换当前激活账号的最新额度数据
 const TWO_HOURS_INTERVAL = 2 * 60 * 60 * 1000;
@@ -406,7 +396,7 @@ setInterval(async () => {
   try {
     const active = getActiveAccount();
     if (active) {
-      await syncAccountUpstreamQuota(active, true);
+      await refreshGoogleProfileInBackground(true, active);
       console.log(`[2h-Poller] 已自动同步 Google 上游额度并更新当前账号: ${active.email}`);
     }
   } catch (err) {
@@ -662,14 +652,15 @@ function parseGoogleAccountTier(liveTierInfo, rawToken) {
 
 export async function refreshGoogleProfileInBackground(force = false, targetAccount = null) {
   const currentAcc = targetAccount || getActiveAccount();
-  const rawToken = readActiveToken() || currentAcc?.tokenData;
+  const rawToken = currentAcc?.tokenData || readActiveToken();
   const fallbackEmail = currentAcc?.email || 'Google 用户';
 
   const lastUpdated = currentAcc?.quotaUpdatedAt || profileFetchedAt;
   const isWithin2Hours = (Date.now() - lastUpdated) < QUOTA_CALIBRATE_TTL;
 
-  // 如果非强制刷新，且当前账号在 2 小时内已有配额数据，直接秒回本地缓存
-  if (!force && isWithin2Hours && (cachedGoogleProfile?.liveQuotaSummary || currentAcc?.quotaSummary)) {
+  // 如果非强制刷新，且当前账号已有真实配额数据，并且在有效周期内，复用缓存
+  const hasValidSummary = Array.isArray(currentAcc?.quotaSummary?.groups) || Array.isArray(cachedGoogleProfile?.liveQuotaSummary?.groups);
+  if (!force && isWithin2Hours && hasValidSummary) {
     if (!cachedGoogleProfile || cachedGoogleProfile.email !== currentAcc?.email) {
       cachedGoogleProfile = {
         email: currentAcc?.email,
@@ -680,7 +671,10 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
         liveApiConnected: true
       };
     }
-    return cachedGoogleProfile || { email: fallbackEmail, error: "Token expired, please reconnect" };
+    const winData = buildLiveWindowsData(cachedGoogleProfile, currentAcc);
+    cachedGoogleProfile.windows = winData?.windows || {};
+    cachedGoogleProfile.topNotice = winData?.topNotice || '';
+    return cachedGoogleProfile;
   }
 
   let raw = rawToken;
@@ -778,7 +772,7 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
     updateAccountQuota(currentEmail, liveQuotaSummary, liveQuotaBuckets);
   }
 
-  cachedGoogleProfile = {
+  const profileObj = {
     email: currentEmail,
     name: currentName,
     picture: currentPicture,
@@ -795,11 +789,20 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
     expiry: raw.token?.expiry || null,
     useG1Credits: tierData.useG1Credits
   };
-  profileFetchedAt = Date.now();
-  try {
-    fs.writeFileSync(PROFILE_CACHE_FILE, JSON.stringify(cachedGoogleProfile, null, 2));
-  } catch (_) {}
-  return cachedGoogleProfile || { email: currentEmail, error: "Token expired, please reconnect" };
+
+  const windowsData = buildLiveWindowsData(profileObj, currentAcc);
+  profileObj.windows = windowsData?.windows || {};
+  profileObj.topNotice = windowsData?.topNotice || '';
+
+  if (!targetAccount || targetAccount.email === getActiveAccount()?.email) {
+    cachedGoogleProfile = profileObj;
+    profileFetchedAt = Date.now();
+    try {
+      fs.writeFileSync(PROFILE_CACHE_FILE, JSON.stringify(cachedGoogleProfile, null, 2));
+    } catch (_) {}
+  }
+
+  return profileObj;
 }
 
 export function getActiveGoogleProfile() {
@@ -1039,8 +1042,10 @@ app.get('/api/usage', async (req, res) => {
   // 1. 直连 Google 上游同步配额与重置时间（支持手动强刷/2小时过期判定）
   let quotaData = null;
   if (currentActive) {
-    quotaData = await syncAccountUpstreamQuota(currentActive, force).catch(() => null);
+    quotaData = await refreshGoogleProfileInBackground(force, currentActive).catch(() => null);
   }
+  const windowsData = buildLiveWindowsData(quotaData || cachedGoogleProfile, currentActive);
+  const liveWindows = windowsData?.windows || quotaData?.windows || {};
 
   // 2. 动态读取 CLI 真实可用模型
   const cli = await fetchModels();
@@ -1057,9 +1062,10 @@ app.get('/api/usage', async (req, res) => {
   const modelsQuota = rawModelIds.map((m) => {
     const meta = getModelMetadata(m, { name: 'Google AI Pro', type: 'pro', badge: 'PRO' });
     const isClaude = m.includes('claude') || m.includes('gpt') || m.includes('oss');
-    const pool = isClaude ? quotaData?.windows?.claude5h : quotaData?.windows?.fiveHour;
+    const pool = isClaude ? liveWindows?.claude5h : liveWindows?.fiveHour;
     meta.percent = pool?.percent != null ? pool.percent : 100;
     if (pool?.resetTime) meta.resetTime = pool.resetTime;
+    if (pool?.resetsIn) meta.resetsIn = pool.resetsIn;
     return meta;
   });
 
@@ -1099,7 +1105,8 @@ app.get('/api/usage', async (req, res) => {
     tier: quotaData?.tier || 'Google AI Pro',
     tierType: quotaData?.tierType || 'pro',
     tierBadge: quotaData?.tierBadge || 'PRO',
-    windows: quotaData?.windows || {},
+    windows: liveWindows,
+    topNotice: windowsData?.topNotice || quotaData?.topNotice || '',
     models: modelsQuota,
     metrics: {
       totalConversations,
@@ -1701,7 +1708,7 @@ app.post('/api/accounts/switch', async (req, res) => {
   let switchedAcc = getActiveAccount() || r.account;
   let newQuota = null;
   try {
-    newQuota = await syncAccountUpstreamQuota(switchedAcc, true);
+    newQuota = await refreshGoogleProfileInBackground(true, switchedAcc);
     switchedAcc = getActiveAccount() || r.account;
   } catch (err) {
     debugLog('[accounts/switch] quota sync error:', err && err.message);
@@ -1725,7 +1732,7 @@ app.delete('/api/accounts/:email', async (req, res) => {
   let freshQuota = null;
   if (activeAcc) {
     try {
-      freshQuota = await syncAccountUpstreamQuota(activeAcc, true);
+      freshQuota = await refreshGoogleProfileInBackground(true, activeAcc);
     } catch (err) {
       debugLog('[accounts/remove] quota sync error:', err && err.message);
     }
@@ -2067,6 +2074,19 @@ app.get('/', (_req, res) => {
 
 const server = app.listen(config.port, () => {
   startAuthPoller(); // 后台刷新 CLI 登录态，避免 /api/status 阻塞
+  // 定时刷新 access_token（每 30 分钟，过期前主动刷，保证一直能用）
+  const tokRefresher = setInterval(async () => {
+    try {
+      const active = getActiveAccount();
+      if (active) {
+        await refreshAccessToken(active.tokenData);
+        console.log(`[token-refresher] 已刷新 access_token: ${active.email}`);
+      }
+    } catch (err) {
+      debugLog('[token-refresher] err:', err && err.message);
+    }
+  }, 30 * 60 * 1000);
+  tokRefresher.unref?.();
   console.log(`Google Antigravity Web UI running at http://localhost:${config.port}`);
   if (config.oauthConfigured) {
     console.log('[info] 已配置 Google OAuth（可选用户登录）。');
@@ -2238,7 +2258,7 @@ wss.on('connection', (ws, req) => {
     // 第一次对话或 2h 过期，自动直连 Google 上游同步并替换额度数据
     const activeAcc = getActiveAccount();
     if (activeAcc) {
-      syncAccountUpstreamQuota(activeAcc, false).catch(() => {});
+      refreshGoogleProfileInBackground(false, activeAcc).catch(() => {});
     }
 
     // 新建后台 Run
@@ -2386,7 +2406,7 @@ wss.on('connection', (ws, req) => {
             if (conversationKey) deleteConversation(conversationKey);
             continue;
           }
-          const isTransient = /terminated due to error|Agent execution terminated|stream ended|unexpected EOF|context canceled|connection reset|Eligibility check failed|profile picture|i\/o timeout|timeout|dial tcp|connection refused|network is unreachable/i.test(err && err.message || '');
+          const isTransient = /stream ended|unexpected EOF|context canceled|connection reset|Eligibility check failed|profile picture|i\/o timeout|timeout|dial tcp|connection refused|network is unreachable/i.test(err && err.message || '');
           if (attempt < RETRY && isTransient) {
             await new Promise((r) => setTimeout(r, 1500));
             continue;
@@ -2483,19 +2503,35 @@ wss.on('connection', (ws, req) => {
         }
       } catch (_) {}
 
-      // 1. 每条对话结束瞬间，直接读取融合了本地实时扣减的配额快照
+      // 1. 每条对话结束瞬间，直连 Google 官方 API 实时拉取并写回当前账号最新额度
       run.done = true;
       run.isRunning = false;
-      const freshQuota = buildLiveWindowsData(cachedGoogleProfile, activeAcc);
+
+      const currentTurnAcc = getActiveAccount() || activeAcc;
+      let freshProfile = null;
+      if (currentTurnAcc) {
+        freshProfile = await refreshGoogleProfileInBackground(true, currentTurnAcc).catch(() => null);
+      }
+      const freshQuota = buildLiveWindowsData(freshProfile || cachedGoogleProfile, currentTurnAcc);
 
       // 2. 构造当轮助手的完整元数据与配额快照
-      // 存全4个窗口的配额快照(不只按模型分)
+      const isClaudeModel = String(model || '').toLowerCase().includes('claude') || String(model || '').toLowerCase().includes('gpt') || String(model || '').toLowerCase().includes('oss');
+      const active5hPool = isClaudeModel ? freshQuota?.windows?.claude5h : freshQuota?.windows?.fiveHour;
+      const activeWeeklyPool = isClaudeModel ? freshQuota?.windows?.claudeWeekly : freshQuota?.windows?.weekly;
+
       const turnQuotaSnapshot = {
         gemini5h: freshQuota?.windows?.fiveHour || null,
         geminiWeekly: freshQuota?.windows?.weekly || null,
         claude5h: freshQuota?.windows?.claude5h || null,
         claudeWeekly: freshQuota?.windows?.claudeWeekly || null,
-        model: model
+        percent: active5hPool?.percent != null ? active5hPool.percent : 100,
+        resetTime: active5hPool?.resetTime || null,
+        resetIn: active5hPool?.resetsIn || active5hPool?.resetText || '即将重置',
+        weeklyPercent: activeWeeklyPool?.percent != null ? activeWeeklyPool.percent : 100,
+        weeklyResetTime: activeWeeklyPool?.resetTime || null,
+        weeklyResetIn: activeWeeklyPool?.resetsIn || activeWeeklyPool?.resetText || '即将重置',
+        model: model,
+        accountEmail: currentTurnAcc?.email || ''
       };
 
       // 3. 自动持久化保存到当前会话文件
@@ -2553,13 +2589,30 @@ wss.on('connection', (ws, req) => {
       run.error = e;
       const errMsg = (e && e.message) || 'CLI 未返回内容';
       const errDetails = e && (e.stack || e.details || (typeof e === 'string' ? e : ''));
+      const combinedText = `${errMsg} ${errDetails}`;
+
+      // 1. 精确判断：地区受限错误（User location is not supported）
+      const isLocationBlocked = /User location is not supported|location.*not supported|FAILED_PRECONDITION.*location|REGION_BLOCKED/i.test(combinedText);
+
+      // 2. 精确判断：配额耗尽错误（RESOURCE_EXHAUSTED / 429 quota）
+      const isQuotaExceeded = !isLocationBlocked && /quota|limit reached|upgrade your subscription|RESOURCE_EXHAUSTED|Individual quota reached/i.test(combinedText);
+
       if (e && e.needsPermission) {
         broadcast({ meta: { needsPermission: true, description: '模型申请了权限操作', options: ["approve"], toolName: e.toolName || '', toolInput: e.toolInput || '' }, error: errMsg, errorDetails: errDetails });
-      } else if (/quota|limit reached|upgrade your subscription/i.test(errMsg)) {
-        broadcast({ meta: { quotaExceeded: true, description: '配额已用尽' }, error: errMsg, errorDetails: errDetails });
-      } else if (/Agent execution terminated/i.test(errMsg) && model && /gemini/i.test(model)) {
-        // agy 吞详情只报通用 terminated + gemini 模型 → G1 credits 耗尽，明确告诉用户是额度问题
-        broadcast({ meta: { quotaExceeded: true, description: 'Gemini 额度（G1 credits）已用完，请等待额度恢复' }, error: 'Gemini 额度（G1 credits）已用完，agy 返回 0 token terminated', errorDetails: errDetails });
+      } else if (isLocationBlocked) {
+        broadcast({
+          meta: { locationBlocked: true, description: '当前网络所在地区不受 Google Gemini API 支持' },
+          error: '当前网络所在地区不受 Google Gemini 支持 (User location is not supported)。建议一键切换至 Claude Sonnet / GPT 模型（不受此限制），或在网关配置代理节点。',
+          errorDetails: errDetails
+        });
+      } else if (isQuotaExceeded) {
+        broadcast({ meta: { quotaExceeded: true, description: '模型配额已用尽' }, error: errMsg, errorDetails: errDetails });
+      } else if (/Agent execution terminated/i.test(errMsg)) {
+        broadcast({
+          meta: { executionTerminated: true, description: '模型执行中断' },
+          error: '模型执行中断 (Agent execution terminated)。可能是当前网络地区受限 (User location not supported) 或连接被重置，建议切换 Claude 模型继续使用。',
+          errorDetails: errDetails
+        });
       } else {
         broadcast({ error: errMsg, errorDetails: errDetails });
       }
