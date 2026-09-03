@@ -2067,9 +2067,17 @@ app.use(express.static(path.join(__dirname, 'public'), {
   }
 }));
 app.use('/auth', oauthRouter());
+const HTML_FILE = path.join(__dirname, 'public', 'index.html');
 app.get('/', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  try {
+    let html = fs.readFileSync(HTML_FILE, 'utf-8');
+    // 动态注入时间戳，彻底消除手机移动端浏览器强缓存旧 JS 导致熄屏/切后台卡死的问题
+    html = html.replace(/\/app\.js\?v=[^"']+/g, `/app.js?v=${Date.now()}`);
+    res.type('html').send(html);
+  } catch (_) {
+    res.sendFile(HTML_FILE);
+  }
 });
 
 const server = app.listen(config.port, () => {
