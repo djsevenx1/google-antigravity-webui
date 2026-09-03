@@ -927,6 +927,20 @@ function getModelMetadata(modelId, tierData = {}) {
   const isEnterprise = tierData?.isEnterprise === true;
   const tierPrefix = isEnterprise ? '企业版' : isPro ? 'Pro' : '免费版';
 
+  if (id.startsWith('gemini-3.8-flash')) {
+    const level = id.includes('high') ? 'High' : id.includes('low') ? 'Low' : 'Medium';
+    return {
+      id: modelId,
+      name: `Gemini 3.8 Flash (${level})`,
+      series: 'Gemini',
+      percent: isPro ? 100 : 75,
+      quota: isPro ? `${tierPrefix} 5h 滚动算力池` : '免费基础配额',
+      status: 'active',
+      statusText: isPro ? `${tierPrefix} 最新一代旗舰 · 极速深度思考` : '免费基础速率约束',
+      speed: level === 'High' ? '~135 tok/s' : level === 'Medium' ? '~145 tok/s' : '~155 tok/s',
+      context: '1,048,576 tokens'
+    };
+  }
   if (id.startsWith('gemini-3.7-flash')) {
     const level = id.includes('high') ? 'High' : id.includes('low') ? 'Low' : 'Medium';
     return {
@@ -1051,8 +1065,9 @@ app.get('/api/usage', async (req, res) => {
   const cli = await fetchModels();
   const rawList = cli.ok && Array.isArray(cli.models) && cli.models.length > 0 ? cli.models : [];
   const primaryModels = [
-    'gemini-3.1-pro-high',
+    'gemini-3.8-flash-high',
     'gemini-3.7-flash-high',
+    'gemini-3.1-pro-high',
     'claude-opus-4-6-thinking',
     'claude-sonnet-4-6',
     'gpt-oss-120b-medium'
