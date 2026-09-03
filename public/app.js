@@ -3907,14 +3907,17 @@ if (btnScrollBottomEl) {
   });
 }
 
-// ── 浏览器切后台/回前台处理（借鉴 CloudCLI 的自动重连策略）──
-// 浏览器切到后台会杀 WebSocket 省电，但后端 Run Registry 一直在跑。
-// 切回前台时如果还在流式中但 ws 已断，立即关闭旧 ws 触发重连（while 循环会重建 ws 并 attach 到 ongoing run）。
+// ── 浏览器切后台/熄屏回前台处理（借鉴 CloudCLI 的自动重连策略）──
+// 手机熄屏切后台会挂起网页并断开 WebSocket 省电，但服务端 Run Registry 在后台继续执行并落盘。
+// 无论熄屏 10 分钟还是半小时，切回前台时无感拉取服务端最新数据，自动补齐完整回复。
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && state.streaming) {
-    // 标签回到前台，如果 ws 已断（浏览器后台杀的），主动关闭触发 onclose → reject → 重试循环
-    if (currentWs && currentWs.readyState !== WebSocket.OPEN) {
-      try { currentWs.close(); } catch (_) {}
+  if (document.visibilityState === "visible") {
+    silentSyncActiveConversation();
+    if (state.streaming) {
+      if (currentWs && currentWs.readyState !== WebSocket.OPEN) {
+        try { currentWs.close(); } catch (_) {}
+      }
+      tryReconnectToOngoingRun();
     }
     // 重新申请屏幕唤醒锁（切后台会被释放）
     if ('wakeLock' in navigator) {
@@ -4138,6 +4141,26 @@ async function initApp() {
 }
 
 initApp();
+
+// ── 无论熄屏多久，回到前台时无感静默同步服务端最新已落盘的消息记录 ──
+async function silentSyncActiveConversation() {
+  const conv = activeConv();
+  if (!conv) return;
+  try {
+    const res = await fetch('/api/sessions');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && Array.isArray(data.sessions)) {
+      const s = data.sessions.find(item => item.id === conv.id);
+      if (s && Array.isArray(s.messages) && s.messages.length > conv.messages.length) {
+        conv.messages = s.messages;
+        if (s.convId) conv.convId = s.convId;
+        saveConversations();
+        paintActiveConv();
+      }
+    }
+  } catch (_) {}
+}
 
 // ── 借鉴 CloudCLI：刷新/重开页面后自动重连到正在运行的后台任务，实时显示思考/工具执行/文本流 ──
 // 服务端 Run Registry 一直在跑（不因前端断开而 kill），重连后回放所有错过的事件并继续接收实时流。
