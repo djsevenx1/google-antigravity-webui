@@ -4463,6 +4463,8 @@ function getParentPath(p) {
   return parts.join('/');
 }
 
+let currentExplorerMode = "project";
+
 async function showWorkspaceExplorer() {
   activeFilePath = null;
   currentDirPath = "";
@@ -4471,6 +4473,16 @@ async function showWorkspaceExplorer() {
     <div class="workspace-explorer-wrap">
       <!-- 左侧：目录导航与文件列表 -->
       <div class="explorer-sidebar">
+        <!-- 工作区切换标签页 -->
+        <div class="explorer-mode-tabs" style="display:flex;gap:6px;margin-bottom:8px;padding:3px;background:var(--bg-tertiary);border-radius:9px;border:1px solid var(--border-color);">
+          <button id="btn-ws-mode-project" class="btn btn-sm ${currentExplorerMode === 'project' ? 'btn-primary' : 'btn-ghost'}" onclick="switchWorkspaceMode('project')" style="flex:1;padding:4px 8px;font-size:11.5px;font-weight:600;border-radius:6px;display:flex;align-items:center;justify-content:center;gap:4px;">
+            🚀 <span>开发工程 (scratch)</span>
+          </button>
+          <button id="btn-ws-mode-system" class="btn btn-sm ${currentExplorerMode === 'system' ? 'btn-primary' : 'btn-ghost'}" onclick="switchWorkspaceMode('system')" style="flex:1;padding:4px 8px;font-size:11.5px;font-weight:600;border-radius:6px;display:flex;align-items:center;justify-content:center;gap:4px;">
+            ⚙️ <span>WebUI 源码</span>
+          </button>
+        </div>
+
         <!-- 顶部路径面包屑 & 返回上一级 -->
         <div class="explorer-path-bar">
           <button id="btn-explorer-back" class="btn btn-ghost explorer-btn-back" onclick="navigateExplorerUp()" title="返回上一级目录">
@@ -4552,6 +4564,23 @@ async function showWorkspaceExplorer() {
   }
 }
 
+window.switchWorkspaceMode = async function(mode) {
+  currentExplorerMode = mode;
+  currentDirPath = "";
+  activeFilePath = null;
+  const pBtn = $("#btn-ws-mode-project");
+  const sBtn = $("#btn-ws-mode-system");
+  if (pBtn && sBtn) {
+    pBtn.className = `btn btn-sm ${mode === 'project' ? 'btn-primary' : 'btn-ghost'}`;
+    sBtn.className = `btn btn-sm ${mode === 'system' ? 'btn-primary' : 'btn-ghost'}`;
+  }
+  const emptyView = $("#explorer-empty-view");
+  const editorView = $("#explorer-editor-view");
+  if (emptyView) emptyView.classList.remove("hidden");
+  if (editorView) editorView.classList.add("hidden");
+  await reloadWorkspaceTree();
+};
+
 window.reloadWorkspaceTree = async function() {
   const listWrap = $("#explorer-list-wrap");
   if (!listWrap) return;
@@ -4561,7 +4590,7 @@ window.reloadWorkspaceTree = async function() {
     </div>
   `;
   try {
-    const res = await fetch("/api/workspace/tree");
+    const res = await fetch("/api/workspace/tree?mode=" + encodeURIComponent(currentExplorerMode));
     const data = await res.json();
     if (!data.tree) {
       listWrap.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12.5px;text-align:center;">无法读取工作区目录</div>';
@@ -4686,7 +4715,7 @@ window.openExplorerFile = async function(filePath, fileName, meta) {
   saveStatus.textContent = "正在读取...";
 
   try {
-    const res = await fetch("/api/workspace/file?path=" + encodeURIComponent(filePath));
+    const res = await fetch("/api/workspace/file?path=" + encodeURIComponent(filePath) + "&mode=" + encodeURIComponent(currentExplorerMode));
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
@@ -4721,7 +4750,7 @@ window.saveCurrentExplorerFile = async function() {
     const res = await fetch("/api/workspace/file", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: activeFilePath, content })
+      body: JSON.stringify({ path: activeFilePath, content, mode: currentExplorerMode })
     });
     const d = await res.json();
     if (d.error) throw new Error(d.error);
