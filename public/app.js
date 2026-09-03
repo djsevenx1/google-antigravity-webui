@@ -1694,6 +1694,7 @@ async function refreshModels() {
 
 function formatModelDisplayName(m) {
   if (!m) return "";
+  if (m.startsWith("gemini-3.8-flash")) return "Gemini 3.8 Flash";
   if (m.startsWith("gemini-3.7-flash")) return "Gemini 3.7 Flash";
   if (m.startsWith("gemini-3.6-flash")) return "Gemini 3.6 Flash";
   if (m.startsWith("gemini-3.5-flash")) return "Gemini 3.5 Flash";
@@ -1706,6 +1707,7 @@ function formatModelDisplayName(m) {
 
 function formatModelShortName(m) {
   if (!m) return "";
+  if (m.startsWith("gemini-3.8")) return "Gemini 3.8";
   if (m.startsWith("gemini-3.7")) return "Gemini 3.7";
   if (m.startsWith("gemini-3.6")) return "Gemini 3.6";
   if (m.startsWith("gemini-3.5")) return "Gemini 3.5";
@@ -1721,6 +1723,7 @@ function getBaseModels(rawModels) {
   const seen = new Set();
   
   const predefined = [
+    { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
     { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
     { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
     { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
@@ -1754,9 +1757,16 @@ function getBaseModels(rawModels) {
 }
 
 function resolveActualModelName(baseModel, effort) {
-  if (!baseModel) return "gemini-3.7-flash-high";
+  if (!baseModel) return "gemini-3.8-flash-high";
   const eff = String(effort || "").trim().toLowerCase();
   
+  if (baseModel.startsWith("gemini-3.8-flash")) {
+    if (eff === "high") return "gemini-3.8-flash-high";
+    if (eff === "medium") return "gemini-3.8-flash-medium";
+    if (eff === "low") return "gemini-3.8-flash-low";
+    if (eff === "off") return "gemini-3.8-flash-low";
+    return "gemini-3.8-flash-high";
+  }
   if (baseModel.startsWith("gemini-3.7-flash")) {
     if (eff === "high") return "gemini-3.7-flash-high";
     if (eff === "medium") return "gemini-3.7-flash-medium";
@@ -1789,7 +1799,7 @@ function updateEffortDropdown(baseModel) {
   const currentModels = state.models || [];
   const availableEfforts = [];
 
-  if (baseModel.startsWith("gemini-3.7-flash")) {
+  if (baseModel.startsWith("gemini-3.8-flash") || baseModel.startsWith("gemini-3.7-flash")) {
     availableEfforts.push(
       { value: "high", label: "思考: 高" },
       { value: "medium", label: "思考: 中" },
@@ -4022,9 +4032,9 @@ async function initApp() {
   if (!state.models || !state.models.length) {
     try {
       const cached = JSON.parse(localStorage.getItem("agy-cached-models") || "[]");
-      state.models = cached.length ? cached : ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
+      state.models = cached.length ? cached : ["gemini-3.8-flash-high", "gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
     } catch(_) {
-      state.models = ["gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
+      state.models = ["gemini-3.8-flash-high", "gemini-3.7-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6"];
     }
     renderModelSelect();
   }
