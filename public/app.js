@@ -58,44 +58,44 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
-  // 1. 优先读取已固化的当轮历史快照，并动态计算重置倒计时
+  // 1. 优先读取已固化的当轮历史快照，并动态计算重置倒计时（严格分离 5h 与 Weekly 字段）
   const snap = meta?.quotaSnapshot;
-  const snap5h = isGemini ? (snap?.gemini5h || snap) : (snap?.claude5h || snap);
-  const snapWeekly = isGemini ? (snap?.geminiWeekly || snap) : (snap?.claudeWeekly || snap);
+  const pool5h = isGemini ? snap?.gemini5h : snap?.claude5h;
+  const poolWeekly = isGemini ? snap?.geminiWeekly : snap?.claudeWeekly;
 
-  let h5Pct = snap5h?.percent;
-  let h5ResetTime = snap5h?.resetTime;
-  let h5ResetFallback = snap5h?.resetsIn || snap5h?.resetText || snap5h?.resetIn;
+  let h5Pct = pool5h?.percent ?? snap?.percent;
+  let h5ResetTime = pool5h?.resetTime ?? snap?.resetTime;
+  let h5ResetFallback = pool5h?.resetsIn || pool5h?.resetText || pool5h?.resetIn || snap?.resetIn || snap?.resetText;
   let h5Reset = h5ResetTime ? formatDynamicCountdown(h5ResetTime, h5ResetFallback) : h5ResetFallback;
 
-  let weeklyPct = snapWeekly?.percent ?? snap?.weeklyPercent;
-  let weeklyResetTime = snapWeekly?.resetTime ?? snap?.weeklyResetTime;
-  let weeklyResetFallback = snapWeekly?.resetsIn || snapWeekly?.resetText || snapWeekly?.resetIn || snap?.weeklyResetIn;
+  let weeklyPct = poolWeekly?.percent ?? snap?.weeklyPercent;
+  let weeklyResetTime = poolWeekly?.resetTime ?? snap?.weeklyResetTime;
+  let weeklyResetFallback = poolWeekly?.resetsIn || poolWeekly?.resetText || poolWeekly?.resetIn || snap?.weeklyResetIn || snap?.weeklyResetText;
   let weeklyReset = weeklyResetTime ? formatDynamicCountdown(weeklyResetTime, weeklyResetFallback) : weeklyResetFallback;
 
-  // 2. 实时从 state.latestUsageData 抓取真实最新数据
+  // 2. 实时从 state.latestUsageData 抓取真实最新数据补齐（若快照中缺失周度数据）
   const quota = state.latestUsageData?.windows || {};
   if (isGemini) {
     const w = quota.fiveHour;
     if (w && w.percent != null) {
       if (h5Pct == null) h5Pct = w.percent;
-      if (!h5Reset) h5Reset = formatDynamicCountdown(w.resetTime, w.resetsIn || w.resetText);
+      if (!h5Reset || h5Reset === '即将重置') h5Reset = formatDynamicCountdown(w.resetTime, w.resetsIn || w.resetText);
     }
     const ww = quota.weekly;
     if (ww && ww.percent != null) {
       if (weeklyPct == null) weeklyPct = ww.percent;
-      if (!weeklyReset) weeklyReset = formatDynamicCountdown(ww.resetTime, ww.resetsIn || ww.resetText);
+      if (!weeklyReset || weeklyReset === '即将刷新' || weeklyReset === h5Reset) weeklyReset = formatDynamicCountdown(ww.resetTime, ww.resetsIn || ww.resetText);
     }
   } else {
     const w = quota.claude5h;
     if (w && w.percent != null) {
       if (h5Pct == null) h5Pct = w.percent;
-      if (!h5Reset) h5Reset = formatDynamicCountdown(w.resetTime, w.resetsIn || w.resetText);
+      if (!h5Reset || h5Reset === '即将重置') h5Reset = formatDynamicCountdown(w.resetTime, w.resetsIn || w.resetText);
     }
     const ww = quota.claudeWeekly;
     if (ww && ww.percent != null) {
       if (weeklyPct == null) weeklyPct = ww.percent;
-      if (!weeklyReset) weeklyReset = formatDynamicCountdown(ww.resetTime, ww.resetsIn || ww.resetText);
+      if (!weeklyReset || weeklyReset === '即将刷新' || weeklyReset === h5Reset) weeklyReset = formatDynamicCountdown(ww.resetTime, ww.resetsIn || ww.resetText);
     }
   }
 
