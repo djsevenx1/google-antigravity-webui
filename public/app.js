@@ -2867,6 +2867,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
         if (!hasError && state.activeId === conv.id && targetNode && targetNode.bubble) {
           updateAssistantBubble(targetNode, acc, toolEvents, false, msgMeta);
         }
+      } else {
+        // 如果客户端内存累积为空（例如熄屏切后台期间后端已完成生成），无感从服务端抓取已写盘数据回填
+        await silentSyncActiveConversation();
       }
     }
     saveConversations();
@@ -3909,21 +3912,24 @@ if (btnScrollBottomEl) {
 
 // ── 浏览器切后台/熄屏回前台处理（借鉴 CloudCLI 的自动重连策略）──
 // 手机熄屏切后台会挂起网页并断开 WebSocket 省电，但服务端 Run Registry 在后台继续执行并落盘。
-// 无论熄屏 10 分钟还是半小时，切回前台时无感拉取服务端最新数据，自动补齐完整回复。
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") {
-    silentSyncActiveConversation();
-    if (state.streaming) {
-      if (currentWs && currentWs.readyState !== WebSocket.OPEN) {
-        try { currentWs.close(); } catch (_) {}
+// 无论熄屏 10 分钟还是半小时，切回前台时无感拉取服务端最新数据，自动补齐完整回复并解除假死转圈。
+['visibilitychange', 'focus', 'pageshow'].forEach(evt => {
+  window.addEventListener(evt, async () => {
+    if (document.visibilityState === "visible") {
+      const recovered = await silentSyncActiveConversation();
+      if (!recovered && state.streaming) {
+        if (currentWs && currentWs.readyState !== WebSocket.OPEN) {
+          try { currentWs.close(); } catch (_) {}
+          state.streaming = false;
+          updateSendButton();
+          tryReconnectToOngoingRun();
+        }
       }
-      tryReconnectToOngoingRun();
+      if ('wakeLock' in navigator) {
+        navigator.wakeLock.request('screen').catch(() => {});
+      }
     }
-    // 重新申请屏幕唤醒锁（切后台会被释放）
-    if ('wakeLock' in navigator) {
-      navigator.wakeLock.request('screen').catch(() => {});
-    }
-  }
+  });
 });
 
 // Export Conversation to Markdown
@@ -4145,21 +4151,32 @@ initApp();
 // ── 无论熄屏多久，回到前台时无感静默同步服务端最新已落盘的消息记录 ──
 async function silentSyncActiveConversation() {
   const conv = activeConv();
-  if (!conv) return;
+  if (!conv) return false;
   try {
     const res = await fetch('/api/sessions');
-    if (!res.ok) return;
+    if (!res.ok) return false;
     const data = await res.json();
     if (data && Array.isArray(data.sessions)) {
       const s = data.sessions.find(item => item.id === conv.id);
-      if (s && Array.isArray(s.messages) && s.messages.length > conv.messages.length) {
-        conv.messages = s.messages;
-        if (s.convId) conv.convId = s.convId;
-        saveConversations();
-        paintActiveConv();
+      if (s && Array.isArray(s.messages) && s.messages.length > 0) {
+        const lastRemote = s.messages[s.messages.length - 1];
+        // 如果远端消息更多，或者本地卡在 streaming 状态但远端已经产出 assistant 完整回答
+        const shouldSync = s.messages.length > conv.messages.length || 
+          (state.streaming && lastRemote && lastRemote.role === 'assistant');
+        if (shouldSync) {
+          conv.messages = s.messages;
+          if (s.convId) conv.convId = s.convId;
+          saveConversations();
+          state.streaming = false;
+          activeClientRuns.delete(conv.id);
+          updateSendButton();
+          paintActiveConv();
+          return true;
+        }
       }
     }
   } catch (_) {}
+  return false;
 }
 
 // ── 借鉴 CloudCLI：刷新/重开页面后自动重连到正在运行的后台任务，实时显示思考/工具执行/文本流 ──
