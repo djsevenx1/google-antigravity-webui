@@ -1,4 +1,3 @@
-// ── 动态高精度倒计时计算 ──
 function formatDynamicCountdown(isoString, fallbackText) {
   if (isoString) {
     const target = new Date(isoString).getTime();
@@ -12,13 +11,15 @@ function formatDynamicCountdown(isoString, fallbackText) {
         if (d > 0) return `${d}天 ${h}小时`;
         if (h > 0) return `${h}小时 ${m}分钟`;
         return `${m}分钟`;
+      } else if (diff > 0) {
+        return '即将重置';
       }
     }
   }
-  if (fallbackText && fallbackText !== '即将重置') {
+  if (fallbackText && fallbackText !== '查询中' && fallbackText !== '计算中...' && fallbackText !== '计算中') {
     return fallbackText;
   }
-  return '4小时 59分钟';
+  return '即将重置';
 }
 
 // ── 格式化高精度倒计时标签 (如 "1天13h", "4h 50m", "即将重置") ──
@@ -57,17 +58,22 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
-  // 1. 优先读取已固化的历史快照，并动态计算重置倒计时
-  let h5Pct = meta?.quotaSnapshot?.percent;
-  let h5Reset = meta?.quotaSnapshot?.resetTime 
-    ? formatDynamicCountdown(meta.quotaSnapshot.resetTime, meta.quotaSnapshot.resetIn) 
-    : meta?.quotaSnapshot?.resetIn;
-  let weeklyPct = meta?.quotaSnapshot?.weeklyPercent;
-  let weeklyReset = meta?.quotaSnapshot?.weeklyResetTime 
-    ? formatDynamicCountdown(meta.quotaSnapshot.weeklyResetTime, meta.quotaSnapshot.weeklyResetIn) 
-    : meta?.quotaSnapshot?.weeklyResetIn;
+  // 1. 优先读取已固化的当轮历史快照，并动态计算重置倒计时
+  const snap = meta?.quotaSnapshot;
+  const snap5h = isGemini ? (snap?.gemini5h || snap) : (snap?.claude5h || snap);
+  const snapWeekly = isGemini ? (snap?.geminiWeekly || snap) : (snap?.claudeWeekly || snap);
 
-  // 2. 实时从 state.latestUsageData 或 localStorage 抓取真实数据
+  let h5Pct = snap5h?.percent;
+  let h5ResetTime = snap5h?.resetTime;
+  let h5ResetFallback = snap5h?.resetsIn || snap5h?.resetText || snap5h?.resetIn;
+  let h5Reset = h5ResetTime ? formatDynamicCountdown(h5ResetTime, h5ResetFallback) : h5ResetFallback;
+
+  let weeklyPct = snapWeekly?.percent ?? snap?.weeklyPercent;
+  let weeklyResetTime = snapWeekly?.resetTime ?? snap?.weeklyResetTime;
+  let weeklyResetFallback = snapWeekly?.resetsIn || snapWeekly?.resetText || snapWeekly?.resetIn || snap?.weeklyResetIn;
+  let weeklyReset = weeklyResetTime ? formatDynamicCountdown(weeklyResetTime, weeklyResetFallback) : weeklyResetFallback;
+
+  // 2. 实时从 state.latestUsageData 抓取真实最新数据
   const quota = state.latestUsageData?.windows || {};
   if (isGemini) {
     const w = quota.fiveHour;
@@ -93,11 +99,11 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
     }
   }
 
-  // 3. 动态兜底（100% 对齐反重力 2.0 官方基准）
-  if (h5Pct == null) h5Pct = isGemini ? 51.2 : 100;
-  if (!h5Reset) h5Reset = isGemini ? '1小时 30分钟' : '4小时 59分钟';
-  if (weeklyPct == null) weeklyPct = isGemini ? 14.9 : 0;
-  if (!weeklyReset) weeklyReset = '4天 3小时';
+  // 3. 容错默认值
+  if (h5Pct == null) h5Pct = 100;
+  if (!h5Reset) h5Reset = '即将重置';
+  if (weeklyPct == null) weeklyPct = 100;
+  if (!weeklyReset) weeklyReset = '即将刷新';
 
   const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
   const poolLabel = isGemini ? 'Gemini 5h' : 'Claude/GPT 5h';
@@ -2407,6 +2413,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
           }
           if (data.meta && data.meta.needsPermission) { needsPerm = true; permMsg = data.error || "CLI 需要授权"; permToolName = data.meta.toolName || ''; permToolInput = data.meta.toolInput || ''; return; }
+          if (data.meta && data.meta.locationBlocked) { streamError = Object.assign(new Error(data.error || "当前地区不受 Google 支持"), { locationBlocked: true, errorDetails: data.errorDetails }); done(() => reject(streamError)); return; }
           if (data.meta && data.meta.quotaExceeded) { streamError = Object.assign(new Error(data.error || "模型配额已用尽"), { quotaExceeded: true, errorDetails: data.errorDetails }); done(() => reject(streamError)); return; }
           if (data.error) { streamError = Object.assign(new Error(data.error), { errorDetails: data.errorDetails }); done(() => reject(streamError)); return; }
           
@@ -2768,14 +2775,17 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
           } catch (_) {}
         }
-        const isQuotaErr = e.quotaExceeded || /quota|limit reached|upgrade your subscription/i.test(errMsg);
+        const isLocationErr = e.locationBlocked || /User location is not supported|location.*not supported|FAILED_PRECONDITION.*location/i.test(errMsg);
+        const isQuotaErr = !isLocationErr && (e.quotaExceeded || /quota|limit reached|upgrade your subscription/i.test(errMsg));
         const errDetails = e.errorDetails || e.details || (e.stack && e.stack !== errMsg ? e.stack : '');
         const detailsBlock = (errDetails && errDetails !== errMsg) 
           ? `<div class="chat-error-details" style="margin-top:8px;padding:8px 12px;background:rgba(0,0,0,0.35);border:1px solid rgba(239,68,68,0.25);border-radius:6px;font-family:monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow-y:auto;text-align:left;">${escapeHtml(errDetails)}</div>`
           : '';
 
         let errorHtml = "";
-        if (isQuotaErr) {
+        if (isLocationErr) {
+          errorHtml = `<div class="chat-error-card location-error" style="border-left: 4px solid #f59e0b; background: rgba(245, 158, 11, 0.08); padding: 14px 16px; border-radius: 8px;"><div class="chat-error-title" style="color: #fbbf24; font-weight: 600; display: flex; align-items: center; gap: 6px;"><i data-lucide="globe-2" style="width:16px;height:16px;"></i> ⚠️ 所在地区不受 Google Gemini 支持 (User location is not supported)</div><div class="chat-error-desc" style="margin-top:6px; color: var(--text-secondary, #cbd5e1); font-size: 13px; line-height: 1.5;">当前服务器网络出口 IP 所在地区未在 Google Gemini API 开放列表中。由于 <b>Claude / GPT</b> 模型不受此地区限制，您可以点击下方按钮一键切换模型继续对话。</div>${detailsBlock}<div class="chat-error-actions" style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;"><button class="btn btn-primary btn-sm" onclick="switchModelAndRetry('claude-sonnet-4-6')"><i data-lucide="sparkles" style="width:13px;height:13px;"></i> 切换至 Claude Sonnet 4.6 并重试</button><button class="btn btn-outline btn-sm" onclick="retryLastConversationTurn()"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> 重试</button></div></div>`;
+        } else if (isQuotaErr) {
           const m = errMsg.match(/Resets in (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/i);
           if (m) {
             const resetAt = Date.now() + ((parseInt(m[1]||0)*3600) + (parseInt(m[2]||0)*60) + parseInt(m[3]||0))*1000;
