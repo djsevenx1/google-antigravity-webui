@@ -1987,8 +1987,20 @@ app.post('/api/chat', async (req, res) => {
 
 
 // ---------- 工作区文件树与代码查看 ----------
-const WORKSPACE_ROOT = path.resolve(__dirname, '..');
-const IGNORED_DIRS = new Set(['node_modules', '.git', '.npm-global', '.fcc-venv', '.cache', '.gemini']);
+const SCRATCH_ROOT = path.resolve(__dirname, 'home/.gemini/antigravity-cli/scratch');
+if (!fs.existsSync(SCRATCH_ROOT)) {
+  fs.mkdirSync(SCRATCH_ROOT, { recursive: true });
+}
+const CLI_ROOT = path.resolve(__dirname);
+const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || SCRATCH_ROOT;
+
+function resolveWorkspaceRoot(req) {
+  const mode = String(req?.query?.mode || req?.body?.mode || '').toLowerCase();
+  if (mode === 'system' || mode === 'cli' || mode === 'webui') return CLI_ROOT;
+  return WORKSPACE_ROOT;
+}
+
+const IGNORED_DIRS = new Set(['node_modules', '.git', '.npm-global', '.fcc-venv', '.cache']);
 
 function getWorkspaceTree(dirPath, relativeTo = WORKSPACE_ROOT, depth = 0) {
   if (depth > 4) return [];
@@ -2022,10 +2034,11 @@ function getWorkspaceTree(dirPath, relativeTo = WORKSPACE_ROOT, depth = 0) {
   return result;
 }
 
-app.get('/api/workspace/tree', (_req, res) => {
+app.get('/api/workspace/tree', (req, res) => {
   try {
-    const tree = getWorkspaceTree(WORKSPACE_ROOT);
-    send(res, 200, { tree, root: WORKSPACE_ROOT });
+    const currentRoot = resolveWorkspaceRoot(req);
+    const tree = getWorkspaceTree(currentRoot, currentRoot);
+    send(res, 200, { tree, root: currentRoot, mode: currentRoot === CLI_ROOT ? 'system' : 'project' });
   } catch (e) {
     send(res, 500, { error: e.message });
   }
@@ -2034,8 +2047,9 @@ app.get('/api/workspace/tree', (_req, res) => {
 app.get('/api/workspace/file', async (req, res) => {
   const filePath = String(req.query.path || '');
   if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
-  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
-  if (!safePath.startsWith(WORKSPACE_ROOT)) {
+  const currentRoot = resolveWorkspaceRoot(req);
+  const safePath = path.resolve(currentRoot, filePath);
+  if (!safePath.startsWith(currentRoot)) {
     return send(res, 403, { error: '非法路径访问' });
   }
   try {
@@ -2660,8 +2674,9 @@ app.post('/api/workspace/file', async (req, res) => {
   const filePath = String(req.body?.path || '');
   const content = String(req.body?.content || '');
   if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
-  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
-  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  const currentRoot = resolveWorkspaceRoot(req);
+  const safePath = path.resolve(currentRoot, filePath);
+  if (!safePath.startsWith(currentRoot)) return send(res, 403, { error: '非法路径' });
   try {
     await writeFile(safePath, content, 'utf-8');
     send(res, 200, { ok: true });
@@ -2671,8 +2686,9 @@ app.post('/api/workspace/file', async (req, res) => {
 app.delete('/api/workspace/file', async (req, res) => {
   const filePath = String(req.query.path || '');
   if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
-  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
-  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  const currentRoot = resolveWorkspaceRoot(req);
+  const safePath = path.resolve(currentRoot, filePath);
+  if (!safePath.startsWith(currentRoot)) return send(res, 403, { error: '非法路径' });
   try {
     fs.rmSync(safePath, { recursive: true });
     send(res, 200, { ok: true });
@@ -2682,8 +2698,9 @@ app.delete('/api/workspace/file', async (req, res) => {
 app.post('/api/workspace/create', async (req, res) => {
   const { path: relPath, type } = req.body || {};
   if (!relPath) return send(res, 400, { error: '缺少 path' });
-  const safePath = path.resolve(WORKSPACE_ROOT, relPath);
-  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  const currentRoot = resolveWorkspaceRoot(req);
+  const safePath = path.resolve(currentRoot, relPath);
+  if (!safePath.startsWith(currentRoot)) return send(res, 403, { error: '非法路径' });
   try {
     if (type === 'dir') fs.mkdirSync(safePath, { recursive: true });
     else fs.writeFileSync(safePath, '', 'utf-8');
@@ -2694,9 +2711,10 @@ app.post('/api/workspace/create', async (req, res) => {
 app.put('/api/workspace/rename', async (req, res) => {
   const { oldPath, newPath } = req.body || {};
   if (!oldPath || !newPath) return send(res, 400, { error: '缺少路径' });
-  const safeOld = path.resolve(WORKSPACE_ROOT, oldPath);
-  const safeNew = path.resolve(WORKSPACE_ROOT, newPath);
-  if (!safeOld.startsWith(WORKSPACE_ROOT) || !safeNew.startsWith(WORKSPACE_ROOT))
+  const currentRoot = resolveWorkspaceRoot(req);
+  const safeOld = path.resolve(currentRoot, oldPath);
+  const safeNew = path.resolve(currentRoot, newPath);
+  if (!safeOld.startsWith(currentRoot) || !safeNew.startsWith(currentRoot))
     return send(res, 403, { error: '非法路径' });
   try {
     fs.renameSync(safeOld, safeNew);
