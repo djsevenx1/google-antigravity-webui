@@ -2349,7 +2349,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           }
         };
 
-        // 45 秒静默守护看门狗：如果 45s 内未收到任何数据或心跳，主动检测服务端落盘状态，自愈恢复
+        // 300 秒（5分钟）静默守护看门狗：为深度思考（Thinking: High）和慢速网络操作预留充足时间
         const resetInactivityWatchdog = () => {
           if (inactivityWatchdog) clearTimeout(inactivityWatchdog);
           inactivityWatchdog = setTimeout(async () => {
@@ -2373,10 +2373,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 }
               } catch (_) {}
 
-              streamError = Object.assign(new Error("网络连接无应答或服务已重启（已自动同步最新进度）"), { isTimeout: true });
+              streamError = Object.assign(new Error("网络连接超时（已自动同步最新进度）"), { isTimeout: true });
               done(() => reject(streamError));
             }
-          }, 45000);
+          }, 300000); // 300s 守护
         };
 
         resetInactivityWatchdog();
