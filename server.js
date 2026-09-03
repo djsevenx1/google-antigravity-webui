@@ -2059,14 +2059,6 @@ app.use((req, res, next) => {
   res.setHeader('Expires', '0');
   next();
 });
-app.use(express.static(path.join(__dirname, 'public'), {
-  etag: false,
-  maxAge: 0,
-  setHeaders: (res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  }
-}));
-app.use('/auth', oauthRouter());
 const HTML_FILE = path.join(__dirname, 'public', 'index.html');
 app.get('/', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -2079,6 +2071,15 @@ app.get('/', (_req, res) => {
     res.sendFile(HTML_FILE);
   }
 });
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false,
+  maxAge: 0,
+  index: false, // 禁用 static 自带的 index.html 拦截，由 app.get('/') 动态注入版本号
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  }
+}));
+app.use('/auth', oauthRouter());
 
 const server = app.listen(config.port, () => {
   startAuthPoller(); // 后台刷新 CLI 登录态，避免 /api/status 阻塞
