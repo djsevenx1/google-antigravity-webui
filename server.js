@@ -2416,6 +2416,22 @@ wss.on('connection', (ws, req) => {
                   });
                 }
               }
+              // 实时语法检查（和 CloudCLI 一样）：写文件工具完成 → 立即 node --check → 错了让 agy 修
+              if (p && p.toolName && /^(write_to_file|replace_file_content|multi_replace_file_content|notebook_edit|sed_file)$/.test(p.toolName) && p.toolState === 'DONE') {
+                const fp = (p.toolInput && (p.toolInput.TargetFile || p.toolInput.AbsolutePath || p.toolInput.FilePath || p.toolInput.path || p.toolInput.file)) || '';
+                if (fp && /\.js$/i.test(fp) && fs.existsSync(fp)) {
+                  try {
+                    execFileSync('node', ['--check', fp], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+                    debugLog(`[realtime-check] ✅ ${fp}`);
+                  } catch (e) {
+                    const errMsg = String(e.stderr || e.message).split('\n').slice(0, 3).join('\n');
+                    debugLog(`[realtime-check] ❌ ${fp}: ${errMsg}`);
+                    broadcast({ delta: '\n\n⚠️ **语法检查失败** ' + fp + '\n' + errMsg + '\n' });
+                    // 让 agy 立即修（不等对话结束）
+                    broadcast({ progress: true, tip: '检测到语法错误，正在自动修复...', autoFix: true, fixFile: fp, fixError: errMsg });
+                  }
+                }
+              }
               broadcast({ progress: true, waited, ...p });
             },
             signal: runAbortController.signal,
