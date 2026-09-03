@@ -4561,7 +4561,7 @@ window.reloadWorkspaceTree = async function() {
     </div>
   `;
   try {
-    const res = await fetch("/api/workspace/tree?mode=" + encodeURIComponent(currentExplorerMode));
+    const res = await fetch("/api/workspace/tree");
     const data = await res.json();
     if (!data.tree) {
       listWrap.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12.5px;text-align:center;">无法读取工作区目录</div>';
@@ -4686,7 +4686,7 @@ window.openExplorerFile = async function(filePath, fileName, meta) {
   saveStatus.textContent = "正在读取...";
 
   try {
-    const res = await fetch("/api/workspace/file?path=" + encodeURIComponent(filePath) + "&mode=" + encodeURIComponent(currentExplorerMode));
+    const res = await fetch("/api/workspace/file?path=" + encodeURIComponent(filePath));
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
@@ -4721,7 +4721,7 @@ window.saveCurrentExplorerFile = async function() {
     const res = await fetch("/api/workspace/file", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: activeFilePath, content, mode: currentExplorerMode })
+      body: JSON.stringify({ path: activeFilePath, content })
     });
     const d = await res.json();
     if (d.error) throw new Error(d.error);
