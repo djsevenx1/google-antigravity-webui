@@ -398,7 +398,21 @@ import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
-import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts, syncAccountLocalQuota, deductAccountQuota } from './lib/accounts.js';
+import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts, syncAccountLocalQuota, deductAccountQuota, syncAccountUpstreamQuota } from './lib/accounts.js';
+
+// 每 2 小时定时直连 Google 上游拉取并替换当前激活账号的最新额度数据
+const TWO_HOURS_INTERVAL = 2 * 60 * 60 * 1000;
+setInterval(async () => {
+  try {
+    const active = getActiveAccount();
+    if (active) {
+      await syncAccountUpstreamQuota(active, true);
+      console.log(`[2h-Poller] 已自动同步 Google 上游额度并更新当前账号: ${active.email}`);
+    }
+  } catch (err) {
+    console.warn('[2h-Poller] 2小时定时同步额度异常:', err && err.message);
+  }
+}, TWO_HOURS_INTERVAL);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 LOCAL_QUOTA_FILE = path.join(__dirname, "data", "local_quota.json");
@@ -1020,25 +1034,15 @@ function getModelMetadata(modelId, tierData = {}) {
 
 app.get('/api/usage', async (req, res) => {
   const force = req.query.refresh === '1' || req.query.force === '1';
-  const activeAcc = getActiveAccount();
-  
-  const lastUpdated = activeAcc?.quotaUpdatedAt || profileFetchedAt;
-  const isStale = (Date.now() - lastUpdated > QUOTA_CALIBRATE_TTL) || (!activeAcc?.quotaSummary && !cachedGoogleProfile?.liveQuotaSummary);
+  const currentActive = getActiveAccount();
 
-  let freshProfile = null;
-  if (force || isStale) {
-    profileFetchedAt = Date.now();
-    freshProfile = await refreshGoogleProfileInBackground(true, activeAcc).catch(() => {});
+  // 1. 直连 Google 上游同步配额与重置时间（支持手动强刷/2小时过期判定）
+  let quotaData = null;
+  if (currentActive) {
+    quotaData = await syncAccountUpstreamQuota(currentActive, force).catch(() => null);
   }
 
-  const currentActive = getActiveAccount() || activeAcc;
-  const googleAccount = getActiveGoogleProfile();
-  const tierData = googleAccount?.tierData || parseGoogleAccountTier(null, null);
-
-  const liveBuild = buildLiveWindowsData(freshProfile || googleAccount || cachedGoogleProfile, currentActive);
-  const windows = liveBuild.windows;
-
-  // 动态读取 CLI 真实模型列表
+  // 2. 动态读取 CLI 真实可用模型
   const cli = await fetchModels();
   const rawList = cli.ok && Array.isArray(cli.models) && cli.models.length > 0 ? cli.models : [];
   const primaryModels = [
@@ -1051,38 +1055,15 @@ app.get('/api/usage', async (req, res) => {
   const rawModelIds = primaryModels.filter(m => rawList.length === 0 || rawList.includes(m) || rawList.some(r => r.startsWith(m.split('-')[0])));
 
   const modelsQuota = rawModelIds.map((m) => {
-    const meta = getModelMetadata(m, tierData);
-    const buckets = cachedGoogleProfile?.liveQuotaBuckets || [];
-    // 1. 优先从 liveQuotaBuckets 精准匹配
-    const b = buckets.find(item => item.modelId === m || (m.startsWith('gemini') && item.modelId?.startsWith('gemini-3.7')) || (m.startsWith('claude-sonnet') && item.modelId?.startsWith('claude-sonnet')) || (m.startsWith('claude-opus') && item.modelId?.startsWith('claude-opus')) || (m.startsWith('gpt') && item.modelId?.startsWith('gpt')));
-    if (b && b.remainingFraction != null) {
-      meta.percent = parseFloat((b.remainingFraction * 100).toFixed(1));
-      if (b.resetTime) meta.resetTime = b.resetTime;
-    } else if (cachedGoogleProfile?.liveModelsQuota) {
-      const q = cachedGoogleProfile.liveModelsQuota;
-      let qInfo = q[m]?.quotaInfo;
-      if (!qInfo) {
-        const prefix = m.split('-')[0];
-        const matchKey = Object.keys(q).find(k => k.startsWith(prefix) && q[k]?.quotaInfo);
-        if (matchKey) qInfo = q[matchKey].quotaInfo;
-      }
-      if (qInfo) {
-        let fraction = 1.0;
-        if (qInfo.remainingFraction != null) {
-          fraction = qInfo.remainingFraction;
-        } else if (qInfo.resetTime && new Date(qInfo.resetTime).getTime() > Date.now()) {
-          fraction = 0;
-        }
-        meta.percent = parseFloat((fraction * 100).toFixed(1));
-        if (qInfo.resetTime) {
-          meta.resetTime = qInfo.resetTime;
-        }
-      }
-    }
+    const meta = getModelMetadata(m, { name: 'Google AI Pro', type: 'pro', badge: 'PRO' });
+    const isClaude = m.includes('claude') || m.includes('gpt') || m.includes('oss');
+    const pool = isClaude ? quotaData?.windows?.claude5h : quotaData?.windows?.fiveHour;
+    meta.percent = pool?.percent != null ? pool.percent : 100;
+    if (pool?.resetTime) meta.resetTime = pool.resetTime;
     return meta;
   });
 
-  // 汇总本地真实会话数与 Token 统计
+  // 3. 汇总本地真实会话数与 Token 统计
   let totalConversations = 0;
   let totalTurns = 0;
   let totalTokens = 0;
@@ -1097,16 +1078,8 @@ app.get('/api/usage', async (req, res) => {
           if (Array.isArray(sess.messages)) {
             totalTurns += Math.floor(sess.messages.length / 2);
             for (const m of sess.messages) {
-              if (m.usage) {
-                if (m.usage.total_tokens) {
-                  totalTokens += m.usage.total_tokens;
-                } else if (m.usage.input_tokens || m.usage.output_tokens) {
-                  totalTokens += (m.usage.input_tokens || 0) + (m.usage.output_tokens || 0);
-                } else if (m.usage.prompt_tokens || m.usage.completion_tokens) {
-                  totalTokens += (m.usage.prompt_tokens || 0) + (m.usage.completion_tokens || 0);
-                } else if (typeof m.content === 'string') {
-                  totalTokens += Math.round(m.content.length / 3.2);
-                }
+              if (m.usage?.total_tokens) {
+                totalTokens += m.usage.total_tokens;
               } else if (typeof m.content === 'string') {
                 totalTokens += Math.round(m.content.length / 3.2);
               }
@@ -1118,17 +1091,15 @@ app.get('/api/usage', async (req, res) => {
   } catch (_) {}
 
   send(res, 200, {
-    account: googleAccount ? {
-      name: googleAccount.name,
-      email: googleAccount.email,
-      picture: googleAccount.picture
+    account: currentActive ? {
+      name: currentActive.name || quotaData?.name || 'Google 用户',
+      email: currentActive.email,
+      picture: currentActive.picture || quotaData?.picture || ''
     } : { name: '未登录', email: '未检测到认证', picture: '' },
-    tier: tierData.name,
-    tierType: tierData.type,
-    tierBadge: tierData.badge,
-    topNotice: liveBuild.topNotice,
-    groups: liveBuild.groups,
-    windows,
+    tier: quotaData?.tier || 'Google AI Pro',
+    tierType: quotaData?.tierType || 'pro',
+    tierBadge: quotaData?.tierBadge || 'PRO',
+    windows: quotaData?.windows || {},
     models: modelsQuota,
     metrics: {
       totalConversations,
@@ -1136,8 +1107,7 @@ app.get('/api/usage', async (req, res) => {
       totalTokens,
       tokensFormatted: totalTokens > 1000000 ? (totalTokens / 1000000).toFixed(2) + 'M' : (totalTokens > 1000 ? (totalTokens / 1000).toFixed(1) + 'k' : String(totalTokens))
     },
-    useG1Credits: tierData.useG1Credits,
-    liveApiConnected: googleAccount?.liveApiConnected || false,
+    quotaUpdatedAt: currentActive?.quotaUpdatedAt || quotaData?.quotaUpdatedAt || Date.now(),
     timestamp: Date.now()
   });
 });
@@ -1726,18 +1696,17 @@ app.post('/api/accounts/switch', async (req, res) => {
   if (!r.ok) return send(res, 400, { error: r.error });
   debugLog('[accounts] switched to:', r.account.email || r.account.label);
   invalidateCliAuth();
-  
-  // 切换账号：优先复用该账号 2 小时内缓存配额，实现 0 毫秒秒切！
+  cachedGoogleProfile = null;
+  // 切换账号后立即直连 Google 上游拉取并替换该账号的最新额度数据
   let switchedAcc = getActiveAccount() || r.account;
-  let newProfile = null;
+  let newQuota = null;
   try {
-    newProfile = await refreshGoogleProfileInBackground(false, switchedAcc);
+    newQuota = await syncAccountUpstreamQuota(switchedAcc, true);
     switchedAcc = getActiveAccount() || r.account;
   } catch (err) {
-    debugLog('[accounts/switch] quota check error:', err && err.message);
+    debugLog('[accounts/switch] quota sync error:', err && err.message);
   }
-  const newQuota = buildLiveWindowsData(newProfile || cachedGoogleProfile, switchedAcc);
-  send(res, 200, { ...r, profile: newProfile, quota: newQuota });
+  send(res, 200, { ...r, quota: newQuota });
 });
 
 app.delete('/api/accounts/:email', async (req, res) => {
@@ -1751,18 +1720,17 @@ app.delete('/api/accounts/:email', async (req, res) => {
   debugLog('[accounts] removed (切除账号):', email);
   invalidateCliAuth();
   
-  // 切除/删除账号后，复用当前主账号 2 小时内配额
+  // 切除/删除账号后，直连 Google 上游刷新并替换主账号额度
   const activeAcc = getActiveAccount();
-  let freshProfile = null;
+  let freshQuota = null;
   if (activeAcc) {
     try {
-      freshProfile = await refreshGoogleProfileInBackground(false, activeAcc);
+      freshQuota = await syncAccountUpstreamQuota(activeAcc, true);
     } catch (err) {
-      debugLog('[accounts/remove] quota check error:', err && err.message);
+      debugLog('[accounts/remove] quota sync error:', err && err.message);
     }
   }
-  const freshQuota = buildLiveWindowsData(freshProfile || cachedGoogleProfile, activeAcc);
-  send(res, 200, { ok: true, quota: freshQuota, profile: freshProfile, account: activeAcc });
+  send(res, 200, { ok: true, quota: freshQuota, account: activeAcc });
 });
 
 app.post('/api/chat/abort', (req, res) => {
@@ -2265,6 +2233,12 @@ wss.on('connection', (ws, req) => {
       try { existingRun.abortController?.abort(); } catch (_) {}
       existingRun.isRunning = false;
       activeRuns.delete(convKey);
+    }
+
+    // 第一次对话或 2h 过期，自动直连 Google 上游同步并替换额度数据
+    const activeAcc = getActiveAccount();
+    if (activeAcc) {
+      syncAccountUpstreamQuota(activeAcc, false).catch(() => {});
     }
 
     // 新建后台 Run
