@@ -6,6 +6,12 @@ cd "$(dirname "$0")"
 # 设独立 HOME：让 agy 读取本目录 home/ 下的登录态与对话历史，脱离 vol5 原 HOME
 export HOME="$(pwd)/home"
 
+# 强制英文/非亚洲环境，避免 agy 识别成中文区域触发地区报错
+export LANG="en_US.UTF-8"
+export LC_ALL="en_US.UTF-8"
+export LANGUAGE="en:en"
+export TZ="America/New_York"
+
 # 1) 检查 CLI
 AGY_BIN="${AGY_BIN:-}"
 if [ -z "$AGY_BIN" ]; then

@@ -32,3 +32,11 @@ home/
 *.apk
 *.bak.*
 jinri_video_app
+
+# Clash 订阅/节点配置（含真实代理凭据，绝不外传）
+*.yaml
+*.yanl
+clash-*
+public/sub
+public/sub_vmess
+public/bpb.*
