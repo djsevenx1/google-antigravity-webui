@@ -3797,15 +3797,35 @@ async function showUsageModal(manualRefresh = false) {
     renderUsageModalContent(state.latestUsageData);
   }
 
+  const syncBtn = $("#btn-sync-ai-pro");
+  if (manualRefresh && syncBtn) {
+    syncBtn.disabled = true;
+    syncBtn.innerHTML = `<span class="thinking-dots"><i></i><i></i><i></i></span> <span style="font-size:11px;">直连 Google 上游中...</span>`;
+  }
+
   try {
-    const res = await fetch(manualRefresh ? "/api/usage?refresh=1" : "/api/usage");
+    const targetEmail = googleAcc.email ? encodeURIComponent(googleAcc.email) : '';
+    const query = [
+      manualRefresh ? 'refresh=1' : '',
+      targetEmail ? `email=${targetEmail}` : ''
+    ].filter(Boolean).join('&');
+    const url = '/api/usage' + (query ? '?' + query : '');
+    const res = await fetch(url);
     const d = await res.json();
     state.latestUsageData = d;
     try { localStorage.setItem("agy-cached-usage", JSON.stringify(d)); } catch (_) {}
     renderUsageModalContent(d);
     updateUsageSummary(d);
+    if (manualRefresh) toast("已成功从 Google 上游直连拉取最新配额！");
   } catch (e) {
     console.error("加载用量失败", e);
+    if (manualRefresh) toast("从 Google 上游同步配额失败: " + e.message);
+  } finally {
+    if (syncBtn) {
+      syncBtn.disabled = false;
+      syncBtn.innerHTML = `<i data-lucide="refresh-cw" style="width:12px;height:12px;"></i><span>实时刷新</span>`;
+      refreshIcons();
+    }
   }
 }
 

@@ -709,8 +709,11 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
     fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) })
   ]);
 
-  // 如果遇到 401，立即强制刷新 Token 并重试一次
-  if ((quotaSummaryRes.status === 'fulfilled' && !quotaSummaryRes.value?.ok) || (userinfoRes.status === 'fulfilled' && userinfoRes.value?.status === 401)) {
+  // 如果遇到 401，立即强制刷新 Token 并重试一次（注意：503 地区限制不触发重试，避免无效刷新）
+  const _quotaStatus = quotaSummaryRes.status === 'fulfilled' ? quotaSummaryRes.value?.status : null;
+  const _userinfoStatus = userinfoRes.status === 'fulfilled' ? userinfoRes.value?.status : null;
+  const is401Error = _userinfoStatus === 401 || _quotaStatus === 401;
+  if (is401Error) {
     raw = await refreshAccessToken(raw);
     token = raw?.token?.access_token;
     if (token) {
@@ -772,6 +775,14 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
     updateAccountQuota(currentEmail, liveQuotaSummary, liveQuotaBuckets);
   }
 
+  // 判断地区限制：503 表示网络可达但地区受限，不等同于断网
+  const tierHttpStatus = tierRes.status === 'fulfilled' ? tierRes.value?.status : null;
+  const isLocationBlocked503 = tierHttpStatus === 503;
+  // 真正的网络不通：请求 rejected（网络层错误）
+  const tierNetworkFailed = tierRes.status === 'rejected';
+  // API 可达（收到任何 HTTP 响应）= 网络通（即使 503 地区限制）
+  const apiReachable = tierRes.status === 'fulfilled' || (userinfoRes.status === 'fulfilled');
+
   const profileObj = {
     email: currentEmail,
     name: currentName,
@@ -781,7 +792,8 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
     tierBadge: tierData.badge,
     tierData,
     tierDetails: liveTierInfo?.allowedTiers?.[0] || null,
-    liveApiConnected: !!liveTierInfo,
+    liveApiConnected: !!liveTierInfo || apiReachable, // 503 地区限制时 API 仍可达，不算断连
+    locationBlocked: isLocationBlocked503, // 明确标记地区受限
     liveQuotaSummary: liveQuotaSummary || currentAcc?.quotaSummary || null,
     liveModelsQuota: liveModelsQuota || cachedGoogleProfile?.liveModelsQuota || null,
     liveQuotaBuckets: liveQuotaBuckets || currentAcc?.quotaBuckets || null,
@@ -1051,7 +1063,8 @@ function getModelMetadata(modelId, tierData = {}) {
 
 app.get('/api/usage', async (req, res) => {
   const force = req.query.refresh === '1' || req.query.force === '1';
-  const currentActive = getActiveAccount();
+  const emailParam = req.query.email ? String(req.query.email).trim() : '';
+  const currentActive = emailParam ? (listAccounts().find(a => a.email === emailParam) || getActiveAccount()) : getActiveAccount();
 
   // 1. 直连 Google 上游同步配额与重置时间（支持手动强刷/2小时过期判定）
   let quotaData = null;
