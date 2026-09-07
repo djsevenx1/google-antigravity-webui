@@ -426,6 +426,43 @@ function formatToolCallCard(t, index, isRunning = false) {
       `}
     `;
     linesBadge = waited || 'search';
+  } else if (toolName.includes('image')) {
+    typeClass = 'type-image';
+    badgeText = 'Image';
+    iconHtml = '<i data-lucide="image" style="width:12px;height:12px;"></i>';
+    const prompt = cleanArgVal(input.Prompt || input.prompt || '');
+    const imgName = cleanArgVal(input.ImageName || input.name || '');
+    summaryText = prompt ? `生成图片: ${prompt.slice(0, 36)}...` : (tip || 'AI 图像生成');
+    subtitleText = t.toolAction || t.toolSummary || (imgName ? `名称: ${imgName}` : 'AI 图像生成完成');
+    copyText = output || prompt || summaryText;
+
+    let imageSrc = '';
+    const imgMatch = (output || '').match(/(?:\/vol[^\s"']+\.(?:jpg|jpeg|png|webp|gif)|\/home[^\s"']+\.(?:jpg|jpeg|png|webp|gif)|[^\s"']+\.(?:jpg|jpeg|png|webp|gif))/i);
+    if (imgMatch) {
+      const fullPath = imgMatch[0];
+      const fn = fullPath.split('/').pop();
+      imageSrc = `/api/assets/files/${encodeURIComponent(fn)}`;
+    }
+
+    detailCode = `
+      <div class="tool-file-header">
+        <span class="file-path">🎨 ${escapeHtml(imgName || '生成的图片')}</span>
+        ${input.AspectRatio ? `<span class="line-range">${escapeHtml(input.AspectRatio)}</span>` : ''}
+      </div>
+      ${prompt ? `<div style="font-size:12px;color:var(--text-secondary);margin:6px 0 10px 0;line-height:1.5;"><strong>Prompt:</strong> ${escapeHtml(prompt)}</div>` : ''}
+      ${imageSrc ? `
+        <div style="margin:10px 0;text-align:center;background:rgba(0,0,0,0.25);padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);">
+          <img src="${imageSrc}" style="max-width:100%;max-height:360px;border-radius:6px;cursor:pointer;object-fit:contain;box-shadow:0 4px 14px rgba(0,0,0,0.3);" onclick="openImageLightbox(this.src)" title="点击全屏查看大图" />
+          <div style="margin-top:6px;font-size:11px;color:var(--text-dim);">点击图片可全屏放大查看</div>
+        </div>
+      ` : (isRunning ? `<div style="font-size:11px;color:#38bdf8;margin-top:6px;">⚡ 正在生成图片并渲染中...</div>` : '')}
+      ${output ? `
+        <div class="tool-output-section">
+          <pre class="tool-output-content">${escapeHtml(output.trim())}</pre>
+        </div>
+      ` : ''}
+    `;
+    linesBadge = waited || 'image';
   } else {
     typeClass = 'type-thought';
     badgeText = 'Thought';
@@ -1480,6 +1517,17 @@ function formatMarkdown(text, isStreaming = false) {
             </details>
           `;
         });
+
+        // 自动将 Markdown 中的本地图片路径（如 /vol1/...、file://...、brain/...、scratch/...）转换为 Web 可直接渲染的图片 URL 并绑定点击放大
+        rawHtml = rawHtml.replace(/<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)>/gi, (match, prefix, src, suffix) => {
+          let finalSrc = src;
+          if (src.startsWith('file://') || src.startsWith('/vol1/') || src.startsWith('/home/') || src.includes('/brain/') || src.includes('/scratch/')) {
+            const fn = src.split('/').pop().split('?')[0];
+            finalSrc = `/api/assets/files/${encodeURIComponent(fn)}`;
+          }
+          return `<div class="chat-embedded-image-wrap" style="margin:10px 0;max-width:100%;"><img ${prefix}src="${finalSrc}"${suffix} style="max-width:100%;max-height:480px;border-radius:10px;cursor:pointer;display:block;box-shadow:0 4px 18px rgba(0,0,0,0.25);transition:transform 0.2s ease;" onclick="openImageLightbox(this.src)" title="点击全屏查看大图" onmouseover="this.style.opacity='0.92'" onmouseout="this.style.opacity='1'" /><span style="display:inline-block;margin-top:4px;font-size:11px;color:var(--text-dim);">🔍 点击图片可放大全屏预览</span></div>`;
+        });
+
         finalHtml = rawHtml;
       } catch (_) {
         finalHtml = escapeHtml(processed).replace(/\n/g, "<br/>");

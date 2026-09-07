@@ -572,9 +572,9 @@ app.post('/api/debug-log', (req, res) => {
   send(res, 200, { ok: true });
 });
 
-// 对其余所有 /api 接口强制鉴权
+// 对其余所有 /api 接口强制鉴权（媒体资源允许直接加载渲染）
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/heartbeat' || req.path === '/avatar' || req.path === '/test-fetch' || req.path === '/test-fetch') {
+  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/heartbeat' || req.path === '/avatar' || req.path === '/test-fetch' || req.path.startsWith('/assets/files') || req.path === '/image-preview') {
     return next();
   }
   return requireWebAuth(req, res, next);
@@ -1628,17 +1628,56 @@ app.post('/api/assets/files', attachmentUpload.array('files', 10), (req, res) =>
   send(res, 200, { attachments });
 });
 
-// 下载/预览已上传的文件
+// 下载/预览已上传或生成的媒体文件
 app.get('/api/assets/files/:filename', (req, res) => {
   const filename = path.basename(req.params.filename);
-  const filePath = path.join(ASSETS_DIR, filename);
-  if (!filePath.startsWith(ASSETS_DIR)) return send(res, 403, { error: '非法路径' });
-  try {
-    fs.accessSync(filePath);
-    res.sendFile(filePath);
-  } catch {
-    send(res, 404, { error: '文件不存在' });
+  let filePath = path.join(ASSETS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    // 自动在 brain 各会话目录中查找生成的图片
+    try {
+      if (fs.existsSync(BRAIN_DIR)) {
+        const convDirs = fs.readdirSync(BRAIN_DIR);
+        for (const conv of convDirs) {
+          const candidate = path.join(BRAIN_DIR, conv, filename);
+          if (fs.existsSync(candidate)) {
+            filePath = candidate;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
   }
+  if (!fs.existsSync(filePath)) {
+    // 还在 scratch 目录中查找
+    const scratchCandidate = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'scratch', filename);
+    if (fs.existsSync(scratchCandidate)) {
+      filePath = scratchCandidate;
+    }
+  }
+  if (fs.existsSync(filePath)) {
+    return res.sendFile(filePath);
+  }
+  send(res, 404, { error: '文件不存在' });
+});
+
+// 支持直接通过绝对路径或相对路径预览图片 (例如 brain 目录中的生成图)
+app.get('/api/image-preview', (req, res) => {
+  const p = req.query.path;
+  if (!p) return send(res, 400, { error: '缺少 path 参数' });
+  const cleanPath = String(p).replace(/^file:\/\//, '');
+  const resolved = path.resolve(cleanPath);
+  const allowedDirs = [
+    ASSETS_DIR,
+    BRAIN_DIR,
+    path.join(os.homedir(), '.gemini'),
+    '/vol1/@apphome/GoogleAntigravityCLI'
+  ];
+  const isAllowed = allowedDirs.some(dir => resolved.startsWith(dir));
+  if (!isAllowed) return send(res, 403, { error: '非法路径' });
+  if (fs.existsSync(resolved)) {
+    return res.sendFile(resolved);
+  }
+  send(res, 404, { error: '文件不存在' });
 });
 
 // 语音转文字 API：接收前端录音文件 → 快速转写为文本
