@@ -44,20 +44,101 @@ function formatPreciseTimeTag(str) {
   return s;
 }
 
-// ── 生成每条助手对话底部的模型用量统计（原版经典单标签）──
+// ── 生成每条助手对话底部的模型用量与实时双进度条组件 ──
 function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
+  const modelId = String(meta?.model || currentModel || state.selectedModel || '').toLowerCase();
+  const isClaude = modelId.includes('claude');
+  const isGpt = modelId.includes('gpt') || modelId.includes('oss');
+  const isGemini = !isClaude && !isGpt;
+  
+  const seriesClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
+  const seriesIcon = isClaude ? 'sparkles' : isGpt ? 'bot' : 'zap';
   const modelName = formatModelShortName(meta?.model || currentModel || state.selectedModel);
   const durText = meta?.duration ? `${meta.duration}s` : '';
   const cleanLen = (contentStr || '').replace(/[\u200b\s]/g, '').length;
   const tokens = meta?.tokens || Math.max(1, Math.round(cleanLen / 3.2));
 
+  // 1. 优先读取已固化的当轮历史快照，并动态计算重置倒计时（严格分离 5h 与 Weekly 字段）
+  const snap = meta?.quotaSnapshot;
+  const pool5h = isGemini ? snap?.gemini5h : snap?.claude5h;
+  const poolWeekly = isGemini ? snap?.geminiWeekly : snap?.claudeWeekly;
+
+  let h5Pct = pool5h?.percent ?? snap?.percent;
+  let h5ResetTime = pool5h?.resetTime ?? snap?.resetTime;
+  let h5ResetFallback = pool5h?.resetsIn || pool5h?.resetText || pool5h?.resetIn || snap?.resetIn || snap?.resetText;
+  let h5Reset = h5ResetTime ? formatDynamicCountdown(h5ResetTime, h5ResetFallback) : h5ResetFallback;
+
+  let weeklyPct = poolWeekly?.percent ?? snap?.weeklyPercent;
+  let weeklyResetTime = poolWeekly?.resetTime ?? snap?.weeklyResetTime;
+  let weeklyResetFallback = poolWeekly?.resetsIn || poolWeekly?.resetText || poolWeekly?.resetIn || snap?.weeklyResetIn || snap?.weeklyResetText;
+  let weeklyReset = weeklyResetTime ? formatDynamicCountdown(weeklyResetTime, weeklyResetFallback) : weeklyResetFallback;
+
+  // 2. 实时从 state.latestUsageData 抓取真实最新数据补齐（若快照中缺失周度数据）
+  const quota = state.latestUsageData?.windows || {};
+  if (isGemini) {
+    const w = quota.fiveHour;
+    if (w && w.percent != null) {
+      if (h5Pct == null) h5Pct = w.percent;
+      if (!h5Reset || h5Reset === '即将重置') h5Reset = formatDynamicCountdown(w.resetTime, w.resetsIn || w.resetText);
+    }
+    const ww = quota.weekly;
+    if (ww && ww.percent != null) {
+      if (weeklyPct == null) weeklyPct = ww.percent;
+      if (!weeklyReset || weeklyReset === '即将刷新' || weeklyReset === h5Reset) weeklyReset = formatDynamicCountdown(ww.resetTime, ww.resetsIn || ww.resetText);
+    }
+  } else {
+    const w = quota.claude5h;
+    if (w && w.percent != null) {
+      if (h5Pct == null) h5Pct = w.percent;
+      if (!h5Reset || h5Reset === '即将重置') h5Reset = formatDynamicCountdown(w.resetTime, w.resetsIn || w.resetText);
+    }
+    const ww = quota.claudeWeekly;
+    if (ww && ww.percent != null) {
+      if (weeklyPct == null) weeklyPct = ww.percent;
+      if (!weeklyReset || weeklyReset === '即将刷新' || weeklyReset === h5Reset) weeklyReset = formatDynamicCountdown(ww.resetTime, ww.resetsIn || ww.resetText);
+    }
+  }
+
+  // 3. 容错默认值
+  if (h5Pct == null) h5Pct = 100;
+  if (!h5Reset) h5Reset = '即将重置';
+  if (weeklyPct == null) weeklyPct = 100;
+  if (!weeklyReset) weeklyReset = '即将刷新';
+
+  const h5FillClass = isClaude ? 'claude' : isGpt ? 'gpt' : 'gemini';
+  const poolLabel = isGemini ? 'Gemini 5h' : 'Claude/GPT 5h';
+  const h5ResetPrecise = formatPreciseTimeTag(h5Reset);
+  const weeklyResetPrecise = formatPreciseTimeTag(weeklyReset);
+
   return `
-    <div class="msg-usage-pill" title="模型用量与生成统计">
-      <i data-lucide="zap" style="width:11px;height:11px;color:var(--accent);"></i>
-      <span>${escapeHtml(modelName)}</span>
-      <span>·</span>
-      <span>${tokens} tokens</span>
-      ${durText ? `<span>·</span><span>${escapeHtml(durText)}</span>` : ''}
+    <div class="msg-usage-pill" title="点击打开 Google AI Pro 模型用量与配额中心">
+      <div class="msg-usage-left">
+        <span class="msg-model-tag ${seriesClass}">
+          <i data-lucide="${seriesIcon}" style="width:11px;height:11px;"></i>
+          <span>${escapeHtml(modelName)}</span>
+        </span>
+        <span>·</span>
+        <span>${tokens} tokens</span>
+        ${durText ? '<span>·</span><span>' + escapeHtml(durText) + '</span>' : ''}
+      </div>
+      <div class="msg-quota-bars-group" onclick="showUsageModal(false)" style="cursor:pointer;" title="点击查看完整 4 大算力池配额详情">
+        <div class="msg-mini-bar-item" title="${poolLabel} 滚动算力: 剩余 ${h5Pct}% (${h5Reset} 后重置)">
+          <span style="font-size:10.5px;color:var(--text-dim);">${poolLabel}</span>
+          <div class="msg-bar-track">
+            <div class="msg-bar-fill ${h5FillClass} ${h5Pct <= 10 ? 'danger' : ''}" style="width:${Math.max(4, h5Pct)}%;"></div>
+          </div>
+          <span style="font-weight:600;color:var(--text-primary);font-size:10.5px;">${h5Pct}%</span>
+          <span style="font-size:9.5px;color:var(--text-dim);font-family:monospace;">(${h5ResetPrecise})</span>
+        </div>
+        <div class="msg-mini-bar-item" title="每周累计旗舰配额: 剩余 ${weeklyPct}% (${weeklyReset} 后刷新)">
+          <span style="font-size:10.5px;color:var(--text-dim);">周度</span>
+          <div class="msg-bar-track">
+            <div class="msg-bar-fill weekly" style="width:${Math.max(4, weeklyPct)}%;"></div>
+          </div>
+          <span style="font-weight:600;color:var(--text-primary);font-size:10.5px;">${weeklyPct}%</span>
+          <span style="font-size:9.5px;color:var(--text-dim);font-family:monospace;">(${weeklyResetPrecise})</span>
+        </div>
+      </div>
     </div>
   `;
 }
