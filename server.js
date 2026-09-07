@@ -15,7 +15,7 @@ function saveLocalQuota(q) {
   try { fs.writeFileSync(LOCAL_QUOTA_FILE, JSON.stringify(q, null, 2)); } catch(_) {}
 }
 
-const QUOTA_CALIBRATE_TTL = 2 * 3600 * 1000; // 2 小时校正周期 (7,200,000 ms)
+const QUOTA_CALIBRATE_TTL = 30 * 1000; // 30 秒校正周期 (实时拉取 Google 官方最新额度)
 
 // 从 Google 官方 API 校正配额 (每 2 小时校正一次)
 async function calibrateQuotaFromAPI(force = false) {
@@ -691,28 +691,26 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
     'User-Agent': 'antigravity/1.1.19'
   };
 
-  const fetchWithFallback = async (urls, options) => {
-    for (const u of urls) {
+  const fetchWithRetry = async (url, options, retries = 2) => {
+    for (let i = 0; i <= retries; i++) {
       try {
-        const res = await fetch(u, options);
-        if (res.ok) return res;
-      } catch (_) {}
+        const res = await fetch(url, options);
+        if (res.ok || res.status === 401 || res.status === 403 || res.status === 503) return res;
+      } catch (err) {
+        if (i === retries) return null;
+        await new Promise(r => setTimeout(r, 200 * (i + 1)));
+      }
     }
     return null;
   };
 
-  let [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-    fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(6000) }),
-    fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
-    fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
-    fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
-    fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) })
-  ]);
+  // 分步发起请求，避免同域名 cloudcode-pa 并发过多导致 TLS 连接被服务端关闭 (ECONNRESET)
+  let userinfoRes = await fetchWithRetry('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(6000) });
+  let tierRes = await fetchWithRetry('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) });
+  let quotaSummaryRes = await fetchWithRetry('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) });
 
-  // 如果遇到 401，立即强制刷新 Token 并重试一次（注意：503 地区限制不触发重试，避免无效刷新）
-  const _quotaStatus = quotaSummaryRes.status === 'fulfilled' ? quotaSummaryRes.value?.status : null;
-  const _userinfoStatus = userinfoRes.status === 'fulfilled' ? userinfoRes.value?.status : null;
-  const is401Error = _userinfoStatus === 401 || _quotaStatus === 401;
+  // 如果遇到 401，立即强制刷新 Token 并重试一次
+  const is401Error = userinfoRes?.status === 401 || tierRes?.status === 401 || quotaSummaryRes?.status === 401;
   if (is401Error) {
     raw = await refreshAccessToken(raw);
     token = raw?.token?.access_token;
@@ -721,30 +719,26 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
         writeActiveToken(raw);
       }
       headers.Authorization = `Bearer ${token}`;
-      [userinfoRes, tierRes, quotaSummaryRes, quotaRes, modelsRes] = await Promise.allSettled([
-        fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(6000) }),
-        fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
-        fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
-        fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) }),
-        fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) })
-      ]);
+      userinfoRes = await fetchWithRetry('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(6000) });
+      tierRes = await fetchWithRetry('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) });
+      quotaSummaryRes = await fetchWithRetry('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) });
     }
   }
 
   let profile = {};
-  if (userinfoRes.status === 'fulfilled' && userinfoRes.value && userinfoRes.value.ok) {
-    try { profile = await userinfoRes.value.json(); } catch (_) {}
+  if (userinfoRes && userinfoRes.ok) {
+    try { profile = await userinfoRes.json(); } catch (_) {}
   }
 
   let liveTierInfo = null;
-  if (tierRes.status === 'fulfilled' && tierRes.value && tierRes.value.ok) {
-    try { liveTierInfo = await tierRes.value.json(); } catch (_) {}
+  if (tierRes && tierRes.ok) {
+    try { liveTierInfo = await tierRes.json(); } catch (_) {}
   }
 
   let liveQuotaSummary = null;
-  if (quotaSummaryRes.status === 'fulfilled' && quotaSummaryRes.value && quotaSummaryRes.value.ok) {
+  if (quotaSummaryRes && quotaSummaryRes.ok) {
     try {
-      const sData = await quotaSummaryRes.value.json();
+      const sData = await quotaSummaryRes.json();
       if (Array.isArray(sData?.groups)) liveQuotaSummary = sData;
     } catch (_) {}
   }
@@ -1062,7 +1056,7 @@ function getModelMetadata(modelId, tierData = {}) {
 }
 
 app.get('/api/usage', async (req, res) => {
-  const force = req.query.refresh === '1' || req.query.force === '1';
+  const force = req.query.refresh === '1' || req.query.force === '1' || (Date.now() - (currentActive?.quotaUpdatedAt || 0) > QUOTA_CALIBRATE_TTL);
   const emailParam = req.query.email ? String(req.query.email).trim() : '';
   const currentActive = emailParam ? (listAccounts().find(a => a.email === emailParam) || getActiveAccount()) : getActiveAccount();
 
