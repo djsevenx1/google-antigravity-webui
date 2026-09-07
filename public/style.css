@@ -3087,15 +3087,75 @@ html[data-theme="light"] .tool-output-content {
 }
 
 @media (max-width: 768px) {
-  .workspace-explorer-wrap {
-    flex-direction: column;
-    height: 75vh;
+  .modal-dialog.large {
+    width: 96vw;
+    max-width: 100vw;
+    height: 90vh;
+    max-height: 92vh;
+    margin: auto;
+    border-radius: var(--radius-md);
   }
+
+  .modal-dialog.large .modal-body {
+    padding: 0 !important;
+    overflow: hidden !important;
+    height: calc(100% - 48px);
+  }
+
+  .workspace-explorer-wrap {
+    flex-direction: row;
+    height: 100%;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+    position: relative;
+  }
+
+  /* 移动端默认：侧边栏占满 100% 容器，文件列表绝不再被压缩挡住 */
   .explorer-sidebar {
-    width: 100%;
-    height: 35%;
+    width: 100% !important;
+    height: 100% !important;
     border-right: none;
-    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 移动端右侧预览区默认隐藏 */
+  .explorer-main {
+    display: none !important;
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    background: var(--bg-primary);
+  }
+
+  /* 移动端打开文件后，右侧预览区全屏覆盖展示 */
+  .workspace-explorer-wrap.mobile-viewing-file .explorer-sidebar {
+    display: none !important;
+  }
+
+  .workspace-explorer-wrap.mobile-viewing-file .explorer-main {
+    display: flex !important;
+  }
+
+  .explorer-mobile-back-btn {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+}
+
+@media (min-width: 769px) {
+  .explorer-mobile-back-btn {
+    display: none !important;
   }
 }
 
@@ -3481,15 +3541,15 @@ html:not([data-theme="light"]) .slash-desc {
   position: relative;
 }
 
-/* ── Message Bottom Quota Bars & Footer ── */
+/* ── Message Bottom Quota Bars & Footer (结束标签/配额条) ── */
 .msg-usage-pill {
   display: flex !important;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 8px 12px;
   margin-top: 10px;
-  padding: 6px 10px !important;
+  padding: 6px 12px !important;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 10px;
@@ -3498,17 +3558,18 @@ html:not([data-theme="light"]) .slash-desc {
 }
 
 .msg-usage-left {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .msg-model-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: 5px;
   font-size: 11px;
   font-weight: 600;
@@ -3533,23 +3594,25 @@ html:not([data-theme="light"]) .slash-desc {
 }
 
 .msg-quota-bars-group {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .msg-mini-bar-item {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 6px;
+  gap: 6px;
+  padding: 3px 8px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border-color);
   border-radius: 6px;
   font-size: 11px;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap !important;
+  flex-shrink: 0;
 }
 
 .msg-mini-bar-item:hover {
@@ -3558,11 +3621,12 @@ html:not([data-theme="light"]) .slash-desc {
 }
 
 .msg-bar-track {
-  width: 36px;
+  width: 38px;
   height: 5px;
   background: rgba(255, 255, 255, 0.12);
   border-radius: 3px;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .msg-bar-fill {
@@ -3588,6 +3652,35 @@ html:not([data-theme="light"]) .slash-desc {
 
 .msg-bar-fill.danger {
   background: #ef4444;
+}
+
+@media (max-width: 650px) {
+  .msg-usage-pill {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 7px;
+    padding: 8px 10px !important;
+  }
+
+  .msg-usage-left {
+    width: 100%;
+    justify-content: flex-start;
+    font-size: 11px;
+  }
+
+  .msg-quota-bars-group {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+    gap: 6px;
+  }
+
+  .msg-mini-bar-item {
+    font-size: 10px;
+    padding: 2px 7px;
+  }
 }
 
 /* Background Running Session Indicator */

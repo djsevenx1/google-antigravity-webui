@@ -2909,3 +2909,39 @@ app.put('/api/workspace/rename', async (req, res) => {
     send(res, 200, { ok: true, oldPath: safeOld, newPath: safeNew });
   } catch (e) { send(res, 500, { error: e.message }); }
 });
+
+// 工作区直接上传文件（支持多文件与拖拽上传）
+const workspaceUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        const dest = resolveSafePath(req.query.dir || req.body.dir || '', WORKSPACE_ROOT);
+        if (!isPathAllowed(dest)) return cb(new Error('目标路径受限'));
+        if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+        cb(null, dest);
+      } catch (err) {
+        cb(err);
+      }
+    },
+    filename: (req, file, cb) => {
+      cb(null, path.basename(file.originalname));
+    }
+  }),
+  limits: { fileSize: 200 * 1024 * 1024 }
+});
+
+app.post('/api/workspace/upload', (req, res) => {
+  workspaceUpload.array('files', 20)(req, res, (err) => {
+    if (err) {
+      return send(res, 400, { error: err.message || '文件上传失败' });
+    }
+    const files = req.files || [];
+    if (!files.length) return send(res, 400, { error: '未收到上传文件' });
+    const uploaded = files.map(f => ({
+      name: f.originalname,
+      path: f.path,
+      size: f.size
+    }));
+    send(res, 200, { ok: true, count: uploaded.length, files: uploaded });
+  });
+});

@@ -4723,6 +4723,10 @@ async function showWorkspaceExplorer() {
           <button id="btn-toggle-hidden" class="btn btn-ghost" style="padding:4px 7px;font-size:11.5px;" onclick="toggleExplorerHidden()" title="显示/隐藏点开头的隐藏文件">
             <i data-lucide="eye" style="width:13px;height:13px;"></i>
           </button>
+          <button class="btn btn-ghost" style="padding:4px 7px;font-size:11.5px;" onclick="triggerExplorerUpload()" title="上传文件到当前目录">
+            <i data-lucide="upload" style="width:13px;height:13px;"></i>
+          </button>
+          <input type="file" id="explorer-upload-input" multiple style="display:none;" onchange="handleExplorerUpload(this.files)" />
           <button class="btn btn-ghost" style="padding:4px 7px;font-size:11.5px;" onclick="promptCreateExplorerItem('file')" title="新建文件">
             <i data-lucide="file-plus" style="width:13px;height:13px;"></i>
           </button>
@@ -4779,6 +4783,9 @@ async function showWorkspaceExplorer() {
         <div id="explorer-editor-view" class="explorer-editor hidden">
           <div class="explorer-editor-header">
             <div class="explorer-breadcrumb">
+              <button class="explorer-mobile-back-btn" onclick="closeExplorerFileView()" title="返回列表">
+                <i data-lucide="chevron-left" style="width:14px;height:14px;"></i> 返回
+              </button>
               <i data-lucide="file-code" style="width:15px;height:15px;color:var(--accent);"></i>
               <span id="explorer-current-path" style="font-weight:600;font-size:13px;color:var(--text-main);word-break:break-all;"></span>
               <span id="explorer-file-badge" class="explorer-badge"></span>
@@ -4809,6 +4816,9 @@ async function showWorkspaceExplorer() {
         <div id="explorer-image-view" class="explorer-editor hidden">
           <div class="explorer-editor-header">
             <div class="explorer-breadcrumb">
+              <button class="explorer-mobile-back-btn" onclick="closeExplorerFileView()" title="返回列表">
+                <i data-lucide="chevron-left" style="width:14px;height:14px;"></i> 返回
+              </button>
               <i data-lucide="image" style="width:15px;height:15px;color:#f472b6;"></i>
               <span id="explorer-image-name" style="font-weight:600;font-size:13px;color:var(--text-main);word-break:break-all;"></span>
               <span id="explorer-image-badge" class="explorer-badge" style="color:#f472b6;">IMAGE</span>
@@ -5034,6 +5044,9 @@ window.openExplorerItem = async function(item) {
   activeFilePath = item.fullPath;
   activeFileItem = item;
 
+  const wrap = $(".workspace-explorer-wrap");
+  if (wrap) wrap.classList.add("mobile-viewing-file");
+
   const emptyView = $("#explorer-empty-view");
   const editorView = $("#explorer-editor-view");
   const imageView = $("#explorer-image-view");
@@ -5226,6 +5239,50 @@ window.promptDeleteExplorerItem = async function(item, e) {
     await reloadWorkspaceExplorer();
   } catch (err) {
     toast('删除失败: ' + err.message);
+  }
+};
+
+window.closeExplorerFileView = function() {
+  activeFilePath = null;
+  activeFileItem = null;
+  const wrap = $(".workspace-explorer-wrap");
+  if (wrap) wrap.classList.remove("mobile-viewing-file");
+  const emptyView = $("#explorer-empty-view");
+  const editorView = $("#explorer-editor-view");
+  const imageView = $("#explorer-image-view");
+  if (emptyView) emptyView.classList.remove("hidden");
+  if (editorView) editorView.classList.add("hidden");
+  if (imageView) imageView.classList.add("hidden");
+  document.querySelectorAll(".explorer-item-card").forEach(c => c.classList.remove("active"));
+};
+
+window.triggerExplorerUpload = function() {
+  const input = $("#explorer-upload-input");
+  if (input) input.click();
+};
+
+window.handleExplorerUpload = async function(files) {
+  if (!files || !files.length) return;
+  const formData = new FormData();
+  for (let i = 0; i < files.length; i++) {
+    formData.append('files', files[i]);
+  }
+  const targetDir = currentDirPath || '';
+  toast(`正在上传 ${files.length} 个文件...`);
+  try {
+    const res = await fetch(`/api/workspace/upload?dir=${encodeURIComponent(targetDir)}`, {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    toast(`成功上传 ${data.count || files.length} 个文件`);
+    await reloadWorkspaceExplorer();
+  } catch (err) {
+    toast('上传失败: ' + err.message);
+  } finally {
+    const input = $("#explorer-upload-input");
+    if (input) input.value = '';
   }
 };
 
