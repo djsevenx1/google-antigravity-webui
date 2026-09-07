@@ -2038,67 +2038,198 @@ app.post('/api/chat', async (req, res) => {
 });
 
 
-// ---------- 工作区文件树与代码查看（纯净绑定项目工程区） ----------
-const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || path.resolve(__dirname, 'home/.gemini/antigravity-cli');
+// ---------- 工作区文件管理与代码查看（借鉴 CloudCLI 分层按需架构） ----------
+let WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || path.resolve(__dirname, 'home/.gemini/antigravity-cli');
 if (!fs.existsSync(WORKSPACE_ROOT)) {
   fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
 }
 
-const IGNORED_DIRS = new Set(['node_modules', '.git', '.npm-global', '.fcc-venv', '.cache']);
+const ALLOWED_ROOTS = [
+  path.resolve(__dirname, 'home/.gemini/antigravity-cli'),
+  path.resolve(__dirname),
+  path.resolve(os.homedir(), '.gemini'),
+  path.resolve(os.homedir(), '.antigravity')
+];
 
-function getWorkspaceTree(dirPath, relativeTo = WORKSPACE_ROOT, depth = 0) {
-  if (depth > 4) return [];
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-  const result = [];
-  
-  for (const entry of entries) {
-    if (entry.name.startsWith('.') && entry.name !== '.env.example') continue;
-    if (IGNORED_DIRS.has(entry.name)) continue;
-    
-    const fullPath = path.join(dirPath, entry.name);
-    const relPath = path.relative(relativeTo, fullPath);
-    
-    if (entry.isDirectory()) {
-      result.push({
-        name: entry.name,
-        path: relPath,
-        type: 'dir',
-        children: getWorkspaceTree(fullPath, relativeTo, depth + 1)
-      });
-    } else {
-      const ext = path.extname(entry.name).toLowerCase();
-      result.push({
-        name: entry.name,
-        path: relPath,
-        type: 'file',
-        ext: ext.replace('.', '')
-      });
-    }
-  }
-  return result;
+function isPathAllowed(targetPath) {
+  const resolved = path.resolve(targetPath);
+  return ALLOWED_ROOTS.some(root => resolved === root || resolved.startsWith(root + path.sep));
 }
 
-app.get('/api/workspace/tree', (_req, res) => {
+function resolveSafePath(inputPath, fallbackBase = WORKSPACE_ROOT) {
+  if (!inputPath) return fallbackBase;
+  if (path.isAbsolute(inputPath)) {
+    return path.resolve(inputPath);
+  }
+  return path.resolve(fallbackBase, inputPath);
+}
+
+// 借鉴 CloudCLI：单层目录按需极速浏览，永不因数万文件卡死
+app.get('/api/workspace/list', (req, res) => {
   try {
-    const tree = getWorkspaceTree(WORKSPACE_ROOT, WORKSPACE_ROOT);
-    send(res, 200, { tree, root: WORKSPACE_ROOT });
+    const requestedPath = req.query.path || req.query.dir || '';
+    const showHidden = req.query.showHidden === 'true';
+    const targetDir = resolveSafePath(requestedPath, WORKSPACE_ROOT);
+
+    if (!isPathAllowed(targetDir)) {
+      return send(res, 403, { error: '访问路径受限' });
+    }
+
+    if (!fs.existsSync(targetDir)) {
+      return send(res, 404, { error: '目录不存在: ' + targetDir });
+    }
+
+    const stat = fs.statSync(targetDir);
+    if (!stat.isDirectory()) {
+      return send(res, 400, { error: '目标不是目录' });
+    }
+
+    const rawEntries = fs.readdirSync(targetDir, { withFileTypes: true });
+    const items = [];
+    const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+
+    for (const entry of rawEntries) {
+      if (!showHidden && entry.name.startsWith('.') && entry.name !== '.env.example') {
+        continue;
+      }
+
+      const fullPath = path.join(targetDir, entry.name);
+      const isDir = entry.isDirectory();
+      const ext = isDir ? '' : path.extname(entry.name).slice(1).toLowerCase();
+      let size = 0;
+      let mtime = 0;
+      let count = 0;
+
+      try {
+        const itemStat = fs.statSync(fullPath);
+        size = itemStat.size;
+        mtime = itemStat.mtimeMs;
+        if (isDir) {
+          // 对日志/依赖等超大目录快速标记，避免深层递归阻塞
+          if (entry.name === 'log' || entry.name === 'node_modules' || entry.name === '.git') {
+            count = -1;
+          } else {
+            count = fs.readdirSync(fullPath).length;
+          }
+        }
+      } catch (_) {}
+
+      items.push({
+        name: entry.name,
+        fullPath,
+        relPath: path.relative(WORKSPACE_ROOT, fullPath),
+        type: isDir ? 'dir' : 'file',
+        size,
+        ext,
+        isImage: IMAGE_EXTS.has(ext),
+        count,
+        mtime
+      });
+    }
+
+    // 排序：文件夹在前，文件在后，按自然拼音/字母排序
+    items.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+
+    // 计算上一级目录
+    let parentPath = null;
+    const parentDir = path.dirname(targetDir);
+    if (parentDir !== targetDir && isPathAllowed(parentDir)) {
+      parentPath = parentDir;
+    }
+
+    send(res, 200, {
+      ok: true,
+      currentPath: targetDir,
+      parentPath,
+      totalCount: items.length,
+      showHidden,
+      items,
+      presetRoots: [
+        { name: '⚡ Antigravity CLI 根目录', path: path.resolve(__dirname, 'home/.gemini/antigravity-cli') },
+        { name: '🧠 会话与图片库 (brain)', path: path.resolve(__dirname, 'home/.gemini/antigravity-cli/brain') },
+        { name: '🧪 代码草稿区 (scratch)', path: path.resolve(__dirname, 'home/.gemini/antigravity-cli/scratch') },
+        { name: '💻 WebUI 系统源码', path: path.resolve(__dirname) }
+      ]
+    });
   } catch (e) {
     send(res, 500, { error: e.message });
   }
 });
 
+// 兼容老版接口（增加深度与目录防护）
+app.get('/api/workspace/tree', (req, res) => {
+  try {
+    const dir = resolveSafePath(req.query.path || '', WORKSPACE_ROOT);
+    if (!isPathAllowed(dir)) return send(res, 403, { error: '路径受限' });
+
+    function getSafeTree(dirPath, relativeTo, depth = 0) {
+      if (depth > 2) return [];
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const result = [];
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') && entry.name !== '.env.example') continue;
+        if (entry.name === 'log' || entry.name === 'node_modules' || entry.name === '.git') continue;
+        const fullPath = path.join(dirPath, entry.name);
+        const relPath = path.relative(relativeTo, fullPath);
+        if (entry.isDirectory()) {
+          result.push({
+            name: entry.name,
+            path: relPath,
+            type: 'dir',
+            children: getSafeTree(fullPath, relativeTo, depth + 1)
+          });
+        } else {
+          result.push({
+            name: entry.name,
+            path: relPath,
+            type: 'file',
+            ext: path.extname(entry.name).replace('.', '').toLowerCase()
+          });
+        }
+      }
+      return result;
+    }
+
+    const tree = getSafeTree(dir, dir);
+    send(res, 200, { tree, root: dir });
+  } catch (e) {
+    send(res, 500, { error: e.message });
+  }
+});
+
+// 查看文件内容（文本/代码或多媒体流）
 app.get('/api/workspace/file', async (req, res) => {
   const filePath = String(req.query.path || '');
   if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
-  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
-  if (!safePath.startsWith(WORKSPACE_ROOT)) {
+  const safePath = resolveSafePath(filePath, WORKSPACE_ROOT);
+  if (!isPathAllowed(safePath)) {
     return send(res, 403, { error: '非法路径访问' });
   }
   try {
     const stat = fs.statSync(safePath);
-    if (stat.size > 2 * 1024 * 1024) return send(res, 400, { error: '文件过大（超过 2MB），不支持预览' });
+    const ext = path.extname(safePath).slice(1).toLowerCase();
+    const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+    const isImage = IMAGE_EXTS.has(ext);
+
+    // 图片或请求 raw 格式，直接以对应 MIME 流响应
+    if (isImage || req.query.raw === 'true') {
+      return res.sendFile(safePath);
+    }
+
+    if (stat.size > 5 * 1024 * 1024) return send(res, 400, { error: '文件过大（超过 5MB），不支持在线编辑' });
     const content = fs.readFileSync(safePath, 'utf-8');
-    send(res, 200, { path: filePath, content, size: stat.size });
+    send(res, 200, {
+      path: filePath,
+      fullPath: safePath,
+      name: path.basename(safePath),
+      content,
+      size: stat.size,
+      mtime: stat.mtimeMs,
+      ext
+    });
   } catch (e) {
     send(res, 500, { error: e.message });
   }
@@ -2727,51 +2858,54 @@ wss.on('connection', (ws, req) => {
 });
 
 
-// ── 文件管理接口（纯净绑定项目工程区）──
+// ── 文件管理接口（支持多项目与工作区安全操作）──
 app.post('/api/workspace/file', async (req, res) => {
   const filePath = String(req.body?.path || '');
   const content = String(req.body?.content || '');
   if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
-  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
-  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  const safePath = resolveSafePath(filePath, WORKSPACE_ROOT);
+  if (!isPathAllowed(safePath)) return send(res, 403, { error: '非法路径' });
   try {
     await writeFile(safePath, content, 'utf-8');
-    send(res, 200, { ok: true });
+    send(res, 200, { ok: true, path: safePath });
   } catch (e) { send(res, 500, { error: e.message }); }
 });
 
 app.delete('/api/workspace/file', async (req, res) => {
   const filePath = String(req.query.path || '');
   if (!filePath) return send(res, 400, { error: '缺少 path 参数' });
-  const safePath = path.resolve(WORKSPACE_ROOT, filePath);
-  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  const safePath = resolveSafePath(filePath, WORKSPACE_ROOT);
+  if (!isPathAllowed(safePath)) return send(res, 403, { error: '非法路径' });
   try {
-    fs.rmSync(safePath, { recursive: true });
-    send(res, 200, { ok: true });
+    fs.rmSync(safePath, { recursive: true, force: true });
+    send(res, 200, { ok: true, path: safePath });
   } catch (e) { send(res, 500, { error: e.message }); }
 });
 
 app.post('/api/workspace/create', async (req, res) => {
   const { path: relPath, type } = req.body || {};
   if (!relPath) return send(res, 400, { error: '缺少 path' });
-  const safePath = path.resolve(WORKSPACE_ROOT, relPath);
-  if (!safePath.startsWith(WORKSPACE_ROOT)) return send(res, 403, { error: '非法路径' });
+  const safePath = resolveSafePath(relPath, WORKSPACE_ROOT);
+  if (!isPathAllowed(safePath)) return send(res, 403, { error: '非法路径' });
   try {
     if (type === 'dir') fs.mkdirSync(safePath, { recursive: true });
-    else fs.writeFileSync(safePath, '', 'utf-8');
-    send(res, 200, { ok: true });
+    else {
+      fs.mkdirSync(path.dirname(safePath), { recursive: true });
+      fs.writeFileSync(safePath, '', 'utf-8');
+    }
+    send(res, 200, { ok: true, path: safePath });
   } catch (e) { send(res, 500, { error: e.message }); }
 });
 
 app.put('/api/workspace/rename', async (req, res) => {
   const { oldPath, newPath } = req.body || {};
   if (!oldPath || !newPath) return send(res, 400, { error: '缺少路径' });
-  const safeOld = path.resolve(WORKSPACE_ROOT, oldPath);
-  const safeNew = path.resolve(WORKSPACE_ROOT, newPath);
-  if (!safeOld.startsWith(WORKSPACE_ROOT) || !safeNew.startsWith(WORKSPACE_ROOT))
+  const safeOld = resolveSafePath(oldPath, WORKSPACE_ROOT);
+  const safeNew = resolveSafePath(newPath, WORKSPACE_ROOT);
+  if (!isPathAllowed(safeOld) || !isPathAllowed(safeNew))
     return send(res, 403, { error: '非法路径' });
   try {
     fs.renameSync(safeOld, safeNew);
-    send(res, 200, { ok: true });
+    send(res, 200, { ok: true, oldPath: safeOld, newPath: safeNew });
   } catch (e) { send(res, 500, { error: e.message }); }
 });

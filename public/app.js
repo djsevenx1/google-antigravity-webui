@@ -4651,10 +4651,19 @@ function renderAttachmentPreview() {
   });
 }
 
-// ── 现代化工作区文件管理与代码编辑器（路径导航模式）──
-let rawWorkspaceTree = [];
-let currentDirPath = ""; // 当前浏览的目录路径（"" 为根目录）
-let activeFilePath = null;
+// ── 现代化工作区文件管理与代码/图片双模浏览器（借鉴 CloudCLI 设计）──
+let currentDirPath = ""; // 当前浏览的目录路径（"" 自动加载默认根目录）
+let currentDirData = null; // 当前目录返回的完整数据
+let explorerShowHidden = false; // 是否显示隐藏文件（以点开头）
+let activeFilePath = null; // 当前正在查看/编辑的文件完整路径
+let activeFileItem = null; // 当前选中文件的元数据项
+
+function formatFileSize(bytes) {
+  if (bytes == null || isNaN(bytes) || bytes === 0) return '0 B';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
 
 function getFileIconAndColor(name, ext) {
   const e = (ext || name.split('.').pop() || '').toLowerCase();
@@ -4688,6 +4697,9 @@ function getFileIconAndColor(name, ext) {
     case 'jpg':
     case 'jpeg':
     case 'svg':
+    case 'gif':
+    case 'webp':
+    case 'bmp':
     case 'ico':
       return { icon: '🖼️', color: '#f472b6', label: 'Image' };
     default:
@@ -4695,33 +4707,30 @@ function getFileIconAndColor(name, ext) {
   }
 }
 
-function getNodeChildrenByPath(tree, targetPath) {
-  if (!targetPath) return tree;
-  const parts = targetPath.split('/').filter(Boolean);
-  let currentList = tree;
-  for (const part of parts) {
-    const found = currentList.find(n => n.name === part && n.type === 'dir');
-    if (!found || !found.children) return [];
-    currentList = found.children;
-  }
-  return currentList;
-}
-
-function getParentPath(p) {
-  if (!p) return "";
-  const parts = p.split('/').filter(Boolean);
-  parts.pop();
-  return parts.join('/');
-}
-
 async function showWorkspaceExplorer() {
   activeFilePath = null;
-  currentDirPath = "";
+  activeFileItem = null;
 
   openModal("📁 Antigravity 工作区文件管理器", `
     <div class="workspace-explorer-wrap">
       <!-- 左侧：目录导航与文件列表 -->
-      <div class="explorer-sidebar">
+      <div class="explorer-sidebar" style="width:360px;min-width:300px;display:flex;flex-direction:column;">
+        <!-- 预设目录快速下拉与功能操作 -->
+        <div style="padding:8px 10px;background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);display:flex;align-items:center;gap:6px;">
+          <select id="explorer-preset-select" class="form-input" style="flex:1;font-size:11.5px;height:28px;padding:2px 6px;cursor:pointer;" onchange="onPresetRootChange(this.value)">
+            <option value="">⚡ 加载预设根目录...</option>
+          </select>
+          <button id="btn-toggle-hidden" class="btn btn-ghost" style="padding:4px 7px;font-size:11.5px;" onclick="toggleExplorerHidden()" title="显示/隐藏点开头的隐藏文件">
+            <i data-lucide="eye" style="width:13px;height:13px;"></i>
+          </button>
+          <button class="btn btn-ghost" style="padding:4px 7px;font-size:11.5px;" onclick="promptCreateExplorerItem('file')" title="新建文件">
+            <i data-lucide="file-plus" style="width:13px;height:13px;"></i>
+          </button>
+          <button class="btn btn-ghost" style="padding:4px 7px;font-size:11.5px;" onclick="promptCreateExplorerItem('dir')" title="新建文件夹">
+            <i data-lucide="folder-plus" style="width:13px;height:13px;"></i>
+          </button>
+        </div>
+
         <!-- 顶部路径面包屑 & 返回上一级 -->
         <div class="explorer-path-bar">
           <button id="btn-explorer-back" class="btn btn-ghost explorer-btn-back" onclick="navigateExplorerUp()" title="返回上一级目录">
@@ -4734,16 +4743,22 @@ async function showWorkspaceExplorer() {
         <div class="explorer-toolbar">
           <div class="explorer-search-wrap">
             <i data-lucide="search" style="width:13px;height:13px;color:var(--text-dim);"></i>
-            <input id="explorer-search-input" class="form-input" placeholder="过滤当前目录..." oninput="filterCurrentDirFiles(this.value)" />
+            <input id="explorer-search-input" class="form-input" placeholder="过滤当前目录..." oninput="filterCurrentExplorerItems(this.value)" />
           </div>
-          <button class="btn btn-ghost btn-icon" onclick="reloadWorkspaceTree()" title="刷新目录">
+          <button class="btn btn-ghost btn-icon" onclick="reloadWorkspaceExplorer()" title="刷新目录">
             <i data-lucide="rotate-cw" style="width:13px;height:13px;"></i>
           </button>
         </div>
 
+        <!-- 状态信息条 -->
+        <div id="explorer-stats-bar" style="padding:4px 12px;font-size:11px;color:var(--text-dim);background:var(--bg-secondary);border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;">
+          <span id="explorer-item-count">0 项</span>
+          <span id="explorer-hidden-status" style="cursor:pointer;text-decoration:underline;" onclick="toggleExplorerHidden()">隐藏文件: 关</span>
+        </div>
+
         <!-- 当前目录下文件与子文件夹列表 -->
-        <div id="explorer-list-wrap" class="explorer-tree">
-          <div style="padding:24px;color:var(--text-dim);font-size:12.5px;text-align:center;">
+        <div id="explorer-list-wrap" class="explorer-tree" style="flex:1;overflow-y:auto;padding:6px 8px;">
+          <div style="padding:28px 16px;color:var(--text-dim);font-size:12.5px;text-align:center;">
             <span class="thinking-dots"><i></i><i></i><i></i></span> 正在读取工作区...
           </div>
         </div>
@@ -4751,23 +4766,28 @@ async function showWorkspaceExplorer() {
 
       <!-- 右侧：文件预览与编辑器 -->
       <div class="explorer-main">
+        <!-- 空状态 -->
         <div id="explorer-empty-view" class="explorer-empty">
-          <div style="font-size:38px;margin-bottom:10px;">📂</div>
-          <div style="font-weight:600;font-size:14px;color:var(--text-main);margin-bottom:6px;">在左侧选择文件进行浏览或编辑</div>
-          <div style="font-size:12px;color:var(--text-dim);max-width:340px;line-height:1.6;">
-            点击文件夹可直接进入该目录，点击代码文件可在右侧进行即时查看与在线修改。
+          <div style="font-size:42px;margin-bottom:12px;">📂</div>
+          <div style="font-weight:600;font-size:15px;color:var(--text-main);margin-bottom:6px;">在左侧选择文件浏览或编辑</div>
+          <div style="font-size:12px;color:var(--text-dim);max-width:380px;line-height:1.6;">
+            单层极速按需加载，数万文件目录瞬时秒开。支持直接预览图片、全屏缩放手势、在线编辑代码并快捷保存 (Ctrl+S)。
           </div>
         </div>
 
+        <!-- 代码与文本编辑器视图 -->
         <div id="explorer-editor-view" class="explorer-editor hidden">
           <div class="explorer-editor-header">
             <div class="explorer-breadcrumb">
               <i data-lucide="file-code" style="width:15px;height:15px;color:var(--accent);"></i>
-              <span id="explorer-current-path" style="font-weight:600;font-size:13px;color:var(--text-main);"></span>
+              <span id="explorer-current-path" style="font-weight:600;font-size:13px;color:var(--text-main);word-break:break-all;"></span>
               <span id="explorer-file-badge" class="explorer-badge"></span>
             </div>
-            <div style="display:flex;align-items:center;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
               <span id="explorer-save-status" style="font-size:11.5px;color:var(--text-dim);"></span>
+              <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="downloadActiveFile()" title="下载文件">
+                <i data-lucide="download" style="width:13px;height:13px;"></i>
+              </button>
               <button id="btn-explorer-save" class="btn btn-primary" style="padding:4px 12px;font-size:12px;" onclick="saveCurrentExplorerFile()">
                 <i data-lucide="save" style="width:13px;height:13px;"></i> 保存修改
               </button>
@@ -4784,12 +4804,41 @@ async function showWorkspaceExplorer() {
             <span style="opacity:0.7;">UTF-8 · 快捷键 Ctrl+S 保存</span>
           </div>
         </div>
+
+        <!-- 图片多媒体全景预览视图 -->
+        <div id="explorer-image-view" class="explorer-editor hidden">
+          <div class="explorer-editor-header">
+            <div class="explorer-breadcrumb">
+              <i data-lucide="image" style="width:15px;height:15px;color:#f472b6;"></i>
+              <span id="explorer-image-name" style="font-weight:600;font-size:13px;color:var(--text-main);word-break:break-all;"></span>
+              <span id="explorer-image-badge" class="explorer-badge" style="color:#f472b6;">IMAGE</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+              <button class="btn btn-ghost" style="padding:4px 10px;font-size:12px;" onclick="openActiveImageFullscreen()" title="全屏手势缩放查看">
+                <i data-lucide="maximize-2" style="width:13px;height:13px;"></i> 全屏放大
+              </button>
+              <button class="btn btn-primary" style="padding:4px 12px;font-size:12px;" onclick="downloadActiveFile()">
+                <i data-lucide="download" style="width:13px;height:13px;"></i> 下载原图
+              </button>
+            </div>
+          </div>
+
+          <div class="explorer-image-container" style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;background: repeating-conic-gradient(#1e222d 0% 25%, #181b23 0% 50%) 50% / 20px 20px;">
+            <img id="explorer-image-preview" src="" alt="Image Preview" style="max-width:100%;max-height:100%;object-fit:contain;box-shadow:0 8px 28px rgba(0,0,0,0.6);border-radius:6px;cursor:zoom-in;" title="点击全屏放大预览" />
+          </div>
+
+          <div class="explorer-editor-footer">
+            <span id="explorer-image-dimensions">正在读取尺寸...</span>
+            <span id="explorer-image-size">0 KB</span>
+            <span style="opacity:0.7;">点击图片可进入高性能手势灯箱</span>
+          </div>
+        </div>
       </div>
     </div>
   `, true);
 
   refreshIcons();
-  await reloadWorkspaceTree();
+  await reloadWorkspaceExplorer(currentDirPath || "");
 
   const editor = $("#explorer-code-editor");
   if (editor) {
@@ -4803,159 +4852,260 @@ async function showWorkspaceExplorer() {
   }
 }
 
-window.reloadWorkspaceTree = async function() {
+window.reloadWorkspaceExplorer = async function(dirToLoad) {
   const listWrap = $("#explorer-list-wrap");
-  if (!listWrap) return;
-  listWrap.innerHTML = `
-    <div style="padding:24px;color:var(--text-dim);font-size:12.5px;text-align:center;">
-      <span class="thinking-dots"><i></i><i></i><i></i></span> 正在读取工作区...
-    </div>
-  `;
+  if (dirToLoad !== undefined) currentDirPath = dirToLoad;
+
+  if (listWrap) {
+    listWrap.innerHTML = `
+      <div style="padding:28px 16px;color:var(--text-dim);font-size:12.5px;text-align:center;">
+        <span class="thinking-dots"><i></i><i></i><i></i></span> 正在读取目录...
+      </div>
+    `;
+  }
+
   try {
-    const res = await fetch("/api/workspace/tree");
+    const url = `/api/workspace/list?dir=${encodeURIComponent(currentDirPath || '')}&showHidden=${explorerShowHidden ? 'true' : 'false'}`;
+    const res = await fetch(url);
     const data = await res.json();
-    if (!data.tree) {
-      listWrap.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12.5px;text-align:center;">无法读取工作区目录</div>';
-      return;
+    if (!data.ok) throw new Error(data.error || '加载目录失败');
+
+    currentDirData = data;
+    currentDirPath = data.currentPath || currentDirPath;
+
+    // 填充快捷预设目录下拉选项
+    const presetSelect = $("#explorer-preset-select");
+    if (presetSelect && data.presetRoots && data.presetRoots.length) {
+      presetSelect.innerHTML = data.presetRoots.map(r => {
+        const isMatched = currentDirPath === r.path || currentDirPath.startsWith(r.path + '/');
+        return `<option value="${escapeHtml(r.path)}" ${isMatched ? 'selected' : ''}>${escapeHtml(r.name)}</option>`;
+      }).join('');
     }
-    rawWorkspaceTree = data.tree;
-    renderCurrentExplorerDir();
+
+    renderExplorerNav(data);
+    renderExplorerList();
   } catch (e) {
-    listWrap.innerHTML = `<div style="padding:16px;color:var(--danger);font-size:12.5px;">读取失败: ${escapeHtml(e.message)}</div>`;
+    if (listWrap) {
+      listWrap.innerHTML = `<div style="padding:24px 16px;color:var(--danger);font-size:12.5px;text-align:center;">读取失败: ${escapeHtml(e.message)}</div>`;
+    }
   }
   refreshIcons();
 };
 
-window.renderCurrentExplorerDir = function(filter = "") {
-  const listWrap = $("#explorer-list-wrap");
+window.reloadWorkspaceTree = window.reloadWorkspaceExplorer;
+
+function renderExplorerNav(data) {
   const breadcrumbs = $("#explorer-breadcrumbs");
   const backBtn = $("#btn-explorer-back");
-  if (!listWrap) return;
+  const hiddenBtn = $("#btn-toggle-hidden");
+  const hiddenStatus = $("#explorer-hidden-status");
 
-  // 更新面包屑与返回按钮状态
   if (backBtn) {
-    backBtn.disabled = !currentDirPath;
-    backBtn.style.opacity = currentDirPath ? "1" : "0.4";
-    backBtn.style.cursor = currentDirPath ? "pointer" : "default";
+    const canGoBack = Boolean(data.parentPath);
+    backBtn.disabled = !canGoBack;
+    backBtn.style.opacity = canGoBack ? "1" : "0.35";
+    backBtn.style.cursor = canGoBack ? "pointer" : "default";
+  }
+
+  if (hiddenBtn) {
+    hiddenBtn.style.color = explorerShowHidden ? "var(--accent)" : "inherit";
+  }
+  if (hiddenStatus) {
+    hiddenStatus.textContent = explorerShowHidden ? "隐藏文件: 开" : "隐藏文件: 关";
+    hiddenStatus.style.color = explorerShowHidden ? "var(--accent)" : "var(--text-dim)";
   }
 
   if (breadcrumbs) {
-    const parts = currentDirPath ? currentDirPath.split('/') : [];
-    let crumbHtml = `<span class="explorer-crumb ${!parts.length ? 'current' : ''}" onclick="navigateExplorerTo('')">🏠 根目录</span>`;
+    const current = data.currentPath || "";
+    const parts = current.split('/').filter(Boolean);
+    let crumbHtml = `<span class="explorer-crumb" onclick="navigateExplorerTo('/')" title="根目录">/</span>`;
     let accum = "";
     parts.forEach((p, idx) => {
-      accum += (accum ? '/' : '') + p;
+      accum += '/' + p;
       const isLast = idx === parts.length - 1;
       crumbHtml += `<span class="explorer-crumb-sep">/</span>`;
-      crumbHtml += `<span class="explorer-crumb ${isLast ? 'current' : ''}" onclick="${isLast ? '' : `navigateExplorerTo('${escapeHtml(accum)}')`}">${escapeHtml(p)}</span>`;
+      crumbHtml += `<span class="explorer-crumb ${isLast ? 'current' : ''}" onclick="${isLast ? '' : `navigateExplorerTo('${escapeHtml(accum)}')`}" title="${escapeHtml(accum)}">${escapeHtml(p)}</span>`;
     });
     breadcrumbs.innerHTML = crumbHtml;
   }
+}
 
-  const nodes = getNodeChildrenByPath(rawWorkspaceTree, currentDirPath);
+function renderExplorerList(filter = "") {
+  const listWrap = $("#explorer-list-wrap");
+  const countEl = $("#explorer-item-count");
+  if (!listWrap || !currentDirData) return;
+
+  const items = currentDirData.items || [];
   const q = (filter || "").toLowerCase().trim();
-  const filteredNodes = nodes.filter(n => !q || n.name.toLowerCase().includes(q));
+  const filtered = items.filter(it => !q || it.name.toLowerCase().includes(q));
 
-  if (!filteredNodes.length) {
-    listWrap.innerHTML = `<div style="padding:32px 16px;color:var(--text-dim);font-size:12.5px;text-align:center;">当前目录为空</div>`;
+  if (countEl) {
+    countEl.textContent = `${filtered.length} 项${q ? ` (过滤自 ${items.length} 项)` : ''}`;
+  }
+
+  if (!filtered.length) {
+    listWrap.innerHTML = `
+      <div style="padding:36px 16px;color:var(--text-dim);font-size:12.5px;text-align:center;">
+        <div style="font-size:26px;margin-bottom:8px;">📭</div>
+        ${q ? '没有匹配的文件或文件夹' : '当前目录为空'}
+      </div>
+    `;
     return;
   }
 
-  // 文件夹排在前面，文件排在后面
-  const dirs = filteredNodes.filter(n => n.type === 'dir').sort((a,b) => a.name.localeCompare(b.name));
-  const files = filteredNodes.filter(n => n.type === 'file').sort((a,b) => a.name.localeCompare(b.name));
-
   let html = "";
-  
-  // 渲染文件夹卡片
-  dirs.forEach(d => {
-    const count = (d.children || []).length;
-    html += `
-      <div class="explorer-item-card" onclick="navigateExplorerTo('${escapeHtml(d.path)}')" title="点击进入文件夹">
-        <div class="explorer-item-left">
-          <span style="font-size:15px;color:#f59e0b;">📁</span>
-          <span class="explorer-item-name" style="font-weight:500;">${escapeHtml(d.name)}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:4px;">
-          <span style="font-size:11px;color:var(--text-dim);">${count} 项</span>
-          <span class="explorer-item-arrow">›</span>
-        </div>
-      </div>
-    `;
-  });
+  filtered.forEach(it => {
+    const isDir = it.type === 'dir';
+    const isActive = activeFilePath === it.fullPath;
+    const meta = isDir ? { icon: '📁', color: '#f59e0b', label: 'Folder' } : getFileIconAndColor(it.name, it.ext);
 
-  // 渲染文件卡片
-  files.forEach(f => {
-    const meta = getFileIconAndColor(f.name, f.ext);
-    const isActive = activeFilePath === f.path;
+    let infoText = "";
+    if (isDir) {
+      infoText = it.count === -1 ? '大型目录' : `${it.count} 项`;
+    } else {
+      infoText = formatFileSize(it.size);
+    }
+
+    const clickFn = isDir 
+      ? `navigateExplorerTo('${escapeHtml(it.fullPath)}')`
+      : `openExplorerItem(${JSON.stringify(it).replace(/"/g, '&quot;')})`;
+
     html += `
-      <div class="explorer-item-card ${isActive ? 'active' : ''}" onclick="openExplorerFile('${escapeHtml(f.path)}','${escapeHtml(f.name)}', ${JSON.stringify(meta).replace(/"/g, '&quot;')})" title="点击查看与编辑">
+      <div class="explorer-item-card ${isActive ? 'active' : ''}" onclick="${clickFn}" title="${escapeHtml(it.name)} (${infoText})">
         <div class="explorer-item-left">
-          <span style="font-size:14px;">${meta.icon}</span>
-          <span class="explorer-item-name">${escapeHtml(f.name)}</span>
+          <span style="font-size:${isDir ? '16px' : '14px'};flex-shrink:0;">${meta.icon}</span>
+          <span class="explorer-item-name" style="${isDir ? 'font-weight:500;' : ''}">${escapeHtml(it.name)}</span>
         </div>
-        <span style="font-size:10px;padding:1px 5px;border-radius:3px;background:var(--bg-tertiary);color:var(--text-dim);">${meta.label}</span>
+        
+        <div class="explorer-item-info" style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
+          <span style="font-size:11px;color:var(--text-dim);">${infoText}</span>
+          ${isDir ? '<span class="explorer-item-arrow">›</span>' : ''}
+        </div>
+
+        <div class="explorer-actions-hover">
+          <button class="explorer-action-btn" onclick="promptRenameExplorerItem(${JSON.stringify(it).replace(/"/g, '&quot;')}, event)" title="重命名">
+            <i data-lucide="edit-2" style="width:11px;height:11px;"></i>
+          </button>
+          ${!isDir ? `
+            <button class="explorer-action-btn" onclick="downloadActiveFile('${escapeHtml(it.fullPath)}'); event.stopPropagation();" title="下载文件">
+              <i data-lucide="download" style="width:11px;height:11px;"></i>
+            </button>
+          ` : ''}
+          <button class="explorer-action-btn danger" onclick="promptDeleteExplorerItem(${JSON.stringify(it).replace(/"/g, '&quot;')}, event)" title="删除">
+            <i data-lucide="trash-2" style="width:11px;height:11px;"></i>
+          </button>
+        </div>
       </div>
     `;
   });
 
   listWrap.innerHTML = html;
-};
+  refreshIcons();
+}
 
 window.navigateExplorerTo = function(dirPath) {
-  currentDirPath = dirPath;
   const searchInput = $("#explorer-search-input");
   if (searchInput) searchInput.value = "";
-  renderCurrentExplorerDir();
+  reloadWorkspaceExplorer(dirPath);
 };
 
 window.navigateExplorerUp = function() {
-  if (!currentDirPath) return;
-  currentDirPath = getParentPath(currentDirPath);
-  const searchInput = $("#explorer-search-input");
-  if (searchInput) searchInput.value = "";
-  renderCurrentExplorerDir();
+  if (currentDirData && currentDirData.parentPath) {
+    navigateExplorerTo(currentDirData.parentPath);
+  }
 };
 
-window.filterCurrentDirFiles = function(val) {
-  renderCurrentExplorerDir(val);
+window.onPresetRootChange = function(rootPath) {
+  if (rootPath) {
+    navigateExplorerTo(rootPath);
+  }
 };
 
-window.openExplorerFile = async function(filePath, fileName, meta) {
+window.toggleExplorerHidden = function() {
+  explorerShowHidden = !explorerShowHidden;
+  reloadWorkspaceExplorer();
+};
+
+window.filterCurrentExplorerItems = function(val) {
+  renderExplorerList(val);
+};
+
+window.openExplorerItem = async function(item) {
+  activeFilePath = item.fullPath;
+  activeFileItem = item;
+
   const emptyView = $("#explorer-empty-view");
   const editorView = $("#explorer-editor-view");
+  const imageView = $("#explorer-image-view");
+
+  document.querySelectorAll(".explorer-item-card").forEach(c => c.classList.remove("active"));
+  // 查找并高亮对应卡片
+  document.querySelectorAll(".explorer-item-card").forEach(c => {
+    if (c.getAttribute("title")?.startsWith(item.name)) c.classList.add("active");
+  });
+
+  if (item.isImage) {
+    if (emptyView) emptyView.classList.add("hidden");
+    if (editorView) editorView.classList.add("hidden");
+    if (imageView) imageView.classList.remove("hidden");
+
+    const imgEl = $("#explorer-image-preview");
+    const nameEl = $("#explorer-image-name");
+    const badgeEl = $("#explorer-image-badge");
+    const dimEl = $("#explorer-image-dimensions");
+    const sizeEl = $("#explorer-image-size");
+
+    const rawUrl = `/api/workspace/file?path=${encodeURIComponent(item.fullPath)}&raw=true`;
+    if (nameEl) nameEl.textContent = item.name;
+    if (badgeEl) badgeEl.textContent = (item.ext || 'IMAGE').toUpperCase();
+    if (sizeEl) sizeEl.textContent = formatFileSize(item.size);
+    if (dimEl) dimEl.textContent = "正在读取图片尺寸...";
+
+    if (imgEl) {
+      imgEl.src = rawUrl;
+      imgEl.onload = function() {
+        if (dimEl) dimEl.textContent = `${this.naturalWidth} × ${this.naturalHeight} 像素`;
+      };
+      imgEl.onclick = function() {
+        openActiveImageFullscreen();
+      };
+    }
+    refreshIcons();
+    return;
+  }
+
+  // 文本 / 代码文件模式
+  if (emptyView) emptyView.classList.add("hidden");
+  if (imageView) imageView.classList.add("hidden");
+  if (editorView) editorView.classList.remove("hidden");
+
   const pathEl = $("#explorer-current-path");
   const badgeEl = $("#explorer-file-badge");
   const editor = $("#explorer-code-editor");
   const saveStatus = $("#explorer-save-status");
+  const meta = getFileIconAndColor(item.name, item.ext);
 
-  if (!editorView || !editor) return;
-
-  activeFilePath = filePath;
-  document.querySelectorAll(".explorer-item-card").forEach(c => c.classList.remove("active"));
-
-  saveStatus.textContent = "正在读取...";
+  if (pathEl) pathEl.textContent = item.name;
+  if (badgeEl) {
+    badgeEl.textContent = meta.label || (item.ext || 'TEXT').toUpperCase();
+    badgeEl.style.color = meta.color || "var(--text-dim)";
+  }
+  if (saveStatus) saveStatus.textContent = "正在读取...";
 
   try {
-    const res = await fetch("/api/workspace/file?path=" + encodeURIComponent(filePath));
+    const res = await fetch(`/api/workspace/file?path=${encodeURIComponent(item.fullPath)}`);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
-    emptyView.classList.add("hidden");
-    editorView.classList.remove("hidden");
-
-    pathEl.textContent = filePath;
-    badgeEl.textContent = meta?.label || "Text";
-    badgeEl.style.color = meta?.color || "var(--text-dim)";
-    editor.value = data.content || "";
-    saveStatus.textContent = "";
-
+    if (editor) editor.value = data.content != null ? data.content : "";
+    if (saveStatus) saveStatus.textContent = "";
     updateExplorerEditorStats();
-    editor.focus();
+    if (editor) editor.focus();
   } catch (e) {
     toast("无法打开文件: " + e.message);
-    saveStatus.textContent = "加载失败";
+    if (saveStatus) saveStatus.textContent = "读取失败";
   }
+  refreshIcons();
 };
 
 window.saveCurrentExplorerFile = async function() {
@@ -4964,8 +5114,8 @@ window.saveCurrentExplorerFile = async function() {
   const saveStatus = $("#explorer-save-status");
   const saveBtn = $("#btn-explorer-save");
 
-  const content = editor.value;
-  saveStatus.textContent = "正在保存...";
+  const content = editor ? editor.value : "";
+  if (saveStatus) saveStatus.textContent = "正在保存...";
   if (saveBtn) saveBtn.disabled = true;
 
   try {
@@ -4976,14 +5126,106 @@ window.saveCurrentExplorerFile = async function() {
     });
     const d = await res.json();
     if (d.error) throw new Error(d.error);
-    saveStatus.textContent = "已保存 ✔";
-    toast(`已成功保存 ${activeFilePath}`);
-    setTimeout(() => { if (saveStatus.textContent.includes("已保存")) saveStatus.textContent = ""; }, 2500);
+    if (saveStatus) saveStatus.textContent = "已保存 ✔";
+    toast(`已保存: ${activeFilePath.split('/').pop()}`);
+    setTimeout(() => { if (saveStatus && saveStatus.textContent.includes("已保存")) saveStatus.textContent = ""; }, 2500);
   } catch (e) {
-    saveStatus.textContent = "保存失败 ✕";
+    if (saveStatus) saveStatus.textContent = "保存失败 ✕";
     toast("保存失败: " + e.message);
   } finally {
     if (saveBtn) saveBtn.disabled = false;
+  }
+};
+
+window.openActiveImageFullscreen = function() {
+  if (!activeFilePath) return;
+  const url = `/api/workspace/file?path=${encodeURIComponent(activeFilePath)}&raw=true`;
+  if (typeof window.openImageLightbox === 'function') {
+    window.openImageLightbox(url);
+  } else {
+    window.open(url, '_blank');
+  }
+};
+
+window.downloadActiveFile = function(filePath) {
+  const p = filePath || activeFilePath;
+  if (!p) return;
+  const url = `/api/workspace/file?path=${encodeURIComponent(p)}&raw=true`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = p.split('/').pop() || 'download';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+};
+
+window.promptCreateExplorerItem = async function(type) {
+  const isDir = type === 'dir';
+  const name = prompt(`请输入新建${isDir ? '文件夹' : '文件'}名称:`);
+  if (!name || !name.trim()) return;
+  const targetDir = currentDirPath || "";
+  const targetPath = (targetDir ? targetDir.replace(/\/$/, '') + '/' : '') + name.trim();
+  try {
+    const res = await fetch('/api/workspace/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: targetPath, type })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    toast(`成功创建${isDir ? '文件夹' : '文件'}: ${name.trim()}`);
+    await reloadWorkspaceExplorer();
+  } catch (e) {
+    toast('创建失败: ' + e.message);
+  }
+};
+
+window.promptRenameExplorerItem = async function(item, e) {
+  if (e) e.stopPropagation();
+  const newName = prompt(`请输入新名称:`, item.name);
+  if (!newName || !newName.trim() || newName.trim() === item.name) return;
+  const oldPath = item.fullPath;
+  const parent = item.fullPath.substring(0, item.fullPath.lastIndexOf('/'));
+  const newPath = parent + '/' + newName.trim();
+  try {
+    const res = await fetch('/api/workspace/rename', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPath, newPath })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    toast('重命名成功');
+    if (activeFilePath === oldPath) {
+      activeFilePath = newPath;
+      if (activeFileItem) activeFileItem.name = newName.trim();
+    }
+    await reloadWorkspaceExplorer();
+  } catch (err) {
+    toast('重命名失败: ' + err.message);
+  }
+};
+
+window.promptDeleteExplorerItem = async function(item, e) {
+  if (e) e.stopPropagation();
+  const isDir = item.type === 'dir';
+  if (!confirm(`确定要彻底删除此${isDir ? '文件夹及其所有内容' : '文件'}吗？\n\n${item.name}`)) return;
+  try {
+    const res = await fetch('/api/workspace/file?path=' + encodeURIComponent(item.fullPath), {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    toast('删除成功');
+    if (activeFilePath === item.fullPath) {
+      activeFilePath = null;
+      $("#explorer-empty-view")?.classList.remove("hidden");
+      $("#explorer-editor-view")?.classList.add("hidden");
+      $("#explorer-image-view")?.classList.add("hidden");
+    }
+    await reloadWorkspaceExplorer();
+  } catch (err) {
+    toast('删除失败: ' + err.message);
   }
 };
 
