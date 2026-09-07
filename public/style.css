@@ -2677,23 +2677,6 @@ html[data-theme="light"] .tool-output-content {
   border: 1px dashed var(--border-color);
   border-radius: var(--radius-sm);
 }
-.msg-usage-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 6px;
-  padding: 2px 8px;
-  font-size: 11px;
-  color: var(--text-dim);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  opacity: 0.85;
-  transition: opacity 0.15s;
-}
-.msg-usage-pill:hover {
-  opacity: 1;
-}
 
 /* Quota Window Cards (5h & Weekly) */
 .quota-windows-grid {

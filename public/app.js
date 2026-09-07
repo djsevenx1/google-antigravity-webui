@@ -111,8 +111,8 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
   const weeklyResetPrecise = formatPreciseTimeTag(weeklyReset);
 
   return `
-    <div class="msg-usage-pill" title="点击打开 Google AI Pro 模型用量与配额中心">
-      <div class="msg-usage-left">
+    <div class="msg-usage-pill" style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 10px;margin-top:8px;padding:6px 10px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:10px;font-size:11px;color:var(--text-dim);" title="点击打开 Google AI Pro 模型用量与配额中心">
+      <div class="msg-usage-left" style="display:inline-flex;align-items:center;gap:5px;flex-shrink:0;white-space:nowrap;">
         <span class="msg-model-tag ${seriesClass}">
           <i data-lucide="${seriesIcon}" style="width:11px;height:11px;"></i>
           <span>${escapeHtml(modelName)}</span>
@@ -121,23 +121,23 @@ function getMessageQuotaFooterHtml(contentStr, meta, currentModel) {
         <span>${tokens} tokens</span>
         ${durText ? '<span>·</span><span>' + escapeHtml(durText) + '</span>' : ''}
       </div>
-      <div class="msg-quota-bars-group" onclick="showUsageModal(false)" style="cursor:pointer;" title="点击查看完整 4 大算力池配额详情">
-        <div class="msg-mini-bar-item" title="${poolLabel} 滚动算力: 剩余 ${h5Pct}% (${h5Reset} 后重置)">
-          <span style="font-size:10.5px;color:var(--text-dim);">${poolLabel}</span>
-          <div class="msg-bar-track">
-            <div class="msg-bar-fill ${h5FillClass} ${h5Pct <= 10 ? 'danger' : ''}" style="width:${Math.max(4, h5Pct)}%;"></div>
-          </div>
-          <span style="font-weight:600;color:var(--text-primary);font-size:10.5px;">${h5Pct}%</span>
+      <div class="msg-quota-bars-group" onclick="showUsageModal(false)" style="display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap;cursor:pointer;white-space:nowrap;" title="点击查看完整 4 大算力池配额详情">
+        <span class="msg-mini-bar-item" style="display:inline-flex;align-items:center;gap:4px;padding:2px 7px;background:rgba(255,255,255,0.04);border:1px solid var(--border-color);border-radius:6px;white-space:nowrap;flex-shrink:0;" title="${poolLabel} 滚动算力: 剩余 ${h5Pct}% (${h5Reset} 后重置)">
+          <span style="font-size:10px;color:var(--text-dim);">${poolLabel}</span>
+          <span class="msg-bar-track" style="display:inline-block;width:32px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;overflow:hidden;vertical-align:middle;flex-shrink:0;">
+            <span class="msg-bar-fill ${h5FillClass} ${h5Pct <= 10 ? 'danger' : ''}" style="display:block;height:100%;border-radius:2px;width:${Math.max(4, h5Pct)}%;"></span>
+          </span>
+          <span style="font-weight:600;color:var(--text-primary);font-size:10px;">${h5Pct}%</span>
           <span style="font-size:9.5px;color:var(--text-dim);font-family:monospace;">(${h5ResetPrecise})</span>
-        </div>
-        <div class="msg-mini-bar-item" title="每周累计旗舰配额: 剩余 ${weeklyPct}% (${weeklyReset} 后刷新)">
-          <span style="font-size:10.5px;color:var(--text-dim);">周度</span>
-          <div class="msg-bar-track">
-            <div class="msg-bar-fill weekly" style="width:${Math.max(4, weeklyPct)}%;"></div>
-          </div>
-          <span style="font-weight:600;color:var(--text-primary);font-size:10.5px;">${weeklyPct}%</span>
+        </span>
+        <span class="msg-mini-bar-item" style="display:inline-flex;align-items:center;gap:4px;padding:2px 7px;background:rgba(255,255,255,0.04);border:1px solid var(--border-color);border-radius:6px;white-space:nowrap;flex-shrink:0;" title="每周累计旗舰配额: 剩余 ${weeklyPct}% (${weeklyReset} 后刷新)">
+          <span style="font-size:10px;color:var(--text-dim);">周度</span>
+          <span class="msg-bar-track" style="display:inline-block;width:32px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;overflow:hidden;vertical-align:middle;flex-shrink:0;">
+            <span class="msg-bar-fill weekly" style="display:block;height:100%;border-radius:2px;width:${Math.max(4, weeklyPct)}%;"></span>
+          </span>
+          <span style="font-weight:600;color:var(--text-primary);font-size:10px;">${weeklyPct}%</span>
           <span style="font-size:9.5px;color:var(--text-dim);font-family:monospace;">(${weeklyResetPrecise})</span>
-        </div>
+        </span>
       </div>
     </div>
   `;
