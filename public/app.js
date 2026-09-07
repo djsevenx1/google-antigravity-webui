@@ -4382,18 +4382,201 @@ const fileInput = $("#file-input");
 const btnAttach = $("#btn-attach");
 const attachPreview = $("#attachment-preview");
 
-// 图片查看 lightbox：点击图片弹层显示大图 + 关闭 X（不跳转、不用返回键，避免聊天窗口被返回）
+// 高性能全功能图片灯箱：支持移动端双指缩放、拖拽平移、双击缩放、滚轮缩放与快捷控制栏
 window.openImageLightbox = function(src) {
   let overlay = document.getElementById('img-lightbox');
   if (!overlay) {
     overlay = document.createElement('div');
     overlay.id = 'img-lightbox';
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:99999;display:none;align-items:center;justify-content:center;cursor:pointer';
-    overlay.innerHTML = '<span style="position:absolute;top:14px;right:22px;font-size:38px;color:#fff;line-height:1;cursor:pointer;font-family:sans-serif;">&times;</span><img style="max-width:92vw;max-height:92vh;object-fit:contain;border-radius:6px;" />';
-    overlay.addEventListener('click', () => { overlay.style.display = 'none'; });
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.94);z-index:99999;display:none;align-items:center;justify-content:center;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden;';
+    overlay.innerHTML = `
+      <div id="lightbox-toolbar" style="position:absolute;top:14px;left:16px;right:16px;display:flex;align-items:center;justify-content:space-between;z-index:10;pointer-events:none;">
+        <div id="lightbox-zoom-info" style="color:rgba(255,255,255,0.75);font-size:12px;background:rgba(0,0,0,0.45);padding:4px 10px;border-radius:20px;backdrop-filter:blur(4px);pointer-events:auto;">100%</div>
+        <div style="display:flex;align-items:center;gap:10px;pointer-events:auto;">
+          <button id="lightbox-zoom-out" style="width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;">−</button>
+          <button id="lightbox-zoom-reset" style="width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;">1:1</button>
+          <button id="lightbox-zoom-in" style="width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;">+</button>
+          <button id="lightbox-close-btn" style="width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,0.25);border:none;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-left:6px;">&times;</button>
+        </div>
+      </div>
+      <div id="lightbox-img-wrapper" style="position:relative;display:flex;align-items:center;justify-content:center;width:100%;height:100%;">
+        <img id="lightbox-img" style="max-width:92vw;max-height:90vh;object-fit:contain;border-radius:6px;transform-origin:center center;transition:transform 0.05s ease-out;will-change:transform;" draggable="false" />
+      </div>
+      <div style="position:absolute;bottom:16px;left:0;right:0;text-align:center;color:rgba(255,255,255,0.5);font-size:12px;pointer-events:none;">
+        双指捏合缩放 · 单指拖动 · 双击还原
+      </div>
+    `;
+
     document.body.appendChild(overlay);
+
+    const img = overlay.querySelector('#lightbox-img');
+    const zoomInfo = overlay.querySelector('#lightbox-zoom-info');
+    const closeBtn = overlay.querySelector('#lightbox-close-btn');
+    const zoomInBtn = overlay.querySelector('#lightbox-zoom-in');
+    const zoomOutBtn = overlay.querySelector('#lightbox-zoom-out');
+    const zoomResetBtn = overlay.querySelector('#lightbox-zoom-reset');
+
+    let scale = 1;
+    let translateX = 0;
+    let translateY = 0;
+    let initialPinchDist = 0;
+    let initialScale = 1;
+    let startX = 0;
+    let startY = 0;
+    let isDragging = false;
+    let hasMoved = false;
+    let lastTapTime = 0;
+
+    function updateTransform(smooth = false) {
+      if (scale < 1) scale = 1;
+      if (scale > 5) scale = 5;
+      if (scale === 1) {
+        translateX = 0;
+        translateY = 0;
+      }
+      img.style.transition = smooth ? 'transform 0.25s cubic-bezier(0.2,0,0,1)' : 'none';
+      img.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`;
+      if (zoomInfo) zoomInfo.textContent = `${Math.round(scale * 100)}%`;
+    }
+
+    window._resetLightboxState = function() {
+      scale = 1;
+      translateX = 0;
+      translateY = 0;
+      updateTransform(false);
+    };
+
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      overlay.style.display = 'none';
+      window._resetLightboxState();
+    });
+
+    zoomInBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      scale = Math.min(5, scale + 0.5);
+      updateTransform(true);
+    });
+
+    zoomOutBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      scale = Math.max(1, scale - 0.5);
+      updateTransform(true);
+    });
+
+    zoomResetBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window._resetLightboxState();
+    });
+
+    // 遮罩点击退出 (仅当未放大且未拖拽时)
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay || e.target.id === 'lightbox-img-wrapper') {
+        if (scale <= 1 && !hasMoved) {
+          overlay.style.display = 'none';
+          window._resetLightboxState();
+        }
+      }
+    });
+
+    // 双击快速缩放
+    overlay.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0) {
+        const now = Date.now();
+        if (now - lastTapTime < 300 && !hasMoved) {
+          scale = scale > 1.2 ? 1 : 2.5;
+          translateX = 0;
+          translateY = 0;
+          updateTransform(true);
+        }
+        lastTapTime = now;
+      }
+    });
+
+    // 触摸手势：支持双指捏合缩放 + 单指在放大状态下平移
+    overlay.addEventListener('touchstart', (e) => {
+      hasMoved = false;
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialPinchDist = Math.hypot(dx, dy);
+        initialScale = scale;
+      } else if (e.touches.length === 1) {
+        isDragging = true;
+        startX = e.touches[0].clientX - translateX;
+        startY = e.touches[0].clientY - translateY;
+      }
+    }, { passive: false });
+
+    overlay.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      hasMoved = true;
+      if (e.touches.length === 2 && initialPinchDist > 0) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const currentDist = Math.hypot(dx, dy);
+        scale = initialScale * (currentDist / initialPinchDist);
+        updateTransform(false);
+      } else if (e.touches.length === 1 && isDragging) {
+        if (scale > 1) {
+          translateX = e.touches[0].clientX - startX;
+          translateY = e.touches[0].clientY - startY;
+          updateTransform(false);
+        }
+      }
+    }, { passive: false });
+
+    overlay.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0) {
+        isDragging = false;
+        initialPinchDist = 0;
+        if (scale < 1) {
+          scale = 1;
+          updateTransform(true);
+        }
+      } else if (e.touches.length === 1) {
+        startX = e.touches[0].clientX - translateX;
+        startY = e.touches[0].clientY - translateY;
+      }
+    });
+
+    // PC 滚轮缩放与鼠标拖拽
+    overlay.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.25 : -0.25;
+      scale = Math.min(5, Math.max(1, scale + delta));
+      updateTransform(true);
+    }, { passive: false });
+
+    let isMouseDown = false;
+    let mouseStartX = 0;
+    let mouseStartY = 0;
+
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target.closest('#lightbox-toolbar')) return;
+      isMouseDown = true;
+      hasMoved = false;
+      mouseStartX = e.clientX - translateX;
+      mouseStartY = e.clientY - translateY;
+    });
+
+    overlay.addEventListener('mousemove', (e) => {
+      if (isMouseDown && scale > 1) {
+        hasMoved = true;
+        translateX = e.clientX - mouseStartX;
+        translateY = e.clientY - mouseStartY;
+        updateTransform(false);
+      }
+    });
+
+    overlay.addEventListener('mouseup', () => {
+      isMouseDown = false;
+    });
   }
-  overlay.querySelector('img').src = src;
+
+  const img = overlay.querySelector('#lightbox-img');
+  if (img) img.src = src;
+  if (window._resetLightboxState) window._resetLightboxState();
   overlay.style.display = 'flex';
 };
 
