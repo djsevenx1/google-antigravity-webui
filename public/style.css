@@ -3030,6 +3030,8 @@ html[data-theme="light"] .tool-output-content {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
 .explorer-actions-hover {
   display: none;
   align-items: center;
@@ -3530,9 +3532,9 @@ html:not([data-theme="light"]) .slash-desc {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 8px 12px;
   margin-top: 10px;
-  padding: 6px 10px !important;
+  padding: 6px 12px !important;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 10px;
@@ -3541,17 +3543,18 @@ html:not([data-theme="light"]) .slash-desc {
 }
 
 .msg-usage-left {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .msg-model-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: 5px;
   font-size: 11px;
   font-weight: 600;
@@ -3576,7 +3579,7 @@ html:not([data-theme="light"]) .slash-desc {
 }
 
 .msg-quota-bars-group {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
@@ -3585,14 +3588,16 @@ html:not([data-theme="light"]) .slash-desc {
 .msg-mini-bar-item {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.04);
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: 6px;
   font-size: 11px;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .msg-mini-bar-item:hover {
@@ -3603,9 +3608,10 @@ html:not([data-theme="light"]) .slash-desc {
 .msg-bar-track {
   width: 36px;
   height: 5px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(128, 128, 128, 0.25);
   border-radius: 3px;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .msg-bar-fill {
@@ -3631,6 +3637,26 @@ html:not([data-theme="light"]) .slash-desc {
 
 .msg-bar-fill.danger {
   background: #ef4444;
+}
+
+@media (max-width: 650px) {
+  .msg-usage-pill {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 7px;
+    padding: 7px 10px !important;
+  }
+
+  .msg-usage-left {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .msg-quota-bars-group {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 6px;
+  }
 }
 
 /* Background Running Session Indicator */
