@@ -2039,7 +2039,7 @@ app.post('/api/chat', async (req, res) => {
 
 
 // ---------- 工作区文件树与代码查看（纯净绑定项目工程区） ----------
-const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || path.resolve(__dirname, 'home/.gemini/antigravity-cli/scratch');
+const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || path.resolve(__dirname, 'home/.gemini/antigravity-cli');
 if (!fs.existsSync(WORKSPACE_ROOT)) {
   fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
 }
@@ -2537,7 +2537,7 @@ wss.on('connection', (ws, req) => {
       // 0. 自动检查 agy 修改的 JS 文件语法，有错则广播给前端
       try {
         const { execFileSync } = await import('node:child_process');
-        const workspaceDir = process.env.WORKSPACE_ROOT || path.join(__dirname, 'home/.gemini/antigravity-cli/scratch');
+        const workspaceDir = process.env.WORKSPACE_ROOT || path.join(__dirname, 'home/.gemini/antigravity-cli');
         const checkDir = fs.existsSync(workspaceDir) ? workspaceDir : __dirname;
         // 检查最近 2 分钟内修改的 .js 文件
         const now = Date.now();
