@@ -2628,8 +2628,14 @@ wss.on('connection', (ws, req) => {
       }
     }, 1000);
 
-    const RETRY = 2;
+    const RETRY = 3;
     let deliveredAnything = false;
+
+    // 确保启动 CLI 前 Token 已由服务端主动校验并刷新，绝不让底层 binary 因 Token 过期报错
+    try {
+      const freshToken = await ensureValidToken();
+      if (freshToken) writeActiveToken(freshToken);
+    } catch (_) {}
 
     try {
       let out = null;
@@ -2640,9 +2646,9 @@ wss.on('connection', (ws, req) => {
         }
         try {
           // 注入系统提示词:让 agy 写完代码后自动验证语法
-  const systemPrompt = { role: 'user', content: '【系统规则】你修改任何 JavaScript 文件后,必须立即执行 node --check <文件路径> 验证语法,确保无语法错误后再结束。如果语法有错,必须修复后再次验证,直到通过。' };
-  const messagesWithRules = [systemPrompt, ...effectiveMessages];
-  out = await cliProvider({
+          const systemPrompt = { role: 'user', content: '【系统规则】你修改任何 JavaScript 文件后,必须立即执行 node --check <文件路径> 验证语法,确保无语法错误后再结束。如果语法有错,必须修复后再次验证,直到通过。' };
+          const messagesWithRules = [systemPrompt, ...effectiveMessages];
+          out = await cliProvider({
             model, messages: messagesWithRules, effort, permissions, conversationId,
             onDelta: (txt) => {
               if (txt && txt !== '​') {
@@ -2671,46 +2677,36 @@ wss.on('connection', (ws, req) => {
                   }
                 }
                 if (existingEvt) {
-                  if (p.toolInput && Object.keys(p.toolInput).length) existingEvt.input = p.toolInput;
+                  if (p.toolInput) existingEvt.input = p.toolInput;
                   if (p.rawInput) existingEvt.rawInput = p.rawInput;
                   if (p.toolOutput) existingEvt.output = p.toolOutput;
                   if (p.toolState) existingEvt.state = p.toolState;
                   if (p.duration) existingEvt.duration = p.duration;
-                  if (waited) existingEvt.waited = waited;
-                } else if (tName !== 'thought' || !run.toolEvents.length || run.toolEvents[run.toolEvents.length - 1].tool !== 'thought') {
+                } else {
                   run.toolEvents.push({
                     tool: tName,
-                    stepType: p.stepType || '',
-                    tip: p.tip || (tName === 'thought' ? 'Thought for a few seconds' : ''),
-                    input: p.toolInput || null,
-                    rawInput: p.rawInput || '',
-                    output: p.toolOutput || '',
-                    state: p.toolState || 'ACTIVE',
-                    duration: p.duration || 0,
                     stepIndex: p.stepIndex,
+                    stepType: p.stepType || '',
+                    tip: p.tip || '',
                     toolAction: p.toolAction || '',
                     toolSummary: p.toolSummary || '',
+                    input: p.toolInput,
+                    rawInput: p.rawInput,
+                    output: p.toolOutput,
+                    state: p.toolState || 'ACTIVE',
+                    duration: p.duration,
                     waited
                   });
                 }
               }
-              // 实时语法检查（和 CloudCLI 一样）：写文件工具完成 → 立即 node --check → 错了让 agy 修
-              if (p && p.toolName && /^(write_to_file|replace_file_content|multi_replace_file_content|notebook_edit|sed_file)$/.test(p.toolName) && p.toolState === 'DONE') {
-                const fp = (p.toolInput && (p.toolInput.TargetFile || p.toolInput.AbsolutePath || p.toolInput.FilePath || p.toolInput.path || p.toolInput.file)) || '';
-                if (fp && /\.js$/i.test(fp) && fs.existsSync(fp)) {
-                  try {
-                    execFileSync('node', ['--check', fp], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
-                    debugLog(`[realtime-check] ✅ ${fp}`);
-                  } catch (e) {
-                    const errMsg = String(e.stderr || e.message).split('\n').slice(0, 3).join('\n');
-                    debugLog(`[realtime-check] ❌ ${fp}: ${errMsg}`);
-                    broadcast({ delta: '\n\n⚠️ **语法检查失败** ' + fp + '\n' + errMsg + '\n' });
-                    // 让 agy 立即修（不等对话结束）
-                    broadcast({ progress: true, tip: '检测到语法错误，正在自动修复...', autoFix: true, fixFile: fp, fixError: errMsg });
-                  }
-                }
-              }
-              broadcast({ progress: true, waited, ...p });
+              broadcast({ progress: true, waited, tip: currentStatusTip, activeStatus: currentStatusTip, ...p });
+            },
+            onAskUser: async (question) => {
+              return new Promise((resolve) => {
+                const askId = 'ask_' + Date.now();
+                pendingQuestions.set(askId, resolve);
+                broadcast({ askUser: true, question, askId });
+              });
             },
             signal: runAbortController.signal,
             onConversationId: (id) => {
@@ -2724,13 +2720,22 @@ wss.on('connection', (ws, req) => {
           if (/trajectory not found|conversation not found/i.test(err && err.message || '')) {
             debugLog(`[ws/chat] trajectory not found for ${conversationId}, resetting conversationId and retrying`);
             conversationId = null;
-            // eslint-disable-next-line no-undef
             if (conversationKey) deleteConversation(conversationKey);
             continue;
           }
-          const isTransient = /stream ended|unexpected EOF|context canceled|connection reset|Eligibility check failed|profile picture|i\/o timeout|timeout|dial tcp|connection refused|network is unreachable/i.test(err && err.message || '');
-          if (attempt < RETRY && isTransient) {
+          const isAuthErr = /authentication failed|token expired|invalid_grant|unauthorized/i.test(err && err.message || '');
+          if (isAuthErr && attempt < RETRY) {
+            debugLog(`[ws/chat] auth error detected, proactively refreshing access token...`);
+            try {
+              const refreshed = await refreshAccessToken();
+              if (refreshed) writeActiveToken(refreshed);
+            } catch (_) {}
             await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
+          const isTransient = /retryable error|network issue|stream ended|unexpected EOF|context canceled|connection reset|Eligibility check failed|profile picture|i\/o timeout|timeout|dial tcp|connection refused|network is unreachable/i.test(err && err.message || '');
+          if (attempt < RETRY && isTransient) {
+            await new Promise((r) => setTimeout(r, 2000));
             continue;
           }
           throw err;
