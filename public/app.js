@@ -3160,11 +3160,21 @@ async function showCliLogin(onSuccess) {
       if (st.status === "success") {
         toast("Google 授权成功！");
         closeModal();
+        try {
+          await fetch("/api/accounts/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: "", tokenData: st.tokenData })
+          });
+        } catch (_) {}
+        await refreshSystemStatus();
+        await refreshModels();
+        renderLoginArea();
+        renderConvList();
         if (onSuccess) {
           await onSuccess(st.tokenData);
         } else {
-          await refreshSystemStatus();
-          await refreshModels();
+          showAccountSwitcher();
         }
       } else if (st.status === "error") {
         $("#login-feedback").innerHTML = `<span style="color:var(--danger);">登录失败: ${escapeHtml(st.error || "未知错误")}</span>`;

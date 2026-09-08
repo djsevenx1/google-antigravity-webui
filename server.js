@@ -574,7 +574,7 @@ app.post('/api/debug-log', (req, res) => {
 
 // 对其余所有 /api 接口强制鉴权（媒体资源允许直接加载渲染）
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/web-auth') || req.path === '/debug-log' || req.path === '/heartbeat' || req.path === '/avatar' || req.path === '/test-fetch' || req.path.startsWith('/assets/files') || req.path === '/image-preview') {
+  if (req.path.startsWith('/web-auth') || req.path.startsWith('/cli-login') || req.path === '/debug-log' || req.path === '/heartbeat' || req.path === '/avatar' || req.path === '/test-fetch' || req.path.startsWith('/assets/files') || req.path === '/image-preview') {
     return next();
   }
   return requireWebAuth(req, res, next);
@@ -1056,9 +1056,9 @@ function getModelMetadata(modelId, tierData = {}) {
 }
 
 app.get('/api/usage', async (req, res) => {
-  const force = req.query.refresh === '1' || req.query.force === '1' || (Date.now() - (currentActive?.quotaUpdatedAt || 0) > QUOTA_CALIBRATE_TTL);
   const emailParam = req.query.email ? String(req.query.email).trim() : '';
   const currentActive = emailParam ? (listAccounts().find(a => a.email === emailParam) || getActiveAccount()) : getActiveAccount();
+  const force = req.query.refresh === '1' || req.query.force === '1' || (Date.now() - (currentActive?.quotaUpdatedAt || 0) > QUOTA_CALIBRATE_TTL);
 
   // 1. 直连 Google 上游同步配额与重置时间（支持手动强刷/2小时过期判定）
   let quotaData = null;
