@@ -1383,6 +1383,13 @@ function replayTranscriptTailToWs(ws, convId) {
   } catch (_) { return false; }
 }
 
+function tryParseEvent(ev) {
+  if (!ev) return null;
+  if (typeof ev === 'object') return ev;
+  const m = String(ev).match(/^data: (.+)$/s);
+  try { return JSON.parse(m ? m[1] : ev); } catch (_) { return null; }
+}
+
 // ── 流事件磁盘持久化：server 自己把 delta/progress 增量写盘，弥补 agy transcript 不存增量 ──
 function getStreamFilePath(convKey) {
   const safe = String(convKey || '').replace(/[^a-zA-Z0-9_-]/g, '');
@@ -1416,15 +1423,32 @@ app.get('/api/sessions', (_req, res) => {
         if (data && data.id) {
           // 自动与底层 Antigravity transcript 对齐，找回所有离线响应
           data = syncSessionWithTranscript(data);
-          const lastMsg = Array.isArray(data.messages) && data.messages.length ? data.messages[data.messages.length - 1] : null;
+          const running = activeRuns.get(data.id);
+          const isRunning = !!(running && running.isRunning);
+          let msgs = Array.isArray(data.messages) ? [...data.messages] : [];
+          // 如果当前还在后台生成，动态注入正在生成的 assistant 增量
+          if (isRunning && running && running.accumulated) {
+            const last = msgs[msgs.length - 1];
+            if (last && last.role === 'assistant') {
+              msgs[msgs.length - 1] = { ...last, content: running.accumulated, tools: running.toolEvents };
+            } else {
+              msgs.push({ role: 'assistant', content: running.accumulated, tools: running.toolEvents, meta: { model: running.model } });
+            }
+          }
+          // 清除末尾空白的 assistant 占位（避免刷新时呈现空内容）
+          while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant' && (!msgs[msgs.length - 1].content || msgs[msgs.length - 1].content.replace(/[\u200b\s]/g, '') === '') && !isRunning) {
+            msgs.pop();
+          }
+          const lastMsg = msgs.length ? msgs[msgs.length - 1] : null;
           sessions.push({
             id: data.id,
             title: data.title || '新对话',
             createdAt: data.createdAt || fs.statSync(fullPath).birthtimeMs || Date.now(),
             updatedAt: data.updatedAt || fs.statSync(fullPath).mtimeMs || Date.now(),
             convId: data.convId || null,
-            messageCount: Array.isArray(data.messages) ? data.messages.length : 0,
-            messages: Array.isArray(data.messages) ? data.messages : [],
+            isRunning: isRunning,
+            messageCount: msgs.length,
+            messages: msgs,
             preview: lastMsg ? (lastMsg.content || '').slice(0, 80) : ''
           });
         }
@@ -1446,6 +1470,22 @@ app.get('/api/sessions/:id', (req, res) => {
     const raw = fs.readFileSync(filePath, 'utf-8');
     let data = JSON.parse(raw);
     data = syncSessionWithTranscript(data);
+    const running = activeRuns.get(data.id);
+    const isRunning = !!(running && running.isRunning);
+    let msgs = Array.isArray(data.messages) ? [...data.messages] : [];
+    if (isRunning && running && running.accumulated) {
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'assistant') {
+        msgs[msgs.length - 1] = { ...last, content: running.accumulated, tools: running.toolEvents };
+      } else {
+        msgs.push({ role: 'assistant', content: running.accumulated, tools: running.toolEvents, meta: { model: running.model } });
+      }
+    }
+    while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant' && (!msgs[msgs.length - 1].content || msgs[msgs.length - 1].content.replace(/[\u200b\s]/g, '') === '') && !isRunning) {
+      msgs.pop();
+    }
+    data.messages = msgs;
+    data.isRunning = isRunning;
     send(res, 200, { ok: true, session: data });
   } catch (e) {
     send(res, 500, { error: e.message });
@@ -2372,33 +2412,89 @@ wss.on('connection', (ws, req) => {
     const { model, messages, effort, permissions, conversationKey, conversationId: clientConvId } = body;
     const permRaw = String(permissions || '').trim().toLowerCase();
 
-    // ── subscribe 模式：刷新/重开/切回页面后，前端请求挂接到后台任务，自动回放已生成及正在生成的全部流式内容 ──
+    // ── subscribe 模式（借鉴 CloudCLI）：刷新/重开/切回页面后，自动挂接后台任务并增量回放全部错过的事件 ──
     if (body.action === 'subscribe' && conversationKey) {
       const convKey = conversationKey || clientConvId || `anon-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
       const existingRun = activeRuns.get(convKey);
+      const afterSeq = typeof body.lastSeq === 'number' && Number.isFinite(body.lastSeq) ? Math.max(0, Math.floor(body.lastSeq)) : 0;
+
       if (existingRun && existingRun.isRunning) {
-        debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=true, events=${existingRun.events.length}) — 不回放历史，只接后续实时流`);
-        // 不把历史 events 当思考回放（避免混淆）；前端历史靠 GET /api/sessions 拉取，这里只挂接后续实时流
+        debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=true, events=${existingRun.events.length}, afterSeq=${afterSeq}) — 增量回放历史并挂接后续实时流`);
+        try {
+          ws.send(JSON.stringify({
+            subscribed: true,
+            isRunning: true,
+            conversationId: existingRun.conversationId || clientConvId || null,
+            model: existingRun.model,
+            lastSeq: existingRun.lastSeq || 0
+          }));
+        } catch (_) {}
+
+        // 核心修复（借鉴 CloudCLI）：回放客户端错过的全部事件（tools, progress, delta, 心跳）
+        for (const ev of existingRun.events) {
+          const item = typeof ev === 'string' ? (tryParseEvent(ev) || null) : ev;
+          if (item && typeof item.seq === 'number') {
+            if (item.seq > afterSeq) {
+              try { ws.send(JSON.stringify(item)); } catch (_) {}
+            }
+          } else if (item && afterSeq === 0) {
+            try { ws.send(JSON.stringify(item)); } catch (_) {}
+          }
+        }
+
         const wsListener = (chunk) => {
-          const m = chunk.match(/^data: (.+)$/s);
-          if (m) { try { ws.send(m[1]); } catch (_) {} }
+          const m = typeof chunk === 'string' ? chunk.match(/^data: (.+)$/s) : null;
+          const payload = m ? m[1] : (typeof chunk === 'string' ? chunk : JSON.stringify(chunk));
+          try { ws.send(payload); } catch (_) {}
         };
         existingRun.listeners.add(wsListener);
         ws.on('close', () => existingRun.listeners.delete(wsListener));
         return;
       }
-      // 已完成或已失败的 run：清理掉，不走回放
-      if (existingRun) {
-        debugLog(`[ws/chat] subscribe: stale run ${convKey} (isRunning=${existingRun.isRunning}, done=${existingRun.done}), cleaning up`);
-        activeRuns.delete(convKey);
+
+      // 如果内存中的 run 刚刚结束（3分钟保留窗口期内）
+      if (existingRun && !existingRun.isRunning) {
+        debugLog(`[ws/chat] subscribe: run ${convKey} completed recently (events=${existingRun.events.length}, afterSeq=${afterSeq})`);
+        try {
+          ws.send(JSON.stringify({
+            subscribed: true,
+            isRunning: false,
+            conversationId: existingRun.conversationId || clientConvId || null,
+            lastSeq: existingRun.lastSeq || 0
+          }));
+        } catch (_) {}
+
+        for (const ev of existingRun.events) {
+          const item = typeof ev === 'string' ? (tryParseEvent(ev) || null) : ev;
+          if (item && typeof item.seq === 'number') {
+            if (item.seq > afterSeq) {
+              try { ws.send(JSON.stringify(item)); } catch (_) {}
+            }
+          }
+        }
+
+        try {
+          ws.send(JSON.stringify({
+            done: true,
+            conversationId: existingRun.conversationId || clientConvId || null,
+            tools: existingRun.toolEvents || []
+          }));
+        } catch (_) {}
+        return;
       }
-      // 后台没有正在跑的任务：从磁盘兜底还原当前 turn 已输出部分（CloudCLI 方向，不依赖内存 activeRuns）
-      // 优先读 server 自己持久化的流增量（含正在输出的纯文本），其次读 agy transcript_full
-      // 不把历史当思考回放：后台没跑的任务，只回放 error（若有），历史靠 GET /api/sessions
+
+      // 后台没有正在跑的内存任务：从磁盘流增量兜底还原（防止页面刷新恰好遇到内存回收）
       const streamEvs = readStreamEvents(convKey);
       let replayed = false;
       for (const line of streamEvs) {
-        try { const o = JSON.parse(line); if (o && o.error) { ws.send(line); replayed = true; } } catch (_) {}
+        try {
+          const ev = JSON.parse(line);
+          if (ev && typeof ev.seq === 'number') {
+            if (ev.seq > afterSeq) { ws.send(line); replayed = true; }
+          } else if (ev && afterSeq === 0) {
+            ws.send(line); replayed = true;
+          }
+        } catch (_) {}
       }
       ws.send(JSON.stringify({ done: true, conversationId: clientConvId || null, replayedFromDisk: replayed }));
       return;
@@ -2432,29 +2528,30 @@ wss.on('connection', (ws, req) => {
     let existingRun = activeRuns.get(convKey);
     const _lastUser = Array.isArray(messages) ? [...messages].reverse().find(m => m && m.role === 'user') : null;
     const _initLastUser = (existingRun && Array.isArray(existingRun.initialMessages)) ? [...existingRun.initialMessages].reverse().find(m => m && m.role === 'user') : null;
-    const _lu = _lastUser ? JSON.stringify(_lastUser.content) : '';
-    const _ilu = _initLastUser ? JSON.stringify(_initLastUser.content) : '';
-    // 以「最后一条 user 消息是否变化」判断新 turn，而非 messages.length——
-    // syncSession 会给前端追加 assistant 消息导致 length 增长，旧的 length 判断会误判新 turn、abort 正在跑的任务、agy 续接同一 user 出同样回复（重复）
-    const isNewTurn = !existingRun || !existingRun.isRunning || (_lu && _lu !== _ilu);
+    const _lu = _lastUser ? String(_lastUser.content || '').trim() : '';
+    const _ilu = _initLastUser ? String(_initLastUser.content || '').trim() : '';
+    // 以「最后一条 user 消息是否变化」判断新 turn
+    const isNewTurn = !existingRun || !existingRun.isRunning || (_lu && _ilu && _lu !== _ilu);
 
     if (existingRun && existingRun.isRunning && !isNewTurn) {
-      // 仅当是完全相同的轮次且正在跑时才 attach（例如刷新页面重新连接）
+      // 相同轮次正在跑：直接 attach 并回放未看事件（例如重连或刷新）
       debugLog(`[ws/chat] attach to run ${convKey} (isRunning=true, events=${existingRun.events.length})`);
       for (const ev of existingRun.events) {
-        const match = ev.match(/^data: (.+)$/s);
-        if (match) { try { ws.send(match[1]); } catch (_) {} }
+        const item = typeof ev === 'string' ? (tryParseEvent(ev) || null) : ev;
+        if (item) { try { ws.send(JSON.stringify(item)); } catch (_) {} }
       }
       const wsListener = (chunk) => {
-        const m = chunk.match(/^data: (.+)$/s);
-        if (m) { try { ws.send(m[1]); } catch (_) {} }
+        const m = typeof chunk === 'string' ? chunk.match(/^data: (.+)$/s) : null;
+        const payload = m ? m[1] : (typeof chunk === 'string' ? chunk : JSON.stringify(chunk));
+        try { ws.send(payload); } catch (_) {}
       };
       existingRun.listeners.add(wsListener);
       ws.on('close', () => existingRun.listeners.delete(wsListener));
       return;
     }
 
-    if (existingRun) {
+    if (existingRun && existingRun.isRunning) {
+      // 只有在新轮次启动时才取消旧 run
       try { existingRun.abortController?.abort(); } catch (_) {}
       existingRun.isRunning = false;
       activeRuns.delete(convKey);
@@ -2474,6 +2571,7 @@ wss.on('connection', (ws, req) => {
       abortController: runAbortController,
       listeners: new Set(),
       events: [],
+      lastSeq: 0,
       isRunning: true,
       initialMessages: Array.isArray(messages) ? [...messages] : [],
       accumulated: '',
@@ -2488,8 +2586,10 @@ wss.on('connection', (ws, req) => {
     truncateStreamFile(convKey); // 新 turn 开始：清空磁盘流文件，避免多轮叠加
 
     const broadcast = (obj) => {
-      const str = JSON.stringify(obj);
-      run.events.push(`data: ${str}\n\n`);
+      run.lastSeq = (run.lastSeq || 0) + 1;
+      const eventWithSeq = { ...obj, seq: run.lastSeq };
+      run.events.push(eventWithSeq);
+      const str = JSON.stringify(eventWithSeq);
       appendStreamEvent(convKey, str); // 同步持久化到磁盘，刷新后即使 activeRuns 没命中也能回放
       for (const l of run.listeners) {
         try { l(`data: ${str}\n\n`); } catch (_) {}
@@ -2497,8 +2597,9 @@ wss.on('connection', (ws, req) => {
     };
 
     const wsListener = (chunk) => {
-      const m = chunk.match(/^data: (.+)$/s);
-      if (m) { try { ws.send(m[1]); } catch (_) {} }
+      const m = typeof chunk === 'string' ? chunk.match(/^data: (.+)$/s) : null;
+      const payload = m ? m[1] : (typeof chunk === 'string' ? chunk : JSON.stringify(chunk));
+      try { ws.send(payload); } catch (_) {}
     };
     run.listeners.add(wsListener);
     ws.on('close', () => run.listeners.delete(wsListener));
@@ -2784,7 +2885,18 @@ wss.on('connection', (ws, req) => {
           });
         }
         if (out && out.conversationId) sessionData.convId = out.conversationId;
-        sessionData = syncSessionWithTranscript(sessionData);
+        try {
+          const synced = syncSessionWithTranscript(sessionData);
+          if (synced && Array.isArray(synced.messages)) {
+            sessionData = synced;
+          }
+        } catch (_) {}
+        if (cleanAcc) {
+          const l = sessionData.messages[sessionData.messages.length - 1];
+          if (l && l.role === 'assistant' && (!l.content || l.content.replace(/[\u200b\s]/g, '') === '')) {
+            l.content = run.accumulated;
+          }
+        }
         sessionData.updatedAt = Date.now();
         const lastMsg = sessionData.messages[sessionData.messages.length - 1];
         if (lastMsg && lastMsg.role === 'assistant' && lastMsg.tools) {

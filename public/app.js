@@ -804,7 +804,7 @@ async function loadConversations() {
     const data = await res.json();
     if (data && data.ok && Array.isArray(data.sessions) && data.sessions.length > 0) {
       // 保留本地尚未落盘的最新用户消息（防止刷新页面时丢失正在思考中的提问）
-      const localRaw = localStorage.getItem("agy-convs");
+      const localRaw = localStorage.getItem(CONV_KEY) || localStorage.getItem("agy-convs");
       if (localRaw) {
         try {
           const localConvs = JSON.parse(localRaw);
@@ -820,13 +820,26 @@ async function loadConversations() {
           });
         } catch (_) {}
       }
+
+      // 清除末尾空白或占位的 assistant 占位（避免刷新页面时展示空卡片）
+      data.sessions.forEach(conv => {
+        if (Array.isArray(conv.messages)) {
+          while (conv.messages.length > 0 && conv.messages[conv.messages.length - 1].role === 'assistant' && (!conv.messages[conv.messages.length - 1].content || conv.messages[conv.messages.length - 1].content.replace(/[\u200b\s]/g, '') === '')) {
+            conv.messages.pop();
+          }
+        }
+      });
+
       state.conversations = data.sessions;
       if (!state.activeId || !state.conversations.some((c) => c.id === state.activeId)) {
         state.activeId = state.conversations[0].id;
       }
-      saveConversations();
+      saveConversations(true);
       renderConvList();
       paintActiveConv();
+    } else if (data && data.unauthenticated) {
+      showLoginGate();
+      return;
     } else {
       // 服务端为空时，把当前本地可能存在的会话自动迁移上传到服务端
       const localRaw = localStorage.getItem(CONV_KEY) || localStorage.getItem("agy-convs");
@@ -2368,6 +2381,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
 
   const MAX_NET_RETRIES = 15;
   let netRetryCount = 0;
+  let currentSeq = 0;
 
   try {
     while (true) {
@@ -2459,6 +2473,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
         ws.onmessage = (event) => {
           let data;
           try { data = JSON.parse(event.data); } catch (_) { return; }
+          if (data.seq != null && typeof data.seq === 'number') currentSeq = Math.max(currentSeq, data.seq);
           resetInactivityWatchdog(); // 只要有任何数据、心跳或思考进度到达，立即给 300s 看门狗续期
 
           if (data.unauthenticated) { showLoginGate(); done(() => reject(new Error("请先登录"))); return; }
@@ -2642,14 +2657,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (streamError) { done(() => reject(streamError)); return; }
           if (needsPerm) { done(() => reject(Object.assign(new Error(permMsg), { needsPermission: true, toolName: permToolName, toolInput: permToolInput }))); return; }
           
-          // 如果已经输出了有效文本（回答已生成完成），连接关闭视为正常结束
-          const cleanText = (acc || '').replace(/[\u200b\s]/g, '');
-          if (cleanText.length > 0) {
-            receivedDone = true;
-            done(() => resolve());
-            return;
-          }
-          
+          // 检查远端服务端是否已经完成落盘（例如正好在关闭瞬间服务端生成完毕）
           try {
             const checkRes = await fetch("/api/sessions");
             const checkData = await checkRes.json();
@@ -2657,7 +2665,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
               const s = checkData.sessions.find(item => item.id === conv.id);
               if (s && Array.isArray(s.messages) && s.messages.length > 0) {
                 const last = s.messages[s.messages.length - 1];
-                if (last && last.role === 'assistant' && last.content && last.content.replace(/[\u200b\s]/g, '')) {
+                if (last && last.role === 'assistant' && last.content && last.content.replace(/[\u200b\s]/g, '') && !s.isRunning) {
                   conv.messages = s.messages;
                   saveConversations();
                   paintActiveConv();
@@ -2669,8 +2677,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
             }
           } catch (_) {}
 
-          // 只有在完全没有收到任何字且未被用户中止的情况下，才作为 network error 重试
-          done(() => reject(new Error('network error')));
+          // 核心修复（借鉴 CloudCLI）：连接异常断开且未收到明确的 done，绝不草率提前结束，而是触发自动增量重连！
+          done(() => reject(new Error('connection closed prematurely')));
         };
       });
 
@@ -2703,15 +2711,15 @@ async function runConversationTurn(text, appendUserMsg = true) {
       }
 
       const errMsg = (e && e.message) || "请求失败（未知错误）";
-      const isNetErr = /network error|failed to fetch|load failed/i.test(errMsg);
+      const isNetErr = /network|failed to fetch|load failed|closed prematurely|socket error/i.test(errMsg);
 
       if (isNetErr && !isAbort && netRetryCount < MAX_NET_RETRIES) {
         netRetryCount++;
-        // 重试前稍作等待（1.5s），允许网络波动或服务端热重启完成
-        await new Promise(r => setTimeout(r, 1500));
+        // 重试前稍作等待（1.2s），允许网络波动或服务端热重启完成
+        await new Promise(r => setTimeout(r, 1200));
         // 重试时不再追加用户消息（已 push 过），防止 msgs 滚雪球增长
         userMsgPushed = true;
-        // 重试时用 subscribe 模式挂接到正在跑的 run，不创建新任务、不重复发 messages
+        // 核心修复（借鉴 CloudCLI）：重连必须携带 authToken 与 lastSeq，实现零丢字增量续接
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsRetry = new WebSocket(`${proto}//${location.host}/ws/chat`);
         currentWs = wsRetry;
@@ -2722,7 +2730,9 @@ async function runConversationTurn(text, appendUserMsg = true) {
             const done2 = (fn) => { if (!settled2) { settled2 = true; fn(); } };
             wsRetry.onopen = () => {
               wsRetry.send(JSON.stringify({
+                token: authToken,
                 action: 'subscribe',
+                lastSeq: currentSeq,
                 model: state.selectedModel || 'gemini-3.7-flash-high',
                 messages: conv.messages,
                 conversationKey: conv.id,
@@ -2732,6 +2742,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
             wsRetry.onmessage = (event) => {
               let data;
               try { data = JSON.parse(event.data); } catch (_) { return; }
+              if (data.seq != null && typeof data.seq === 'number') currentSeq = Math.max(currentSeq, data.seq);
+
               if (data.idle) {
                 // 后台已结束生成，立即从服务端拉取最新的会话持久化数据，回填可能因连接切换遗漏的正文回答
                 fetch('/api/sessions').then(r => r.json()).then(sData => {
@@ -2746,10 +2758,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 }).catch(() => {});
                 done2(() => resolve());
                 return;
-              } // 后台没在跑
+              }
               if (data.error) { streamError = new Error(data.error); done2(() => reject(streamError)); return; }
               if (data.progress) {
-                if (data.toolName) toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
+                if (data.toolName) toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0, input: data.toolInput, output: data.toolOutput, state: data.toolState });
                 const targetNode = clientRun.asstNode || asstNode;
                 if (state.activeId === conv.id && targetNode && targetNode.bubble) {
                   updateAssistantBubble(targetNode, acc, toolEvents, true);
@@ -4279,10 +4291,11 @@ function tryReconnectToOngoingRun() {
   const ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    // 发送 subscribe 请求：不创建新任务，只要求挂接到正在跑的 run（如有）
+    // 发送 subscribe 请求：携带 lastSeq: 0 以重放该 turn 所有的历史进度和流式输出
     ws.send(JSON.stringify({
       token: authToken,
       action: 'subscribe',
+      lastSeq: 0,
       model: state.selectedModel || 'gemini-3.7-flash-high',
       messages: conv.messages || [{ role: 'user', content: '' }],
       conversationKey: conv.id,
@@ -4296,9 +4309,38 @@ function tryReconnectToOngoingRun() {
   let asstNode = null;
   let toolEvents = [];
 
+  const ensureAsstNode = () => {
+    if (!asstNode) {
+      const lastMsgRow = feed?.querySelector(".message-row:last-child");
+      if (lastMsgRow && lastMsgRow.classList.contains("assistant")) {
+        const bubble = lastMsgRow.querySelector(".message-bubble");
+        asstNode = { row: lastMsgRow, bubble };
+        lastMsgRow.classList.add("streaming");
+      } else {
+        asstNode = appendMsgRow('assistant', '', true);
+      }
+    }
+    return asstNode;
+  };
+
   ws.onmessage = (event) => {
     let data;
     try { data = JSON.parse(event.data); } catch (_) { return; }
+
+    if (data.unauthenticated) {
+      showLoginGate();
+      return;
+    }
+
+    if (data.subscribed && data.isRunning) {
+      reconnected = true;
+      state.streaming = true;
+      updateSendButton();
+      $("#chat-empty")?.classList.add("hidden");
+      $("#chat-feed")?.classList.remove("hidden");
+      ensureAsstNode();
+      return;
+    }
 
     if (data.idle) {
       try { ws.close(); } catch (_) {}
@@ -4311,19 +4353,16 @@ function tryReconnectToOngoingRun() {
       reconnected = true;
       state.streaming = true;
       updateSendButton();
-
-      // 确保切出空状态
       $("#chat-empty")?.classList.add("hidden");
       $("#chat-feed")?.classList.remove("hidden");
-
-      // 无论最后一条是什么角色，都追加一个流式气泡显示实时进度
-      asstNode = appendMsgRow('assistant', '', true);
+      ensureAsstNode();
     }
 
     if (data.error) {
-      if (asstNode) {
-        asstNode.bubble.innerHTML = formatMarkdown(data.error, false);
-        asstNode.row.className = 'message-row error';
+      const node = ensureAsstNode();
+      if (node) {
+        node.bubble.innerHTML = formatMarkdown(data.error, false);
+        node.row.className = 'message-row error';
       }
       state.streaming = false;
       updateSendButton();
@@ -4331,19 +4370,44 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.progress) {
+      const node = ensureAsstNode();
       if (data.toolName) {
-        toolEvents.push({ tool: data.toolName, stepType: data.stepType || '', tip: data.tip || '', waited: data.waited || 0 });
+        let existing = toolEvents.find(e => e.stepIndex != null && e.stepIndex === data.stepIndex);
+        if (!existing && toolEvents.length > 0) {
+          const last = toolEvents[toolEvents.length - 1];
+          if (last && last.tool === data.toolName && (last.state === 'ACTIVE' || !last.output) && data.toolOutput) {
+            existing = last;
+          }
+        }
+        if (existing) {
+          if (data.toolInput) existing.input = data.toolInput;
+          if (data.toolOutput) existing.output = data.toolOutput;
+          if (data.toolState) existing.state = data.toolState;
+          if (data.duration) existing.duration = data.duration;
+        } else {
+          toolEvents.push({
+            tool: data.toolName,
+            stepIndex: data.stepIndex,
+            stepType: data.stepType || '',
+            tip: data.tip || '',
+            waited: data.waited || 0,
+            input: data.toolInput,
+            output: data.toolOutput,
+            state: data.toolState || 'DONE'
+          });
+        }
       }
-      if (asstNode) {
-        updateAssistantBubble(asstNode, acc, toolEvents, true);
+      if (node) {
+        updateAssistantBubble(node, acc, toolEvents, true);
       }
       return;
     }
 
     if (data.delta != null && data.delta !== '​') {
+      const node = ensureAsstNode();
       acc += data.delta;
-      if (asstNode) {
-        updateAssistantBubble(asstNode, acc, toolEvents, true);
+      if (node) {
+        updateAssistantBubble(node, acc, toolEvents, true);
         if (feed) feed.scrollTop = feed.scrollHeight;
       }
     }
@@ -4354,19 +4418,22 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.done) {
-      if (asstNode) {
+      const node = ensureAsstNode();
+      if (node) {
         const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
-        updateAssistantBubble(asstNode, acc, toolEvents, false, metaSnapshot);
-        asstNode.row.classList.remove('streaming');
+        updateAssistantBubble(node, acc, toolEvents, false, metaSnapshot);
+        node.row.classList.remove('streaming');
         state.streaming = false;
         updateSendButton();
         refreshIcons();
         if (cleanAcc || toolEvents.length) {
-          // 避免重复追加
           const lastMsg = conv.messages[conv.messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
             conv.messages.push({ role: 'assistant', content: acc, tools: toolEvents.length ? toolEvents : undefined, meta: { model: state.selectedModel } });
+          } else {
+            lastMsg.content = acc;
+            if (toolEvents.length) lastMsg.tools = toolEvents;
           }
         }
         saveConversations(true);
