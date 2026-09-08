@@ -732,6 +732,9 @@ let _localSaveTimeout = null;
 function saveConversations(immediate = false) {
   const syncLocal = () => {
     try {
+      localStorage.setItem(ACTIVE_KEY, state.activeId || "");
+    } catch (_) {}
+    try {
       const slim = state.conversations.map((c) => ({
         id: c.id,
         title: c.title,
@@ -741,8 +744,25 @@ function saveConversations(immediate = false) {
         updatedAt: c.updatedAt || Date.now()
       }));
       localStorage.setItem(CONV_KEY, JSON.stringify(slim));
-      localStorage.setItem(ACTIVE_KEY, state.activeId || "");
-    } catch (_) {}
+    } catch (e) {
+      // 达到 localStorage 存储上限时进行数据裁剪保护，保留关键会话及最新消息
+      try {
+        const topSlim = state.conversations.slice(0, 5).map(c => ({
+          id: c.id,
+          title: c.title,
+          convId: c.convId,
+          createdAt: c.createdAt,
+          updatedAt: c.updatedAt,
+          messages: (c.messages || []).slice(-30).map(m => ({
+            role: m.role,
+            content: m.content,
+            meta: m.meta,
+            tools: (m.tools || []).slice(-5)
+          }))
+        }));
+        localStorage.setItem(CONV_KEY, JSON.stringify(topSlim));
+      } catch (_) {}
+    }
   };
 
   if (immediate) {
@@ -803,28 +823,38 @@ async function loadConversations() {
     const res = await fetch("/api/sessions");
     const data = await res.json();
     if (data && data.ok && Array.isArray(data.sessions) && data.sessions.length > 0) {
-      // 保留本地尚未落盘的最新用户消息（防止刷新页面时丢失正在思考中的提问）
+      // 深度双向对齐：防止刷新页面时丢失本地较新的消息或尚未落盘的新对话
       const localRaw = localStorage.getItem(CONV_KEY) || localStorage.getItem("agy-convs");
       if (localRaw) {
         try {
           const localConvs = JSON.parse(localRaw);
-          data.sessions.forEach(serverConv => {
-            const localConv = localConvs.find(c => c.id === serverConv.id);
-            if (localConv && localConv.messages.length > serverConv.messages.length) {
-              // 如果本地消息比服务端多，且多出来的是 user 消息，则补充进去
-              const diff = localConv.messages.slice(serverConv.messages.length);
-              if (diff.every(m => m.role === 'user')) {
-                serverConv.messages.push(...diff);
+          if (Array.isArray(localConvs)) {
+            const serverMap = new Map(data.sessions.map(s => [s.id, s]));
+            for (const localConv of localConvs) {
+              const serverConv = serverMap.get(localConv.id);
+              if (!serverConv) {
+                // 服务端尚未收录的本地新会话，完整保留
+                data.sessions.push(localConv);
+              } else if (Array.isArray(localConv.messages) && Array.isArray(serverConv.messages)) {
+                if (localConv.messages.length > serverConv.messages.length) {
+                  // 本地消息数量更多，说明本地有最新提交或生成的回答，以本地为准
+                  serverConv.messages = localConv.messages;
+                }
               }
             }
-          });
+          }
         } catch (_) {}
       }
 
-      // 清除末尾空白或占位的 assistant 占位（避免刷新页面时展示空卡片）
+      // 清除末尾完全空白且无任何工具记录的 assistant 占位（避免刷新页面时展示空卡片；只要有工具结果就保留）
       data.sessions.forEach(conv => {
         if (Array.isArray(conv.messages)) {
-          while (conv.messages.length > 0 && conv.messages[conv.messages.length - 1].role === 'assistant' && (!conv.messages[conv.messages.length - 1].content || conv.messages[conv.messages.length - 1].content.replace(/[\u200b\s]/g, '') === '')) {
+          while (
+            conv.messages.length > 0 &&
+            conv.messages[conv.messages.length - 1].role === 'assistant' &&
+            (!conv.messages[conv.messages.length - 1].content || conv.messages[conv.messages.length - 1].content.replace(/[\u200b\s]/g, '') === '') &&
+            (!conv.messages[conv.messages.length - 1].tools || conv.messages[conv.messages.length - 1].tools.length === 0)
+          ) {
             conv.messages.pop();
           }
         }
@@ -4150,14 +4180,6 @@ async function initApp() {
     });
   });
 
-  // Instant render local conversations & chat box
-  if (!state.conversations.length || !state.activeId) {
-    newChat(true);
-  } else {
-    renderConvList();
-    paintActiveConv();
-  }
-
   // Restore saved permissions & effort preferences
   const permSel = $("#permissions");
   if (permSel) {
@@ -4311,11 +4333,11 @@ function tryReconnectToOngoingRun() {
 
   const ensureAsstNode = () => {
     if (!asstNode) {
+      // 只有当前末尾气泡处于 streaming 状态才复用，绝对不能劫持已完成的历史记录！
       const lastMsgRow = feed?.querySelector(".message-row:last-child");
-      if (lastMsgRow && lastMsgRow.classList.contains("assistant")) {
+      if (lastMsgRow && lastMsgRow.classList.contains("assistant") && lastMsgRow.classList.contains("streaming")) {
         const bubble = lastMsgRow.querySelector(".message-bubble");
         asstNode = { row: lastMsgRow, bubble };
-        lastMsgRow.classList.add("streaming");
       } else {
         asstNode = appendMsgRow('assistant', '', true);
       }
@@ -4418,9 +4440,24 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.done) {
+      if (!reconnected) {
+        // 未收到有效运行中标记或流式增量，直接关闭，绝不篡改历史
+        try { ws.close(); } catch (_) {}
+        return;
+      }
+      const cleanAcc = acc.replace(/​/g, '').trim();
+      if (!cleanAcc && !toolEvents.length) {
+        // 无实际内容产出，清理可能残留的空 streaming 占位
+        if (asstNode && asstNode.row && asstNode.row.classList.contains("streaming")) {
+          asstNode.row.remove();
+        }
+        state.streaming = false;
+        updateSendButton();
+        try { ws.close(); } catch (_) {}
+        return;
+      }
       const node = ensureAsstNode();
       if (node) {
-        const cleanAcc = acc.replace(/​/g, '').trim();
         const metaSnapshot = { model: state.selectedModel };
         updateAssistantBubble(node, acc, toolEvents, false, metaSnapshot);
         node.row.classList.remove('streaming');

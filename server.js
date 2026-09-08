@@ -1435,8 +1435,8 @@ app.get('/api/sessions', (_req, res) => {
               msgs.push({ role: 'assistant', content: running.accumulated, tools: running.toolEvents, meta: { model: running.model } });
             }
           }
-          // 清除末尾空白的 assistant 占位（避免刷新时呈现空内容）
-          while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant' && (!msgs[msgs.length - 1].content || msgs[msgs.length - 1].content.replace(/[\u200b\s]/g, '') === '') && !isRunning) {
+          // 清除末尾完全空白无工具的 assistant 占位（避免刷新时呈现空内容，有工具结果时保留）
+          while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant' && (!msgs[msgs.length - 1].content || msgs[msgs.length - 1].content.replace(/[\u200b\s]/g, '') === '') && (!msgs[msgs.length - 1].tools || msgs[msgs.length - 1].tools.length === 0) && !isRunning) {
             msgs.pop();
           }
           const lastMsg = msgs.length ? msgs[msgs.length - 1] : null;
@@ -1481,7 +1481,7 @@ app.get('/api/sessions/:id', (req, res) => {
         msgs.push({ role: 'assistant', content: running.accumulated, tools: running.toolEvents, meta: { model: running.model } });
       }
     }
-    while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant' && (!msgs[msgs.length - 1].content || msgs[msgs.length - 1].content.replace(/[\u200b\s]/g, '') === '') && !isRunning) {
+    while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant' && (!msgs[msgs.length - 1].content || msgs[msgs.length - 1].content.replace(/[\u200b\s]/g, '') === '') && (!msgs[msgs.length - 1].tools || msgs[msgs.length - 1].tools.length === 0) && !isRunning) {
       msgs.pop();
     }
     data.messages = msgs;
@@ -2452,51 +2452,15 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      // 如果内存中的 run 刚刚结束（3分钟保留窗口期内）
-      if (existingRun && !existingRun.isRunning) {
-        debugLog(`[ws/chat] subscribe: run ${convKey} completed recently (events=${existingRun.events.length}, afterSeq=${afterSeq})`);
-        try {
-          ws.send(JSON.stringify({
-            subscribed: true,
-            isRunning: false,
-            conversationId: existingRun.conversationId || clientConvId || null,
-            lastSeq: existingRun.lastSeq || 0
-          }));
-        } catch (_) {}
-
-        for (const ev of existingRun.events) {
-          const item = typeof ev === 'string' ? (tryParseEvent(ev) || null) : ev;
-          if (item && typeof item.seq === 'number') {
-            if (item.seq > afterSeq) {
-              try { ws.send(JSON.stringify(item)); } catch (_) {}
-            }
-          }
-        }
-
-        try {
-          ws.send(JSON.stringify({
-            done: true,
-            conversationId: existingRun.conversationId || clientConvId || null,
-            tools: existingRun.toolEvents || []
-          }));
-        } catch (_) {}
-        return;
-      }
-
-      // 后台没有正在跑的内存任务：从磁盘流增量兜底还原（防止页面刷新恰好遇到内存回收）
-      const streamEvs = readStreamEvents(convKey);
-      let replayed = false;
-      for (const line of streamEvs) {
-        try {
-          const ev = JSON.parse(line);
-          if (ev && typeof ev.seq === 'number') {
-            if (ev.seq > afterSeq) { ws.send(line); replayed = true; }
-          } else if (ev && afterSeq === 0) {
-            ws.send(line); replayed = true;
-          }
-        } catch (_) {}
-      }
-      ws.send(JSON.stringify({ done: true, conversationId: clientConvId || null, replayedFromDisk: replayed }));
+      // 借鉴 CloudCLI: 若后台没有正在运行的任务，直接回复 idle 状态，由 REST 呈现落盘历史，绝不可伪发 done
+      try {
+        ws.send(JSON.stringify({
+          subscribed: true,
+          isRunning: false,
+          idle: true,
+          conversationId: clientConvId || null
+        }));
+      } catch (_) {}
       return;
     }
 
