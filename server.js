@@ -744,20 +744,7 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   }
 
   let liveQuotaBuckets = null;
-  if (quotaRes.status === 'fulfilled' && quotaRes.value && quotaRes.value.ok) {
-    try {
-      const qData = await quotaRes.value.json();
-      if (Array.isArray(qData?.buckets)) liveQuotaBuckets = qData.buckets;
-    } catch (_) {}
-  }
-
   let liveModelsQuota = null;
-  if (modelsRes.status === 'fulfilled' && modelsRes.value && modelsRes.value.ok) {
-    try {
-      const mData = await modelsRes.value.json();
-      if (mData?.models) liveModelsQuota = mData.models;
-    } catch (_) {}
-  }
 
   const tierData = parseGoogleAccountTier(liveTierInfo, raw);
   const currentEmail = profile.email || currentAcc?.email || fallbackEmail;
@@ -770,12 +757,12 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   }
 
   // 判断地区限制：503 表示网络可达但地区受限，不等同于断网
-  const tierHttpStatus = tierRes.status === 'fulfilled' ? tierRes.value?.status : null;
+  const tierHttpStatus = tierRes?.status || null;
   const isLocationBlocked503 = tierHttpStatus === 503;
-  // 真正的网络不通：请求 rejected（网络层错误）
-  const tierNetworkFailed = tierRes.status === 'rejected';
+  // 真正的网络不通：未收到任何 HTTP 响应
+  const tierNetworkFailed = !tierRes;
   // API 可达（收到任何 HTTP 响应）= 网络通（即使 503 地区限制）
-  const apiReachable = tierRes.status === 'fulfilled' || (userinfoRes.status === 'fulfilled');
+  const apiReachable = Boolean(tierRes || userinfoRes);
 
   const profileObj = {
     email: currentEmail,
@@ -2430,18 +2417,8 @@ wss.on('connection', (ws, req) => {
           }));
         } catch (_) {}
 
-        // 核心修复（借鉴 CloudCLI）：回放客户端错过的全部事件（tools, progress, delta, 心跳）
-        for (const ev of existingRun.events) {
-          const item = typeof ev === 'string' ? (tryParseEvent(ev) || null) : ev;
-          if (item && typeof item.seq === 'number') {
-            if (item.seq > afterSeq) {
-              try { ws.send(JSON.stringify(item)); } catch (_) {}
-            }
-          } else if (item && afterSeq === 0) {
-            try { ws.send(JSON.stringify(item)); } catch (_) {}
-          }
-        }
-
+        // 不回放历史 events：避免刷新时把已完成的思考/工具/delta 重复发一遍当新内容
+        // 历史靠 GET /api/sessions 落盘数据呈现；这里只挂 listener 接续后续实时流
         const wsListener = (chunk) => {
           const m = typeof chunk === 'string' ? chunk.match(/^data: (.+)$/s) : null;
           const payload = m ? m[1] : (typeof chunk === 'string' ? chunk : JSON.stringify(chunk));
@@ -2452,7 +2429,21 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      // 借鉴 CloudCLI: 若后台没有正在运行的任务，直接回复 idle 状态，由 REST 呈现落盘历史，绝不可伪发 done
+      // 借鉴 CloudCLI: 若后台没有正在运行的任务，先从磁盘流兜底回放 error（刷新后错误信息不丢），再回复 idle
+      try {
+        const streamEvents = readStreamEvents(convKey);
+        if (streamEvents.length) {
+          const errEvt = streamEvents
+            .map((s) => { try { return JSON.parse(s); } catch (_) { return null; } })
+            .filter(Boolean)
+            .reverse()
+            .find((e) => e && e.error);
+          if (errEvt) {
+            // 带错误来源标记，前端可据此显示错误而非当作新一轮思考
+            try { ws.send(JSON.stringify({ ...errEvt, replayedFromTranscript: true })); } catch (_) {}
+          }
+        }
+      } catch (_) {}
       try {
         ws.send(JSON.stringify({
           subscribed: true,
@@ -2918,6 +2909,41 @@ wss.on('connection', (ws, req) => {
       } else {
         broadcast({ error: errMsg, errorDetails: errDetails });
       }
+
+      // 错误也持久化进对话历史：写一条 assistant error 消息到 session json，刷新后不再丢失
+      try {
+        const filePath = getSessionFilePath(convKey);
+        let sessionData = {
+          id: convKey, title: '新对话', messages: [],
+          convId: run.conversationId || null,
+          createdAt: run.startTime, updatedAt: Date.now()
+        };
+        if (fs.existsSync(filePath)) {
+          try { sessionData = JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch (_) {}
+        }
+        sessionData.messages = [...(run.initialMessages || [])];
+        // 若本轮已产出部分内容（delta/工具），先作为正常 assistant 消息落盘，再追加 error 消息
+        const cleanAcc = (run.accumulated || '').replace(/[​\s]/g, '').trim();
+        if (cleanAcc || run.toolEvents?.length) {
+          sessionData.messages.push({
+            role: 'assistant',
+            content: run.accumulated || '',
+            tools: run.toolEvents?.length ? run.toolEvents : undefined,
+            meta: { duration: Math.round((Date.now() - t0) / 100) / 10, model }
+          });
+        }
+        sessionData.messages.push({
+          role: 'assistant',
+          isError: true,
+          content: errMsg,
+          errorDetails: errDetails || '',
+          meta: { model, errorType: e && e.needsPermission ? 'permission' : (isLocationBlocked ? 'location' : (isQuotaExceeded ? 'quota' : 'error')) }
+        });
+        sessionData.updatedAt = Date.now();
+        const tmpPath = `${filePath}.tmp.${Date.now()}`;
+        fs.writeFileSync(tmpPath, JSON.stringify(sessionData, null, 2), 'utf-8');
+        fs.renameSync(tmpPath, filePath);
+      } catch (_) {}
     } finally {
       run.isRunning = false;
       clearInterval(heartbeat);
