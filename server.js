@@ -2488,8 +2488,8 @@ wss.on('connection', (ws, req) => {
     const convKey = conversationKey || clientConvId || `anon-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
     let conversationId = (conversationKey && getConversation(conversationKey)) || null;
 
-    // 保留完整对话历史，交给 Antigravity 原生 --conversation 和 Gemini 百万超长上下文管理
-    const effectiveMessages = [...messages];
+    // 保留完整真实对话历史，过滤掉异常失败报错消息，避免报错文本被注入上下文影响后续推理
+    const effectiveMessages = Array.isArray(messages) ? messages.filter(m => m && !m.isError && typeof m.content === 'string' && m.content.trim() && !m.content.startsWith('Error: The stream was interrupted')) : [];
     const rawMsgCount = messages.length;
 
     debugLog('[ws/chat] BEGIN', JSON.stringify({ model, perm: permRaw, msgs: effectiveMessages.length, rawMsgs: rawMsgCount, convKey, clientConvId: clientConvId || null }));
