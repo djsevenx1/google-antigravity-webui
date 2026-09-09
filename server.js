@@ -2411,13 +2411,23 @@ wss.on('connection', (ws, req) => {
 
       if (existingRun && existingRun.isRunning) {
         debugLog(`[ws/chat] subscribe: attach to run ${convKey} (isRunning=true, events=${existingRun.events.length}, afterSeq=${afterSeq}) — 增量回放历史并挂接后续实时流`);
+        const currentWaited = Math.max(1, Math.round((Date.now() - existingRun.startTime) / 1000));
+        let activeTip = '正在深度思考与组织回答...';
+        if (existingRun.toolEvents && existingRun.toolEvents.length > 0) {
+          const lastTool = existingRun.toolEvents[existingRun.toolEvents.length - 1];
+          activeTip = lastTool?.toolAction || lastTool?.tip || `正在执行: ${lastTool?.tool || '工具'}...`;
+        }
         try {
           ws.send(JSON.stringify({
             subscribed: true,
             isRunning: true,
             conversationId: existingRun.conversationId || clientConvId || null,
             model: existingRun.model,
-            lastSeq: existingRun.lastSeq || 0
+            lastSeq: existingRun.lastSeq || 0,
+            accumulated: existingRun.accumulated || '',
+            toolEvents: existingRun.toolEvents || [],
+            latestTip: activeTip,
+            latestWaited: currentWaited
           }));
         } catch (_) {}
 

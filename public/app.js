@@ -866,7 +866,9 @@ async function loadConversations() {
       }
       saveConversations(true);
       renderConvList();
-      if (!state.streaming && !activeClientRuns.has(state.activeId)) {
+      const curServerSession = data.sessions.find(s => s.id === state.activeId);
+      const isRemoteRunning = !!(curServerSession && curServerSession.isRunning);
+      if (!state.streaming && !activeClientRuns.has(state.activeId) && !isRemoteRunning) {
         paintActiveConv();
       }
     } else if (data && data.unauthenticated) {
@@ -892,7 +894,9 @@ async function loadConversations() {
     newChat(true);
   } else {
     renderConvList();
-    if (!state.streaming && !activeClientRuns.has(state.activeId)) {
+    const curActive = state.conversations.find(s => s.id === state.activeId);
+    const isRemoteRunning = !!(curActive && curActive.isRunning);
+    if (!state.streaming && !activeClientRuns.has(state.activeId) && !isRemoteRunning) {
       paintActiveConv();
     }
   }
@@ -1616,9 +1620,11 @@ function paintActiveConv() {
   const empty = $("#chat-empty");
   feed.innerHTML = "";
 
+  const running = c ? activeClientRuns.get(c.id) : null;
+  const isConvRunning = !!(running || c?.isRunning);
+
   if (!c || !c.messages || c.messages.length === 0) {
-    const running = c ? activeClientRuns.get(c.id) : null;
-    if (!running) {
+    if (!isConvRunning) {
       empty.classList.remove("hidden");
       feed.classList.add("hidden");
       state.streaming = false;
@@ -1631,19 +1637,32 @@ function paintActiveConv() {
   feed.classList.remove("hidden");
 
   if (c && c.messages) {
-    c.messages.forEach((m) => {
+    // 关键防重叠与防闪烁：如果当前会话后台在运行中，末尾正在生成的 assistant 消息由下方 liveNode 流式接管
+    const msgsToPaint = (isConvRunning && c.messages.length > 0 && c.messages[c.messages.length - 1].role === 'assistant')
+      ? c.messages.slice(0, -1)
+      : c.messages;
+    msgsToPaint.forEach((m) => {
       appendMsgRow(m.role, m.content, false, m.meta, m.tools);
     });
   }
 
   if (c) {
-    const running = activeClientRuns.get(c.id);
     if (running) {
       const liveNode = appendMsgRow("assistant", running.acc || "", true, null, running.toolEvents);
       running.asstNode = liveNode;
       state.streaming = true;
       if (typeof updateAssistantBubble === 'function') {
         updateAssistantBubble(liveNode, running.acc, running.toolEvents, true, null, running.latestTip, running.latestWaited);
+      }
+    } else if (c.isRunning) {
+      // 服务端仍在生成，但 WebSocket 重连还在建立途中：立即展示流式思考指示器，杜绝空白或闪烁！
+      const lastMsg = c.messages && c.messages[c.messages.length - 1];
+      const initialTools = (lastMsg?.role === 'assistant' && Array.isArray(lastMsg.tools)) ? lastMsg.tools : [];
+      const initialAcc = (lastMsg?.role === 'assistant') ? (lastMsg.content || '') : '';
+      const liveNode = appendMsgRow("assistant", initialAcc, true, null, initialTools);
+      state.streaming = true;
+      if (typeof updateAssistantBubble === 'function') {
+        updateAssistantBubble(liveNode, initialAcc, initialTools, true, null, "正在进行深度逻辑推理与代码分析...", 0);
       }
     } else {
       state.streaming = false;
@@ -4258,7 +4277,7 @@ async function initApp() {
           });
           if (updated) {
             saveConversations();
-            if (!state.streaming && !activeClientRuns.has(state.activeId)) {
+            if (!state.streaming && !activeClientRuns.has(state.activeId) && !conv?.isRunning) {
               paintActiveConv();
             }
           }
@@ -4283,6 +4302,13 @@ initApp();
 async function silentSyncActiveConversation() {
   const conv = activeConv();
   if (!conv) return false;
+  // 若当前正在流式接收中且 WS 正常连接，切勿打断活跃的 WebSocket 和 liveNode 思考动画
+  if (state.streaming && activeClientRuns.has(conv.id)) {
+    const r = activeClientRuns.get(conv.id);
+    if (r && r.ws && (r.ws.readyState === WebSocket.OPEN || r.ws.readyState === WebSocket.CONNECTING)) {
+      return false;
+    }
+  }
   try {
     const res = await fetch('/api/sessions');
     if (!res.ok) return false;
@@ -4290,10 +4316,30 @@ async function silentSyncActiveConversation() {
     if (data && Array.isArray(data.sessions)) {
       const s = data.sessions.find(item => item.id === conv.id);
       if (s && Array.isArray(s.messages) && s.messages.length > 0) {
+        // 如果远端仍在生成中 (s.isRunning === true)，绝不可销毁 activeClientRuns 或设置 streaming = false！
+        if (s.isRunning) {
+          const running = activeClientRuns.get(conv.id);
+          if (running) {
+            const lastMsg = s.messages[s.messages.length - 1];
+            if (lastMsg && lastMsg.role === 'assistant') {
+              if (Array.isArray(lastMsg.tools) && lastMsg.tools.length > (running.toolEvents?.length || 0)) {
+                running.toolEvents = lastMsg.tools;
+              }
+              if (lastMsg.content && lastMsg.content.length > (running.acc?.length || 0)) {
+                running.acc = lastMsg.content;
+              }
+              if (running.asstNode) {
+                updateAssistantBubble(running.asstNode, running.acc, running.toolEvents, true, null, running.latestTip, running.latestWaited);
+              }
+            }
+          }
+          return true;
+        }
+
         const lastRemote = s.messages[s.messages.length - 1];
-        // 如果远端消息更多，或者本地卡在 streaming 状态但远端已经产出 assistant 完整回答
+        // 只有在服务端任务已彻底完成 (!s.isRunning) 且远端具备完整助手回答时，才对齐落盘
         const shouldSync = s.messages.length > conv.messages.length || 
-          (state.streaming && lastRemote && lastRemote.role === 'assistant');
+          (state.streaming && lastRemote && lastRemote.role === 'assistant' && !s.isRunning);
         if (shouldSync) {
           conv.messages = s.messages;
           if (s.convId) conv.convId = s.convId;
@@ -4389,6 +4435,11 @@ function tryReconnectToOngoingRun() {
     if (data.subscribed && data.isRunning) {
       reconnected = true;
       state.streaming = true;
+      if (data.accumulated) acc = data.accumulated;
+      if (Array.isArray(data.toolEvents) && data.toolEvents.length) toolEvents = [...data.toolEvents];
+      if (data.latestTip) latestTip = data.latestTip;
+      const waited = data.latestWaited || Math.max(1, Math.round((Date.now() - t0) / 1000));
+
       let clientRun = activeClientRuns.get(conv.id);
       if (!clientRun) {
         clientRun = {
@@ -4400,15 +4451,23 @@ function tryReconnectToOngoingRun() {
           t0: t0,
           model: data.model || state.selectedModel,
           latestTip: latestTip,
-          latestWaited: 0,
+          latestWaited: waited,
           statusTicker: null
         };
         activeClientRuns.set(conv.id, clientRun);
+      } else {
+        clientRun.acc = acc;
+        clientRun.toolEvents = toolEvents;
+        clientRun.latestTip = latestTip;
+        clientRun.latestWaited = waited;
       }
       updateSendButton();
       $("#chat-empty")?.classList.add("hidden");
       $("#chat-feed")?.classList.remove("hidden");
-      ensureAsstNode();
+      const node = ensureAsstNode();
+      if (node) {
+        updateAssistantBubble(node, acc, toolEvents, true, null, latestTip, waited);
+      }
       return;
     }
 
