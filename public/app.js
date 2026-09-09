@@ -866,7 +866,9 @@ async function loadConversations() {
       }
       saveConversations(true);
       renderConvList();
-      paintActiveConv();
+      if (!state.streaming && !activeClientRuns.has(state.activeId)) {
+        paintActiveConv();
+      }
     } else if (data && data.unauthenticated) {
       showLoginGate();
       return;
@@ -890,7 +892,9 @@ async function loadConversations() {
     newChat(true);
   } else {
     renderConvList();
-    paintActiveConv();
+    if (!state.streaming && !activeClientRuns.has(state.activeId)) {
+      paintActiveConv();
+    }
   }
 }
 
@@ -1635,9 +1639,12 @@ function paintActiveConv() {
   if (c) {
     const running = activeClientRuns.get(c.id);
     if (running) {
-      const liveNode = appendMsgRow("assistant", running.acc || "", true);
+      const liveNode = appendMsgRow("assistant", running.acc || "", true, null, running.toolEvents);
       running.asstNode = liveNode;
       state.streaming = true;
+      if (typeof updateAssistantBubble === 'function') {
+        updateAssistantBubble(liveNode, running.acc, running.toolEvents, true, null, running.latestTip, running.latestWaited);
+      }
     } else {
       state.streaming = false;
     }
@@ -4251,7 +4258,9 @@ async function initApp() {
           });
           if (updated) {
             saveConversations();
-            paintActiveConv();
+            if (!state.streaming && !activeClientRuns.has(state.activeId)) {
+              paintActiveConv();
+            }
           }
         }
       }
@@ -4330,24 +4339,47 @@ function tryReconnectToOngoingRun() {
   const feed = $("#chat-feed");
   let asstNode = null;
   let toolEvents = [];
+  const t0 = Date.now();
+  let latestTip = '正在进行深度逻辑推理与代码分析...';
 
   const ensureAsstNode = () => {
+    // 关键防脱离：若 asstNode 已被外部 DOM 刷新清除，重置为 null 重新挂载
+    if (asstNode && asstNode.row && !document.body.contains(asstNode.row)) {
+      asstNode = null;
+    }
     if (!asstNode) {
-      // 只有当前末尾气泡处于 streaming 状态才复用，绝对不能劫持已完成的历史记录！
       const lastMsgRow = feed?.querySelector(".message-row:last-child");
       if (lastMsgRow && lastMsgRow.classList.contains("assistant") && lastMsgRow.classList.contains("streaming")) {
         const bubble = lastMsgRow.querySelector(".message-bubble");
         asstNode = { row: lastMsgRow, bubble };
       } else {
-        asstNode = appendMsgRow('assistant', '', true);
+        asstNode = appendMsgRow('assistant', acc || '', true, null, toolEvents);
       }
+      const clientRun = activeClientRuns.get(conv.id);
+      if (clientRun) clientRun.asstNode = asstNode;
     }
     return asstNode;
   };
 
+  // 启动重连状态实时读秒定时器：保持思考状态平滑计数，防止刷新后停滞或闪烁
+  let statusTicker = setInterval(() => {
+    if (!state.streaming || (acc && acc.replace(/[\u200b\s]/g, '').length > 0)) {
+      if (statusTicker) { clearInterval(statusTicker); statusTicker = null; }
+      return;
+    }
+    const node = ensureAsstNode();
+    if (node && state.activeId === conv.id) {
+      const waited = Math.max(1, Math.round((Date.now() - t0) / 1000));
+      updateAssistantBubble(node, acc, toolEvents, true, null, latestTip, waited);
+    }
+  }, 1000);
+
   ws.onmessage = (event) => {
     let data;
     try { data = JSON.parse(event.data); } catch (_) { return; }
+
+    // 应用层心跳：忽略，仅用于保活防反代空闲掐断 WS
+    if (data.keepalive) return;
 
     if (data.unauthenticated) {
       showLoginGate();
@@ -4357,6 +4389,22 @@ function tryReconnectToOngoingRun() {
     if (data.subscribed && data.isRunning) {
       reconnected = true;
       state.streaming = true;
+      let clientRun = activeClientRuns.get(conv.id);
+      if (!clientRun) {
+        clientRun = {
+          convId: conv.id,
+          acc: acc,
+          toolEvents: toolEvents,
+          asstNode: null,
+          ws: ws,
+          t0: t0,
+          model: data.model || state.selectedModel,
+          latestTip: latestTip,
+          latestWaited: 0,
+          statusTicker: null
+        };
+        activeClientRuns.set(conv.id, clientRun);
+      }
       updateSendButton();
       $("#chat-empty")?.classList.add("hidden");
       $("#chat-feed")?.classList.remove("hidden");
@@ -4365,6 +4413,8 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.idle) {
+      if (statusTicker) { clearInterval(statusTicker); statusTicker = null; }
+      activeClientRuns.delete(conv.id);
       try { ws.close(); } catch (_) {}
       silentSyncActiveConversation();
       return;
@@ -4374,6 +4424,22 @@ function tryReconnectToOngoingRun() {
     if (!reconnected && (data.progress || data.delta || data.error)) {
       reconnected = true;
       state.streaming = true;
+      let clientRun = activeClientRuns.get(conv.id);
+      if (!clientRun) {
+        clientRun = {
+          convId: conv.id,
+          acc: acc,
+          toolEvents: toolEvents,
+          asstNode: null,
+          ws: ws,
+          t0: t0,
+          model: state.selectedModel,
+          latestTip: latestTip,
+          latestWaited: 0,
+          statusTicker: null
+        };
+        activeClientRuns.set(conv.id, clientRun);
+      }
       updateSendButton();
       $("#chat-empty")?.classList.add("hidden");
       $("#chat-feed")?.classList.remove("hidden");
@@ -4381,6 +4447,8 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.error) {
+      if (statusTicker) { clearInterval(statusTicker); statusTicker = null; }
+      activeClientRuns.delete(conv.id);
       const node = ensureAsstNode();
       if (node) {
         node.bubble.innerHTML = formatMarkdown(data.error, false);
@@ -4393,6 +4461,7 @@ function tryReconnectToOngoingRun() {
 
     if (data.progress) {
       const node = ensureAsstNode();
+      if (data.tip) latestTip = data.tip;
       if (data.toolName) {
         let existing = toolEvents.find(e => e.stepIndex != null && e.stepIndex === data.stepIndex);
         if (!existing && toolEvents.length > 0) {
@@ -4419,15 +4488,24 @@ function tryReconnectToOngoingRun() {
           });
         }
       }
+      const clientRun = activeClientRuns.get(conv.id);
+      if (clientRun) {
+        clientRun.toolEvents = toolEvents;
+        clientRun.latestTip = latestTip;
+        if (data.waited) clientRun.latestWaited = data.waited;
+      }
       if (node) {
-        updateAssistantBubble(node, acc, toolEvents, true);
+        updateAssistantBubble(node, acc, toolEvents, true, null, latestTip, data.waited || 0);
       }
       return;
     }
 
     if (data.delta != null && data.delta !== '​') {
+      if (statusTicker) { clearInterval(statusTicker); statusTicker = null; }
       const node = ensureAsstNode();
       acc += data.delta;
+      const clientRun = activeClientRuns.get(conv.id);
+      if (clientRun) clientRun.acc = acc;
       if (node) {
         updateAssistantBubble(node, acc, toolEvents, true);
         if (feed) feed.scrollTop = feed.scrollHeight;
@@ -4440,6 +4518,8 @@ function tryReconnectToOngoingRun() {
     }
 
     if (data.done) {
+      if (statusTicker) { clearInterval(statusTicker); statusTicker = null; }
+      activeClientRuns.delete(conv.id);
       if (!reconnected) {
         // 未收到有效运行中标记或流式增量，直接关闭，绝不篡改历史
         try { ws.close(); } catch (_) {}
@@ -4484,6 +4564,8 @@ function tryReconnectToOngoingRun() {
     if (reconnected && state.streaming) {
       setTimeout(() => { if (state.streaming) tryReconnectToOngoingRun(); }, 1000);
     } else {
+      if (statusTicker) { clearInterval(statusTicker); statusTicker = null; }
+      activeClientRuns.delete(conv.id);
       silentSyncActiveConversation();
     }
   };

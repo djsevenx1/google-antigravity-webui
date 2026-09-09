@@ -1413,13 +1413,15 @@ app.get('/api/sessions', (_req, res) => {
           const running = activeRuns.get(data.id);
           const isRunning = !!(running && running.isRunning);
           let msgs = Array.isArray(data.messages) ? [...data.messages] : [];
-          // 如果当前还在后台生成，动态注入正在生成的 assistant 增量
-          if (isRunning && running && running.accumulated) {
+          // 如果当前还在后台生成，动态注入正在生成的 assistant 增量或思考状态
+          if (isRunning && running) {
+            const runningContent = running.accumulated || '';
+            const runningTools = running.toolEvents || [];
             const last = msgs[msgs.length - 1];
             if (last && last.role === 'assistant') {
-              msgs[msgs.length - 1] = { ...last, content: running.accumulated, tools: running.toolEvents };
+              msgs[msgs.length - 1] = { ...last, content: runningContent, tools: runningTools };
             } else {
-              msgs.push({ role: 'assistant', content: running.accumulated, tools: running.toolEvents, meta: { model: running.model } });
+              msgs.push({ role: 'assistant', content: runningContent, tools: runningTools, meta: { model: running.model } });
             }
           }
           // 清除末尾完全空白无工具的 assistant 占位（避免刷新时呈现空内容，有工具结果时保留）
@@ -1460,12 +1462,14 @@ app.get('/api/sessions/:id', (req, res) => {
     const running = activeRuns.get(data.id);
     const isRunning = !!(running && running.isRunning);
     let msgs = Array.isArray(data.messages) ? [...data.messages] : [];
-    if (isRunning && running && running.accumulated) {
+    if (isRunning && running) {
+      const runningContent = running.accumulated || '';
+      const runningTools = running.toolEvents || [];
       const last = msgs[msgs.length - 1];
       if (last && last.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, content: running.accumulated, tools: running.toolEvents };
+        msgs[msgs.length - 1] = { ...last, content: runningContent, tools: runningTools };
       } else {
-        msgs.push({ role: 'assistant', content: running.accumulated, tools: running.toolEvents, meta: { model: running.model } });
+        msgs.push({ role: 'assistant', content: runningContent, tools: runningTools, meta: { model: running.model } });
       }
     }
     while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant' && (!msgs[msgs.length - 1].content || msgs[msgs.length - 1].content.replace(/[\u200b\s]/g, '') === '') && (!msgs[msgs.length - 1].tools || msgs[msgs.length - 1].tools.length === 0) && !isRunning) {
@@ -2425,7 +2429,11 @@ wss.on('connection', (ws, req) => {
           try { ws.send(payload); } catch (_) {}
         };
         existingRun.listeners.add(wsListener);
-        ws.on('close', () => existingRun.listeners.delete(wsListener));
+        // 独立应用层心跳：防反代/网关空闲掐断 WS（run 心跳经 listeners 转发，attach 的 ws 未必收到，独立保活最稳）
+        const keepTimer = setInterval(() => {
+          try { if (ws.readyState === 1) ws.send(JSON.stringify({ keepalive: true })); } catch (_) {}
+        }, 3000);
+        ws.on('close', () => { existingRun.listeners.delete(wsListener); clearInterval(keepTimer); });
         return;
       }
 
