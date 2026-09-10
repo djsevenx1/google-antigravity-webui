@@ -474,7 +474,8 @@ function formatToolCallCard(t, index, isRunning = false) {
     detailCode = `
       <div style="font-size:12px;line-height:1.6;color:var(--text-primary);white-space:pre-wrap;">${escapeHtml(thoughtText || '• 意图解析：全面理解用户当前指令并结合上下文\n• 方案规划：制定最佳回答结构与实施逻辑\n• 推理完成：准备生成高质量回复内容')}</div>
     `;
-    linesBadge = waited ? `${waited}` : 'thought';
+    // thought 卡片不显示秒数（避免与思考 indicator 的累计秒重复成两个时间）
+    linesBadge = 'thought';
   }
 
   const rawCopyEscaped = escapeHtml(copyText || summaryText);
@@ -570,7 +571,8 @@ function updateAssistantBubble(targetNode, acc, toolEvents, isStreaming, meta = 
   
   targetNode.bubble.innerHTML = `${toolsHtml}${bodyHtml}`;
   refreshIcons(targetNode.bubble);
-  scrollToBottom(isStreaming);
+  // 不强制下拉：用户上滑（距底部>300px）时停止自动滚，不打断阅读；滑回底部附近才继续跟最新
+  scrollToBottom(false);
 }
 
 // ---------- Web UI Authentication & Login Gate Control ----------
@@ -1429,6 +1431,14 @@ function newChat(silent = false) {
   state.activeId = c.id;
   state.streaming = false;
   saveConversations();
+  // 同步到服务器：新建对话立即落盘 data/sessions/<id>.json，不只存浏览器
+  try {
+    fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: c.id, title: c.title, messages: c.messages, convId: c.convId, createdAt: c.createdAt, updatedAt: c.createdAt })
+    }).catch(() => {});
+  } catch (_) {}
   renderConvList();
   paintActiveConv();
   updateSendButton();
@@ -2487,6 +2497,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 const checkData = await checkRes.json();
                 if (checkData && Array.isArray(checkData.sessions)) {
                   const s = checkData.sessions.find(item => item.id === conv.id);
+                  // 服务器还在跑 → 长时间思考不应报错，续期继续等
+                  if (s && s.isRunning) { resetInactivityWatchdog(); return; }
                   if (s && Array.isArray(s.messages) && s.messages.length > 0) {
                     const last = s.messages[s.messages.length - 1];
                     if (last && last.role === 'assistant' && last.content && last.content.replace(/[\u200b\s]/g, '')) {
@@ -2501,10 +2513,10 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 }
               } catch (_) {}
 
-              streamError = Object.assign(new Error("网络连接超时（已自动同步最新进度）"), { isTimeout: true });
-              done(() => reject(streamError));
+              // 兜底也不报错：长时间思考/慢操作不应弹错误，续期继续等服务器
+              resetInactivityWatchdog();
             }
-          }, 300000); // 300s 守护
+          }, 300000); // 300s 静默守护（不报错，仅续期/同步）
         };
 
         resetInactivityWatchdog();
@@ -2592,7 +2604,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
             const targetNode = clientRun.asstNode || asstNode;
             if (targetNode && targetNode.bubble && state.activeId === conv.id) {
               updateAssistantBubble(targetNode, acc, toolEvents, true, null, clientRun.latestTip, clientRun.latestWaited);
-              $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
+              scrollToBottom(false);
             }
             return;
           }
@@ -2608,7 +2620,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
               const targetNode = clientRun.asstNode || asstNode;
               if (targetNode && targetNode.bubble) {
                 updateAssistantBubble(targetNode, acc, toolEvents, true);
-                $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
+                scrollToBottom(false);
               }
             }
           }
@@ -2821,7 +2833,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
                 const targetNode = clientRun.asstNode || asstNode;
                 if (state.activeId === conv.id && targetNode && targetNode.bubble) {
                   updateAssistantBubble(targetNode, acc, toolEvents, true);
-                  $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
+                  scrollToBottom(false);
                 }
                 return;
               }
@@ -2832,7 +2844,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
                   const targetNode = clientRun.asstNode || asstNode;
                   if (targetNode && targetNode.bubble) {
                     updateAssistantBubble(targetNode, acc, toolEvents, true);
-                    $("#chat-feed").scrollTop = $("#chat-feed").scrollHeight;
+                    scrollToBottom(false);
                   }
                 }
               }
@@ -4551,10 +4563,13 @@ function tryReconnectToOngoingRun() {
       if (clientRun) {
         clientRun.toolEvents = toolEvents;
         clientRun.latestTip = latestTip;
-        if (data.waited) clientRun.latestWaited = data.waited;
+        // 不用 server 的 data.waited 覆盖前端累计（两端 t0 不同会导致秒数来回跳，如 29s/10s 交替）
+        // 前端 statusTicker 每秒自己累计 latestWaited，更准且单一
       }
       if (node) {
-        updateAssistantBubble(node, acc, toolEvents, true, null, latestTip, data.waited || 0);
+        // 用前端累计的 latestWaited（单一时间源），不用 server data.waited
+        const w = (clientRun && clientRun.latestWaited) || 0;
+        updateAssistantBubble(node, acc, toolEvents, true, null, latestTip, w);
       }
       return;
     }

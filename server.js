@@ -2428,15 +2428,18 @@ wss.on('connection', (ws, req) => {
             conversationId: existingRun.conversationId || clientConvId || null,
             model: existingRun.model,
             lastSeq: existingRun.lastSeq || 0,
-            accumulated: existingRun.accumulated || '',
-            toolEvents: existingRun.toolEvents || [],
             latestTip: activeTip,
             latestWaited: currentWaited
           }));
         } catch (_) {}
 
-        // 不回放历史 events：避免刷新时把已完成的思考/工具/delta 重复发一遍当新内容
-        // 历史靠 GET /api/sessions 落盘数据呈现；这里只挂 listener 接续后续实时流
+        // 回放历史 events：让前端看到思考/工具过程（thought 卡片不显示秒数 478，不会出现两个时间）
+        for (const ev of existingRun.events) {
+          const item = typeof ev === 'string' ? (tryParseEvent(ev) || null) : ev;
+          if (item && (typeof item.seq !== 'number' || item.seq > afterSeq)) {
+            try { ws.send(JSON.stringify(item)); } catch (_) {}
+          }
+        }
         const wsListener = (chunk) => {
           const m = typeof chunk === 'string' ? chunk.match(/^data: (.+)$/s) : null;
           const payload = m ? m[1] : (typeof chunk === 'string' ? chunk : JSON.stringify(chunk));
@@ -2511,7 +2514,7 @@ wss.on('connection', (ws, req) => {
     const isNewTurn = !existingRun || !existingRun.isRunning || (_lu && _ilu && _lu !== _ilu);
 
     if (existingRun && existingRun.isRunning && !isNewTurn) {
-      // 相同轮次正在跑：直接 attach 并回放未看事件（例如重连或刷新）
+      // 相同轮次正在跑：回放历史 events 让前端看到思考/工具过程（thought 卡片不显示秒数，不会两个时间）
       debugLog(`[ws/chat] attach to run ${convKey} (isRunning=true, events=${existingRun.events.length})`);
       for (const ev of existingRun.events) {
         const item = typeof ev === 'string' ? (tryParseEvent(ev) || null) : ev;
