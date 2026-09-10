@@ -2741,6 +2741,13 @@ async function runConversationTurn(text, appendUserMsg = true) {
                   done(() => resolve());
                   return;
                 }
+                // server \u8fd8\u5728\u8dd1\uff08isRunning\uff09\uff1aWS \u65ad\u4e0d\u91cd\u53d1\u65b0 BEGIN\uff08\u5426\u5219\u91cd\u590d\u8dd1\u540c\u4e00 turn\uff09\uff0c
+                // resolve \u672c\u8f6e\uff0c\u4ea4\u7ed9 subscribe/tryReconnectToOngoingRun \u7eed\u63a5\u663e\u793a\u5b9e\u65f6\u6d41
+                if (s.isRunning) {
+                  receivedDone = true;
+                  done(() => resolve());
+                  return;
+                }
               }
             }
           } catch (_) {}
