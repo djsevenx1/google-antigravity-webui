@@ -32,6 +32,15 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
-# 3) 启动
+# 3) 代理开关：读根目录 proxy-toggle.txt，yes=起 SOCKS5 代理，no=直连不起
+PROXY_TOGGLE="$(cat "$(pwd)/proxy-toggle.txt" 2>/dev/null | tr -d '[:space:]' | tr 'A-Z' 'a-z')"
+if [ "$PROXY_TOGGLE" = "yes" ] || [ "$PROXY_TOGGLE" = "on" ] || [ "$PROXY_TOGGLE" = "true" ]; then
+  echo "[socks] proxy-toggle=yes，启动 URnetwork SOCKS5 代理（美国出口）"
+  bash "$(pwd)/start-urn-socks.sh" || echo "[socks] URnetwork SOCKS5 启动失败，agy 将直连"
+else
+  echo "[socks] proxy-toggle=no，直连模式（不起 SOCKS5）"
+fi
+
+# 4) 启动主服务
 echo "[run] 正在启动…"
 AGY_BIN="$AGY_BIN" exec node server.js

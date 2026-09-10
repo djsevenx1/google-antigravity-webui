@@ -387,6 +387,7 @@ import config from './lib/config.js';
 import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
+import { startLocalProxy, needsGeminiProxy, getProxyUrl } from './lib/proxy.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
 import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts, syncAccountLocalQuota, deductAccountQuota } from './lib/accounts.js';
 
@@ -2307,6 +2308,9 @@ app.use(express.static(path.join(__dirname, 'public'), {
   }
 }));
 app.use('/auth', oauthRouter());
+
+// 启动本地选择性代理桥接（只对 Gemini 模型调用域名走 URnetwork SOCKS5，其他直连，IP 不外泄）
+startLocalProxy().catch((e) => console.warn('[proxy] startLocalProxy 失败:', e && e.message));
 
 const server = app.listen(config.port, () => {
   startAuthPoller(); // 后台刷新 CLI 登录态，避免 /api/status 阻塞

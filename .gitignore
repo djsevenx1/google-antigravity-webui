@@ -40,3 +40,9 @@ clash-*
 public/sub
 public/sub_vmess
 public/bpb.*
+
+# URnetwork SOCKS5 二进制 + 账号(不外传)
+urnetwork/
+data/urn-auth.env
+start-urn-socks.sh
+proxy-toggle.txt
