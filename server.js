@@ -1,5 +1,10 @@
 
 
+import dns from 'node:dns';
+// 本机 IPv6 出站不通，但 Google 域名 DNS 默认返回 IPv6 优先，导致 fetch 撞 IPv6 超时。
+// 强制 IPv4 优先，避开不通的 IPv6（直连 Google API 立即恢复正常）。
+dns.setDefaultResultOrder('ipv4first');
+
 // ========== 本地配额计算引擎 ==========
 // 每天第一次用企业版API校正,之后本地按 token 消耗扣减
 let LOCAL_QUOTA_FILE;
@@ -931,6 +936,20 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
 
   // 如果遇到 401，立即强制刷新 Token 并重试一次
   const is401Error = userinfoRes?.status === 401 || tierRes?.status === 401 || quotaSummaryRes?.status === 401;
+  if (is401Error) {
+    raw = await refreshAccessToken(raw);
+    token = raw?.token?.access_token;
+    if (token) {
+      if (currentAcc?.email === getActiveAccount()?.email) {
+        writeActiveToken(raw);
+      }
+      headers.Authorization = `Bearer ${token}`;
+      userinfoRes = await fetchWithRetry('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(6000) });
+      tierRes = await fetchWithRetry('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) });
+      quotaSummaryRes = await fetchWithRetry('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', { method: 'POST', headers, body: JSON.stringify({}), signal: AbortSignal.timeout(6000) });
+    }
+  }
+
   if (is401Error) {
     raw = await refreshAccessToken(raw);
     token = raw?.token?.access_token;
