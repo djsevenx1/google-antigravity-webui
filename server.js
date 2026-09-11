@@ -387,9 +387,10 @@ import config from './lib/config.js';
 import { oauthRouter } from './lib/oauth.js';
 import { cliProvider, fetchModels, cliAvailable, cliAuthenticated, bin, listPlugins, pluginAction, startAuthPoller, invalidateCliAuth } from './lib/cli.js';
 import { cliLoginStart, cliLoginComplete, cliLoginStatus, cliLoginCancel, activeCliLogin } from './lib/cli-login.js';
-import { startLocalProxy, needsGeminiProxy, getProxyUrl } from './lib/proxy.js';
+import { startLocalProxy, needsGeminiProxy, getProxyUrl, getProxyTrafficStats } from './lib/proxy.js';
 import { applyAutoAllow, applyAskMode, isAutoAllow, isToolAllowed, allowTool } from './lib/permissions.js';
 import { listAccounts, addAccount, switchAccount, removeAccount, getActiveAccountEmail, getActiveAccount, updateAccountQuota, ensurePrimaryAccount, readActiveToken, ensureValidToken, refreshAccessToken, writeActiveToken, saveAccounts, syncAccountLocalQuota, deductAccountQuota } from './lib/accounts.js';
+import { fetchBringYourLocations, getLatestSocksLogCount } from './lib/bringyour-locations.js';
 
 // 每 2 小时定时直连 Google 上游拉取并替换当前激活账号的最新额度数据
 const TWO_HOURS_INTERVAL = 2 * 60 * 60 * 1000;
@@ -579,6 +580,224 @@ app.use('/api', (req, res, next) => {
     return next();
   }
   return requireWebAuth(req, res, next);
+});
+
+// ---------- 系统设置面板：webui 登录账号密码 + 代理(SOCKS5)凭据 ----------
+const URN_AUTH_FILE = path.join(__dirname, 'data', 'urn-auth.env');
+const CONFIG_JSON_PATH = path.join(__dirname, 'config.json');
+const PROXY_TOGGLE_FILE = path.join(__dirname, 'proxy-toggle.txt');
+
+function readProxyToggle() {
+  try {
+    const raw = fs.readFileSync(PROXY_TOGGLE_FILE, 'utf8').trim().toLowerCase();
+    return (raw === 'yes' || raw === 'on' || raw === 'true') ? 'yes' : 'no';
+  } catch (_) { return 'yes'; }
+}
+
+function writeProxyToggle(val) {
+  const norm = (String(val).trim().toLowerCase() === 'no' || String(val).trim().toLowerCase() === 'off' || String(val).trim().toLowerCase() === 'false') ? 'no' : 'yes';
+  fs.writeFileSync(PROXY_TOGGLE_FILE, norm + '\n', 'utf8');
+  return norm;
+}
+
+function readUrnAuth() {
+  const fallback = { userAuth: '', password: '', country: 'United States', region: '', city: '', providerId: '', stable: false, privacy: true, quantum: true };
+  try {
+    const txt = fs.readFileSync(URN_AUTH_FILE, 'utf8');
+    const map = {};
+    for (const line of txt.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const idx = trimmed.indexOf('=');
+      if (idx !== -1) {
+        map[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+      }
+    }
+    return {
+      userAuth: map['URN_USER_AUTH'] || '',
+      password: map['URN_PASSWORD'] || '',
+      country: map['URN_COUNTRY'] || 'United States',
+      region: map['URN_REGION'] || '',
+      city: map['URN_CITY'] || '',
+      providerId: map['URN_PROVIDER_ID'] || '',
+      stable: map['URN_STABLE'] === 'true',
+      privacy: map['URN_PRIVACY'] !== 'false',
+      quantum: map['URN_QUANTUM'] !== 'false'
+    };
+  } catch (_) { return fallback; }
+}
+
+function writeUrnAuth(vals) {
+  const cur = readUrnAuth();
+  const v = { ...cur, ...vals };
+  const lines = [
+    '# URnetwork SOCKS5 代理凭据（由系统设置面板写入，.gitignore 忽略不外传）',
+    `URN_USER_AUTH="${v.userAuth}"`,
+    `URN_PASSWORD="${v.password}"`,
+    `URN_COUNTRY="${v.country || 'United States'}"`,
+    `URN_REGION="${v.region || ''}"`,
+    `URN_CITY="${v.city || ''}"`,
+    `URN_PROVIDER_ID="${v.providerId || ''}"`,
+    `URN_STABLE="${v.stable ? 'true' : 'false'}"`,
+    `URN_PRIVACY="${v.privacy ? 'true' : 'false'}"`,
+    `URN_QUANTUM="${v.quantum ? 'true' : 'false'}"`
+  ];
+  fs.writeFileSync(URN_AUTH_FILE, lines.join('\n') + '\n', 'utf8');
+}
+
+function readConfigJson() {
+  try { return JSON.parse(fs.readFileSync(CONFIG_JSON_PATH, 'utf8')); }
+  catch (_) { return {}; }
+}
+
+// GET /api/system/settings —— 返回当前设置（密码类只回掩码占位，不泄露明文）
+app.get('/api/system/settings', (req, res) => {
+  const cfg = readConfigJson();
+  const auth = cfg.auth || {};
+  const urn = readUrnAuth();
+  const proxyToggle = readProxyToggle();
+  send(res, 200, {
+    webAuth: {
+      enabled: auth.enabled !== false,
+      username: auth.username || 'admin',
+      hasPassword: Boolean(auth.password)
+    },
+    proxy: {
+      enabled: proxyToggle === 'yes',
+      mode: proxyToggle,
+      userAuth: urn.userAuth,
+      hasPassword: Boolean(urn.password),
+      country: urn.country,
+      region: urn.region,
+      city: urn.city,
+      providerId: urn.providerId,
+      stable: urn.stable,
+      privacy: urn.privacy,
+      quantum: urn.quantum
+    }
+  });
+});
+
+// POST /api/system/settings —— 写回 config.json(auth) 与 data/urn-auth.env，webui 密码即时生效
+app.post('/api/system/settings', (req, res) => {
+  const { webAuth, proxy } = req.body || {};
+  let changed = [];
+
+  try {
+    if (webAuth && typeof webAuth === 'object') {
+      const cfg = readConfigJson();
+      cfg.auth = cfg.auth || {};
+      if (webAuth.username != null && String(webAuth.username).trim()) cfg.auth.username = String(webAuth.username).trim();
+      if (webAuth.password != null && String(webAuth.password)) cfg.auth.password = String(webAuth.password);
+      if (webAuth.enabled != null) cfg.auth.enabled = Boolean(webAuth.enabled);
+      fs.writeFileSync(CONFIG_JSON_PATH, JSON.stringify(cfg, null, 2), 'utf8');
+      // 即时更新内存中的 config，让下一次登录立即用新凭据
+      if (config.auth) {
+        config.auth.username = cfg.auth.username;
+        config.auth.password = cfg.auth.password;
+        config.auth.enabled = cfg.auth.enabled !== false;
+      }
+      changed.push('webui登录账号密码');
+    }
+
+    if (proxy && typeof proxy === 'object') {
+      if (proxy.enabled != null || proxy.mode != null) {
+        const isEnabled = proxy.mode != null ? (String(proxy.mode).toLowerCase() === 'yes') : Boolean(proxy.enabled);
+        const targetMode = isEnabled ? 'yes' : 'no';
+        writeProxyToggle(targetMode);
+        changed.push(`代理模式(${targetMode === 'yes' ? '开启代理' : '直连模式'})`);
+        if (targetMode === 'no') {
+          // 直连模式，立即终止正在运行的 urnetwork-socks 避免占用
+          try {
+            const out = execFileSync('pgrep', ['-f', 'urnetwork/urnetwork-socks'], { encoding: 'utf8' });
+            for (const pid of out.trim().split('\n').filter(Boolean)) {
+              try { process.kill(Number(pid), 'SIGKILL'); } catch (_) {}
+            }
+          } catch (_) {}
+        }
+      }
+      const vals = {};
+      if (proxy.userAuth != null) vals.userAuth = String(proxy.userAuth).trim();
+      if (proxy.password != null && String(proxy.password)) vals.password = String(proxy.password);
+      if (proxy.country != null) vals.country = String(proxy.country).trim() || 'United States';
+      if (proxy.region != null) vals.region = String(proxy.region).trim();
+      if (proxy.city != null) vals.city = String(proxy.city).trim();
+      if (proxy.providerId != null) vals.providerId = String(proxy.providerId).trim();
+      if (proxy.stable != null) vals.stable = Boolean(proxy.stable);
+      if (proxy.privacy != null) vals.privacy = Boolean(proxy.privacy);
+      if (proxy.quantum != null) vals.quantum = Boolean(proxy.quantum);
+      if (Object.keys(vals).length) {
+        writeUrnAuth(vals);
+        changed.push('代理凭据/节点(需重启SOCKS5守护生效)');
+      }
+    }
+  } catch (e) {
+    return send(res, 500, { ok: false, error: '保存失败: ' + (e && e.message) });
+  }
+
+  debugLog('[settings] 更新:', changed.join(', ') || '无变更');
+  send(res, 200, { ok: true, changed: changed, message: '已保存: ' + (changed.join('、') || '无变更') });
+});
+
+// GET /api/proxy/status —— 代理运行状态：SOCKS5/桥接端口是否监听 + 当前节点配置 + 模式 + 实时连接节点数
+app.get('/api/proxy/status', (req, res) => {
+  const urn = readUrnAuth();
+  const proxyToggle = readProxyToggle();
+  const portOpen = (p) => {
+    try { const r = execFileSync('ss', ['-tln', `sport = :${p}`], { encoding: 'utf8' }); return r.includes(`:${p} `); }
+    catch (_) { return false; }
+  };
+  const activeSocks = getLatestSocksLogCount();
+  send(res, 200, {
+    enabled: proxyToggle === 'yes',
+    mode: proxyToggle,
+    socksPort: 19999,
+    bridgePort: 18081,
+    socksListening: portOpen(19999),
+    bridgeListening: portOpen(18081),
+    country: urn.country,
+    region: urn.region,
+    city: urn.city,
+    stable: urn.stable,
+    privacy: urn.privacy,
+    quantum: urn.quantum,
+    activeProviderCount: activeSocks ? activeSocks.count : null,
+    activeCountry: activeSocks ? activeSocks.country : (urn.country || 'United States'),
+    traffic: getProxyTrafficStats()
+  });
+});
+
+// GET /api/proxy/locations —— 获取 BringYour 代理网络的国家列表与实时可用节点数
+app.get('/api/proxy/locations', async (req, res) => {
+  try {
+    const locations = await fetchBringYourLocations();
+    const totalProviders = locations.reduce((sum, l) => sum + (l.count || 0), 0);
+    send(res, 200, {
+      ok: true,
+      totalCountries: locations.length,
+      totalProviders,
+      locations
+    });
+  } catch (e) {
+    send(res, 500, { ok: false, error: '获取节点列表失败: ' + (e && e.message) });
+  }
+});
+
+// POST /api/proxy/restart —— 强力终止旧进程，keepalive 守护循环自动用最新 urn-auth.env 拉起
+app.post('/api/proxy/restart', (req, res) => {
+  try {
+    let killed = 0;
+    try {
+      const out = execFileSync('pgrep', ['-f', 'urnetwork/urnetwork-socks'], { encoding: 'utf8' });
+      for (const pid of out.trim().split('\n').filter(Boolean)) {
+        try { process.kill(Number(pid), 'SIGKILL'); killed++; } catch (_) {}
+      }
+    } catch (_) {} // pgrep 无匹配返回非零
+    debugLog('[proxy] restart: killed', killed, 'urnetwork-socks, 守护循环将自动拉起');
+    send(res, 200, { ok: true, killed, message: `已重启代理（终止 ${killed} 个旧进程，守护循环已用最新配置重新连接节点，3秒内就绪）` });
+  } catch (e) {
+    send(res, 500, { ok: false, error: '重启失败: ' + (e && e.message) });
+  }
 });
 
 // ---------- 缓存与读取 Google Antigravity OAuth 账号资料 ----------

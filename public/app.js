@@ -916,24 +916,449 @@ function toast(msg, ms = 2800) {
 }
 
 // Modal Control
-function openModal(title, bodyHTML, isLarge = false) {
+function openModal(title, bodyHTML, isLarge = false, modalClass = '') {
   $("#modal-title").innerHTML = title;
   $("#modal-body").innerHTML = bodyHTML;
   const dialog = $("#modal-dialog");
-  dialog.classList.toggle("large", isLarge);
+  dialog.className = "modal-dialog" + (isLarge ? " large" : "") + (modalClass ? " " + modalClass : "");
   $("#modal-root").classList.remove("hidden");
+  const bodyEl = $("#modal-body");
+  if (bodyEl) bodyEl.scrollTop = 0;
   refreshIcons();
 }
 
 function closeModal() {
   $("#modal-root").classList.add("hidden");
-  $("#modal-dialog").classList.remove("large");
+  const dialog = $("#modal-dialog");
+  dialog.className = "modal-dialog";
 }
 
 $("#modal-close").addEventListener("click", closeModal);
 $("#modal-root").addEventListener("click", (e) => {
   if (e.target === $("#modal-root")) closeModal();
 });
+
+// === 系统设置面板：webui 登录账号密码 + 代理(SOCKS5)凭据与节点 ===
+async function showSettingsModal() {
+  let countryList = [{"name":"United States","code":"us","zh":"美国","flag":"🇺🇸","count":36948,"stable":true,"privacy":false},{"name":"Germany","code":"de","zh":"德国","flag":"🇩🇪","count":11537,"stable":true,"privacy":true},{"name":"Canada","code":"ca","zh":"加拿大","flag":"🇨🇦","count":3265,"stable":true,"privacy":true},{"name":"Vietnam","code":"vn","zh":"越南","flag":"🇻🇳","count":1489,"stable":true,"privacy":false},{"name":"United Kingdom","code":"gb","zh":"英国","flag":"🇬🇧","count":1376,"stable":true,"privacy":false},{"name":"Netherlands","code":"nl","zh":"荷兰","flag":"🇳🇱","count":444,"stable":true,"privacy":true},{"name":"France","code":"fr","zh":"法国","flag":"🇫🇷","count":344,"stable":true,"privacy":true},{"name":"Australia","code":"au","zh":"澳大利亚","flag":"🇦🇺","count":304,"stable":true,"privacy":false},{"name":"Singapore","code":"sg","zh":"新加坡","flag":"🇸🇬","count":261,"stable":true,"privacy":true},{"name":"Russia","code":"ru","zh":"俄罗斯","flag":"🇷🇺","count":214,"stable":true,"privacy":false},{"name":"Malaysia","code":"my","zh":"马来西亚","flag":"🇲🇾","count":135,"stable":true,"privacy":false},{"name":"Japan","code":"jp","zh":"日本","flag":"🇯🇵","count":122,"stable":true,"privacy":true},{"name":"Italy","code":"it","zh":"意大利","flag":"🇮🇹","count":118,"stable":true,"privacy":true},{"name":"South Korea","code":"kr","zh":"韩国","flag":"🇰🇷","count":108,"stable":true,"privacy":true},{"name":"India","code":"in","zh":"印度","flag":"🇮🇳","count":95,"stable":true,"privacy":false},{"name":"Spain","code":"es","zh":"西班牙","flag":"🇪🇸","count":84,"stable":true,"privacy":true},{"name":"Finland","code":"fi","zh":"芬兰","flag":"🇫🇮","count":75,"stable":true,"privacy":true},{"name":"Hong Kong","code":"hk","zh":"中国香港","flag":"🇭🇰","count":71,"stable":true,"privacy":false},{"name":"Romania","code":"ro","zh":"罗马尼亚","flag":"🇷🇴","count":60,"stable":true,"privacy":false},{"name":"Sweden","code":"se","zh":"瑞典","flag":"🇸🇪","count":49,"stable":true,"privacy":true},{"name":"Mexico","code":"mx","zh":"墨西哥","flag":"🇲🇽","count":45,"stable":true,"privacy":false},{"name":"Turkey","code":"tr","zh":"土耳其","flag":"🇹🇷","count":43,"stable":true,"privacy":false},{"name":"China","code":"cn","zh":"中国大陆","flag":"🇨🇳","count":41,"stable":true,"privacy":false},{"name":"Ukraine","code":"ua","zh":"乌克兰","flag":"🇺🇦","count":38,"stable":true,"privacy":false},{"name":"Switzerland","code":"ch","zh":"瑞士","flag":"🇨🇭","count":38,"stable":true,"privacy":true},{"name":"Bulgaria","code":"bg","zh":"保加利亚","flag":"🇧🇬","count":37,"stable":true,"privacy":false},{"name":"Morocco","code":"ma","zh":"摩洛哥","flag":"🇲🇦","count":36,"stable":true,"privacy":false},{"name":"Brazil","code":"br","zh":"巴西","flag":"🇧🇷","count":36,"stable":true,"privacy":true},{"name":"Portugal","code":"pt","zh":"葡萄牙","flag":"🇵🇹","count":34,"stable":true,"privacy":true},{"name":"Poland","code":"pl","zh":"波兰","flag":"🇵🇱","count":33,"stable":true,"privacy":false},{"name":"Indonesia","code":"id","zh":"印度尼西亚","flag":"🇮🇩","count":29,"stable":true,"privacy":false},{"name":"Czechia","code":"cz","zh":"捷克","flag":"🇨🇿","count":27,"stable":true,"privacy":true},{"name":"Hungary","code":"hu","zh":"匈牙利","flag":"🇭🇺","count":25,"stable":true,"privacy":false},{"name":"Latvia","code":"lv","zh":"拉脱维亚","flag":"🇱🇻","count":22,"stable":true,"privacy":false},{"name":"Ireland","code":"ie","zh":"爱尔兰","flag":"🇮🇪","count":21,"stable":true,"privacy":true},{"name":"Belgium","code":"be","zh":"比利时","flag":"🇧🇪","count":19,"stable":true,"privacy":true},{"name":"Taiwan","code":"tw","zh":"中国台湾","flag":"🇹🇼","count":18,"stable":true,"privacy":false},{"name":"Austria","code":"at","zh":"奥地利","flag":"🇦🇹","count":18,"stable":true,"privacy":true},{"name":"South Africa","code":"za","zh":"南非","flag":"🇿🇦","count":17,"stable":true,"privacy":false},{"name":"Lithuania","code":"lt","zh":"立陶宛","flag":"🇱🇹","count":13,"stable":true,"privacy":true},{"name":"Philippines","code":"ph","zh":"菲律宾","flag":"🇵🇭","count":12,"stable":true,"privacy":false},{"name":"Greece","code":"gr","zh":"希腊","flag":"🇬🇷","count":11,"stable":true,"privacy":false},{"name":"Slovakia","code":"sk","zh":"斯洛伐克","flag":"🇸🇰","count":11,"stable":true,"privacy":false},{"name":"Cambodia","code":"kh","zh":"柬埔寨","flag":"🇰🇭","count":10,"stable":true,"privacy":false},{"name":"Norway","code":"no","zh":"挪威","flag":"🇳🇴","count":8,"stable":true,"privacy":true},{"name":"Serbia","code":"rs","zh":"塞尔维亚","flag":"🇷🇸","count":8,"stable":true,"privacy":false},{"name":"Croatia","code":"hr","zh":"克罗地亚","flag":"🇭🇷","count":8,"stable":true,"privacy":false},{"name":"Bangladesh","code":"bd","zh":"孟加拉国","flag":"🇧🇩","count":8,"stable":false,"privacy":false},{"name":"United Arab Emirates","code":"ae","zh":"阿联酋","flag":"🇦🇪","count":8,"stable":true,"privacy":false},{"name":"Slovenia","code":"si","zh":"斯洛文尼亚","flag":"🇸🇮","count":7,"stable":true,"privacy":false},{"name":"Thailand","code":"th","zh":"泰国","flag":"🇹🇭","count":6,"stable":true,"privacy":false},{"name":"Saudi Arabia","code":"sa","zh":"沙特阿拉伯","flag":"🇸🇦","count":6,"stable":true,"privacy":false},{"name":"Estonia","code":"ee","zh":"爱沙尼亚","flag":"🇪🇪","count":6,"stable":false,"privacy":true},{"name":"Iraq","code":"iq","zh":"伊拉克","flag":"🇮🇶","count":6,"stable":false,"privacy":false},{"name":"Moldova","code":"md","zh":"摩尔多瓦","flag":"🇲🇩","count":6,"stable":true,"privacy":false},{"name":"Cyprus","code":"cy","zh":"塞浦路斯","flag":"🇨🇾","count":6,"stable":true,"privacy":false},{"name":"Denmark","code":"dk","zh":"丹麦","flag":"🇩🇰","count":5,"stable":false,"privacy":true},{"name":"Macao","code":"mo","zh":"中国澳门","flag":"🇲🇴","count":4,"stable":false,"privacy":false},{"name":"North Macedonia","code":"mk","zh":"北马其顿","flag":"🇲🇰","count":4,"stable":true,"privacy":false},{"name":"Bosnia and Herzegovina","code":"ba","zh":"波斯尼亚和黑塞哥维那","flag":"🇧🇦","count":3,"stable":false,"privacy":false},{"name":"Kazakhstan","code":"kz","zh":"哈萨克斯坦","flag":"🇰🇿","count":3,"stable":false,"privacy":false},{"name":"Puerto Rico","code":"pr","zh":"波多黎各","flag":"🇵🇷","count":3,"stable":false,"privacy":false},{"name":"Albania","code":"al","zh":"阿尔巴尼亚","flag":"🇦🇱","count":3,"stable":false,"privacy":false},{"name":"Argentina","code":"ar","zh":"阿根廷","flag":"🇦🇷","count":3,"stable":false,"privacy":true},{"name":"Israel","code":"il","zh":"以色列","flag":"🇮🇱","count":3,"stable":false,"privacy":false},{"name":"Uruguay","code":"uy","zh":"乌拉圭","flag":"🇺🇾","count":3,"stable":false,"privacy":false},{"name":"Georgia","code":"ge","zh":"格鲁吉亚","flag":"🇬🇪","count":3,"stable":false,"privacy":false},{"name":"Nigeria","code":"ng","zh":"尼日利亚","flag":"🇳🇬","count":2,"stable":false,"privacy":false},{"name":"Peru","code":"pe","zh":"秘鲁","flag":"🇵🇪","count":2,"stable":false,"privacy":false},{"name":"Luxembourg","code":"lu","zh":"卢森堡","flag":"🇱🇺","count":1,"stable":false,"privacy":true},{"name":"Afghanistan","code":"af","zh":"阿富汗","flag":"🇦🇫","count":1,"stable":false,"privacy":false},{"name":"Andorra","code":"ad","zh":"安道尔","flag":"🇦🇩","count":1,"stable":false,"privacy":false},{"name":"Dominican Republic","code":"do","zh":"多米尼加","flag":"🇩🇴","count":1,"stable":false,"privacy":false},{"name":"Kyrgyzstan","code":"kg","zh":"吉尔吉斯斯坦","flag":"🇰🇬","count":1,"stable":false,"privacy":false},{"name":"Lebanon","code":"lb","zh":"黎巴嫩","flag":"🇱🇧","count":1,"stable":false,"privacy":false},{"name":"Cayman Islands","code":"ky","zh":"开曼群岛","flag":"🇰🇾","count":1,"stable":false,"privacy":false},{"name":"Chile","code":"cl","zh":"智利","flag":"🇨🇱","count":1,"stable":false,"privacy":false},{"name":"Costa Rica","code":"cr","zh":"哥斯达黎加","flag":"🇨🇷","count":1,"stable":false,"privacy":false},{"name":"New Zealand","code":"nz","zh":"新西兰","flag":"🇳🇿","count":1,"stable":false,"privacy":true},{"name":"Uzbekistan","code":"uz","zh":"乌兹别克斯坦","flag":"🇺🇿","count":1,"stable":false,"privacy":false},{"name":"Bahrain","code":"bh","zh":"巴林","flag":"🇧🇭","count":1,"stable":false,"privacy":false},{"name":"Laos","code":"la","zh":"老挝","flag":"🇱🇦","count":1,"stable":false,"privacy":false},{"name":"Colombia","code":"co","zh":"哥伦比亚","flag":"🇨🇴","count":1,"stable":false,"privacy":false},{"name":"Qatar","code":"qa","zh":"卡塔尔","flag":"🇶🇦","count":1,"stable":false,"privacy":false},{"name":"Oman","code":"om","zh":"阿曼","flag":"🇴🇲","count":1,"stable":false,"privacy":false},{"name":"Venezuela","code":"ve","zh":"委内瑞拉","flag":"🇻🇪","count":1,"stable":false,"privacy":false}];
+  const HOT_CODES = new Set(["us", "jp", "sg", "hk", "tw", "kr", "gb", "de", "ca", "au", "nl", "fr"]);
+
+  function formatCountryLabel(c) {
+    const countStr = typeof c.count === "number" ? (c.count.toLocaleString() + " 个可用节点") : "";
+    const tags = [];
+    if (c.stable) tags.push("固定IP");
+    if (c.privacy) tags.push("强化匿名");
+    const tagStr = tags.length ? (" · [" + tags.join("/") + "]") : "";
+    return (c.flag || "🌐") + " " + (c.zh || c.name) + " (" + c.name + ") — " + countStr + tagStr;
+  }
+
+  function renderCountryOptions(list, currentVal) {
+    const cur = (currentVal || "").trim().toLowerCase();
+    const allSorted = [...list].sort((a,b) => (b.count || 0) - (a.count || 0));
+
+    let html = "";
+    allSorted.forEach(c => {
+      const isSel = cur && (c.name.toLowerCase() === cur || c.code.toLowerCase() === cur);
+      html += "<option value=\"" + c.name + "\" " + (isSel ? "selected" : "") + ">" + formatCountryLabel(c) + "</option>";
+    });
+    html += "<option value=\"__custom__\" " + (cur === "__custom__" ? "selected" : "") + ">✏️ 自定义手动输入国家名称...</option>";
+
+    return html;
+  }
+
+  const body = `
+    <div class="settings-panel">
+      <div class="settings-group">
+        <h3 class="settings-group-title">🌐 Web 访问登录</h3>
+        <p class="settings-hint">访问本 Web UI 的账号密码，保存后立即生效，可自由更改。</p>
+        <label class="settings-label">用户名</label>
+        <input id="set-web-user" class="settings-input" type="text" autocomplete="username" placeholder="admin">
+        <label class="settings-label">新密码 <span class="settings-muted">(留空表示不修改)</span></label>
+        <input id="set-web-pass" class="settings-input" type="password" autocomplete="new-password" placeholder="留空保持不变">
+      </div>
+      <div class="settings-group">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+          <div>
+            <h3 class="settings-group-title" style="margin: 0 0 2px;">🔒 URnetwork SOCKS5 代理</h3>
+            <p class="settings-hint" style="margin: 0;">配置文件 <code>proxy-toggle.txt</code> (yes=走代理，no=直连)</p>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="set-proxy-toggle-badge" style="font-size: 12px; font-weight: 600; color: var(--success, #22c55e);">开启代理 (yes)</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="set-proxy-toggle" checked />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div id="set-proxy-status" class="settings-proxy-status">加载状态中…</div>
+        <div id="set-proxy-fields" style="transition: opacity 0.2s;">
+          <label class="settings-label">代理账号 (URN_USER_AUTH)</label>
+          <input id="set-urn-user" class="settings-input" type="text" autocomplete="off" placeholder="如 123456@qq.com">
+          <label class="settings-label">代理密码 <span class="settings-muted">(留空表示不修改)</span></label>
+          <input id="set-urn-pass" class="settings-input" type="password" autocomplete="off" placeholder="留空保持不变">
+          <label class="settings-label">出口节点 — 国家 (COUNTRY)</label>
+          <div class="settings-select-wrap">
+            <select id="set-urn-country-select" class="settings-select">
+              ${renderCountryOptions(countryList, "United States")}
+            </select>
+            <i data-lucide="chevron-down" class="settings-select-arrow"></i>
+          </div>
+          <div id="set-country-meta" class="settings-country-meta" style="display:none;"></div>
+          <input id="set-urn-country" class="settings-input" style="margin-top: 8px; display: none;" type="text" autocomplete="off" placeholder="输入自定义国家英文名，如 United States">
+          <div style="margin-top: 10px; padding: 12px; background: var(--bg-secondary, #1e2025); border: 1px solid var(--border-color); border-radius: 8px;">
+            <div style="font-size: 12px; font-weight: 600; color: var(--text-main, #e5e7eb); margin-bottom: 8px;">🛡️ 连接特性模式 (匹配客户端功能)</div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.06);">
+              <div>
+                <div style="font-size: 13px; font-weight: 500;">固定 IP / 稳定连接</div>
+                <div id="set-stable-desc" style="font-size: 11px; color: var(--text-muted, #888);">锁定稳定出口 IP，避免频繁漂移导致安全风控检测</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="set-urn-stable" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.06);">
+              <div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-size: 13px; font-weight: 500;">强匿名化</span>
+                  <span id="set-privacy-badge" class="meta-badge badge-purple" style="display:none;">当前国家支持</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted, #888);">多跳混淆伪装链路，严格阻断真实出口 IP 关联</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="set-urn-privacy" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 0;">
+              <div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-size: 13px; font-weight: 500;">后量子加密</span>
+                  <span class="meta-badge badge-info">ML-KEM-1024</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted, #888);">NIST 标准 Kyber 抗量子密码算法，抵御未来量子破译</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="set-urn-quantum" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+          <div style="margin-top: 10px; padding: 10px; background: var(--bg-secondary, #1e2025); border: 1px solid var(--border-color); border-radius: 8px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+              <label class="settings-label" style="margin: 0; font-weight: 600;">Provider 节点调度</label>
+              <button id="set-rotate-node" type="button" class="btn btn-xs btn-ghost" style="padding: 2px 8px; font-size: 11.5px;">🔄 自动换一个节点</button>
+            </div>
+            <div id="set-provider-display" style="font-size: 12px; color: var(--success, #22c55e); margin-bottom: 6px;">🟢 自动优选健康节点池（节点故障毫秒级自动切换）</div>
+            <details style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+              <summary style="cursor: pointer; user-select: none;">高级选项: 指定地区/城市或手动锁定 Provider ID</summary>
+              <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 6px;">
+                <div>
+                  <label class="settings-label" style="margin-bottom: 2px;">地区 (REGION) <span class="settings-muted">可选</span></label>
+                  <input id="set-urn-region" class="settings-input" type="text" autocomplete="off" placeholder="如 California">
+                </div>
+                <div>
+                  <label class="settings-label" style="margin-bottom: 2px;">城市 (CITY) <span class="settings-muted">可选</span></label>
+                  <input id="set-urn-city" class="settings-input" type="text" autocomplete="off" placeholder="如 Los Angeles">
+                </div>
+                <div>
+                  <label class="settings-label" style="margin-bottom: 2px;">Provider ID <span class="settings-muted">可选，留空自动选择</span></label>
+                  <input id="set-urn-pid" class="settings-input" type="text" autocomplete="off" placeholder="留空则按国家/地区自动负载均衡与容灾切换">
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+      <div class="settings-actions">
+        <button id="set-save" class="btn btn-primary">保存设置</button>
+        <button id="set-proxy-restart" class="btn btn-ghost">重启代理</button>
+        <span id="set-status" class="settings-status"></span>
+      </div>
+    </div>`;
+  openModal("系统设置", body, false, "settings-modal");
+
+  const $ = (s) => document.querySelector(s);
+  const statusEl = $("#set-status");
+  const countrySelect = $("#set-urn-country-select");
+  const countryInput = $("#set-urn-country");
+  const countryMeta = $("#set-country-meta");
+  const proxyToggle = $("#set-proxy-toggle");
+  const proxyToggleBadge = $("#set-proxy-toggle-badge");
+  const proxyFields = $("#set-proxy-fields");
+
+  function setProxyToggleState(enabled) {
+    if (proxyToggle) proxyToggle.checked = enabled;
+    if (proxyToggleBadge) {
+      proxyToggleBadge.textContent = enabled ? "开启代理 (yes)" : "直连模式 (no)";
+      proxyToggleBadge.style.color = enabled ? "var(--success, #22c55e)" : "var(--text-muted, #888)";
+    }
+    if (proxyFields) {
+      proxyFields.style.opacity = enabled ? "1" : "0.5";
+    }
+  }
+
+  if (proxyToggle) {
+    proxyToggle.addEventListener("change", () => {
+      setProxyToggleState(proxyToggle.checked);
+    });
+  }
+
+  function updateCountryMeta(countryVal) {
+    if (!countryMeta) return;
+    if (!countryVal || countryVal === "__custom__") {
+      countryMeta.style.display = "none";
+      return;
+    }
+    const c = countryList.find(item =>
+      item.name.toLowerCase() === countryVal.toLowerCase() ||
+      item.code.toLowerCase() === countryVal.toLowerCase()
+    );
+    if (!c) {
+      countryMeta.style.display = "none";
+      return;
+    }
+    countryMeta.style.display = "flex";
+    const countDisplay = typeof c.count === "number" ? (c.count.toLocaleString() + " 个") : "探测中";
+    const stableBadge = c.stable
+      ? "<span class=\"meta-badge badge-success\">✓ 支持固定IP/稳定</span>"
+      : "<span class=\"meta-badge\" style=\"background:rgba(255,255,255,0.06); color:var(--text-muted);\">标准动态IP</span>";
+    const privacyBadge = c.privacy
+      ? "<span class=\"meta-badge badge-purple\">✓ 强化匿名</span>"
+      : "<span class=\"meta-badge\" style=\"background:rgba(255,255,255,0.06); color:var(--text-muted);\">标准匿名</span>";
+    const quantumBadge = "<span class=\"meta-badge badge-info\">✓ 后量子加密 (ML-KEM-1024)</span>";
+
+    countryMeta.innerHTML =
+      "<div class=\"meta-item\"><span>可用节点:</span> <span class=\"meta-value\">" + countDisplay + "</span></div>" +
+      "<div class=\"meta-item\"><span>节点属性:</span> " + stableBadge + "</div>" +
+      "<div class=\"meta-item\"><span>隐私级别:</span> " + privacyBadge + "</div>" +
+      "<div class=\"meta-item\"><span>量子安全:</span> " + quantumBadge + "</div>";
+
+    const stableDescEl = $("#set-stable-desc");
+    if (stableDescEl) {
+      stableDescEl.innerHTML = c.stable
+        ? "<span style=\"color:var(--success, #22c55e); font-weight: 500;\">✓ 该国家已就绪稳定固定IP节点池</span>"
+        : "<span style=\"color:var(--text-muted, #888);\">该国家当前为标准动态节点池</span>";
+    }
+    const privacyBadgeEl = $("#set-privacy-badge");
+    if (privacyBadgeEl) {
+      privacyBadgeEl.style.display = c.privacy ? "inline-block" : "none";
+    }
+  }
+
+  function syncCountryUI(countryVal) {
+    const raw = (countryVal || "").trim();
+    const matchedItem = countryList.find(c =>
+      c.name.toLowerCase() === raw.toLowerCase() ||
+      c.code.toLowerCase() === raw.toLowerCase()
+    );
+    if (matchedItem) {
+      countrySelect.value = matchedItem.name;
+      countryInput.style.display = "none";
+      countryInput.value = matchedItem.name;
+      updateCountryMeta(matchedItem.name);
+    } else if (raw) {
+      countrySelect.value = "__custom__";
+      countryInput.style.display = "block";
+      countryInput.value = raw;
+      updateCountryMeta(null);
+    } else {
+      countrySelect.value = "United States";
+      countryInput.style.display = "none";
+      countryInput.value = "United States";
+      updateCountryMeta("United States");
+    }
+  }
+
+  if (countrySelect) {
+    countrySelect.addEventListener("change", () => {
+      if (countrySelect.value === "__custom__") {
+        countryInput.style.display = "block";
+        countryInput.focus();
+        updateCountryMeta(null);
+      } else {
+        countryInput.style.display = "none";
+        countryInput.value = countrySelect.value;
+        updateCountryMeta(countrySelect.value);
+      }
+    });
+  }
+
+  // 异步拉取 BringYour 后端 86+ 国家的实时节点数量与属性
+  fetch("/api/proxy/locations")
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok && Array.isArray(d.locations) && d.locations.length > 0) {
+        countryList = d.locations;
+        const currentSelected = countrySelect.value === "__custom__" ? countryInput.value : countrySelect.value;
+        countrySelect.innerHTML = renderCountryOptions(countryList, currentSelected);
+        if (currentSelected && currentSelected !== "__custom__") {
+          countrySelect.value = currentSelected;
+          updateCountryMeta(currentSelected);
+        }
+      }
+    })
+    .catch(() => {});
+
+  async function loadProxyStatus() {
+    try {
+      const r = await fetch("/api/proxy/status");
+      const d = await r.json();
+      const nodeDesc = [d.country, d.region, d.city].filter(Boolean).join(" / ") || "未配置";
+      const isEnabled = d.enabled !== false && d.mode !== "no";
+      setProxyToggleState(isEnabled);
+
+      if (!isEnabled) {
+        $("#set-proxy-status").innerHTML = "<span style=\"color:var(--text-muted,#888);\">🚫 <b>直连模式 (proxy-toggle.txt: no)</b><br>已关闭代理，agy 将直接连接 Google 官方接口（不走 SOCKS5）</span>";
+      } else {
+        const sock = d.socksListening ? "✅SOCKS5监听中" : "❌未监听";
+        const bridge = d.bridgeListening ? "✅桥接监听中" : "❌未监听";
+        const countStr = d.activeProviderCount ? (" · 活跃节点池: <b>" + Number(d.activeProviderCount).toLocaleString() + "</b> 个节点") : "";
+        const curCountry = d.activeCountry || d.country || "United States";
+        const tf = d.traffic || {};
+        const tfTotal = tf.formattedTotal || "0 B";
+        const tfSent = tf.formattedSent || "0 B";
+        const tfRecv = tf.formattedReceived || "0 B";
+        $("#set-proxy-status").innerHTML = 
+          "⚡ <b>代理已开启 (proxy-toggle.txt: yes)</b><br>" +
+          "端口: " + sock + "(:" + d.socksPort + ") · " + bridge + "(:" + d.bridgePort + ")<br>" +
+          "当前实际出口: <b>" + curCountry + "</b>" + countStr + "<br>" +
+          "📊 <b>已传输流量: " + tfTotal + "</b> (↑ " + tfSent + " / ↓ " + tfRecv + ") · 并发流: " + (tf.activeConnections || 0);
+      }
+    } catch (e) { $("#set-proxy-status").textContent = "状态获取失败: " + (e && e.message); }
+  }
+
+  const rotateNodeBtn = $("#set-rotate-node");
+  if (rotateNodeBtn) {
+    rotateNodeBtn.addEventListener("click", async () => {
+      rotateNodeBtn.disabled = true;
+      rotateNodeBtn.textContent = "切换中…";
+      try {
+        const r = await fetch("/api/proxy/restart", { method: "POST" });
+        const d = await r.json();
+        statusEl.textContent = d.message || "已自动切换新节点并重启代理";
+        statusEl.style.color = "var(--success, #22c55e)";
+        setTimeout(() => loadProxyStatus(), 2000);
+      } catch (e) {
+        statusEl.textContent = "切换失败: " + e.message;
+        statusEl.style.color = "var(--danger, #ef4444)";
+      } finally {
+        setTimeout(() => {
+          rotateNodeBtn.disabled = false;
+          rotateNodeBtn.textContent = "🔄 自动换一个节点";
+        }, 3000);
+      }
+    });
+  }
+
+  try {
+    const r = await fetch('/api/system/settings');
+    const d = await r.json();
+    if (d.webAuth) {
+      $("#set-web-user").value = d.webAuth.username || '';
+      if (d.webAuth.hasPassword) $("#set-web-pass").placeholder = '已设置，留空保持不变';
+    }
+    if (d.proxy) {
+      const isEnabled = d.proxy.enabled !== false && d.proxy.mode !== 'no';
+      setProxyToggleState(isEnabled);
+      $("#set-urn-user").value = d.proxy.userAuth || '';
+      if (d.proxy.hasPassword) $("#set-urn-pass").placeholder = '已设置，留空保持不变';
+      syncCountryUI(d.proxy.country || 'United States');
+      $("#set-urn-region").value = d.proxy.region || '';
+      $("#set-urn-city").value = d.proxy.city || '';
+      $("#set-urn-pid").value = d.proxy.providerId || '';
+      if ($("#set-urn-stable")) $("#set-urn-stable").checked = Boolean(d.proxy.stable);
+      if ($("#set-urn-privacy")) $("#set-urn-privacy").checked = d.proxy.privacy !== false;
+      if ($("#set-urn-quantum")) $("#set-urn-quantum").checked = d.proxy.quantum !== false;
+    }
+  } catch (e) { statusEl.textContent = '加载失败: ' + (e && e.message); }
+  loadProxyStatus();
+
+  $("#set-save").addEventListener("click", async () => {
+    statusEl.textContent = '保存中…';
+    statusEl.style.color = '';
+    const selectedCountry = countrySelect.value === '__custom__'
+      ? countryInput.value.trim()
+      : countrySelect.value;
+
+    const isProxyEnabled = proxyToggle ? proxyToggle.checked : true;
+
+    const payload = {
+      webAuth: { username: $("#set-web-user").value.trim() },
+      proxy: {
+        enabled: isProxyEnabled,
+        mode: isProxyEnabled ? 'yes' : 'no',
+        userAuth: $("#set-urn-user").value.trim(),
+        country: selectedCountry || 'United States',
+        region: $("#set-urn-region").value.trim(),
+        city: $("#set-urn-city").value.trim(),
+        providerId: $("#set-urn-pid").value.trim(),
+        stable: $("#set-urn-stable") ? $("#set-urn-stable").checked : false,
+        privacy: $("#set-urn-privacy") ? $("#set-urn-privacy").checked : true,
+        quantum: $("#set-urn-quantum") ? $("#set-urn-quantum").checked : true
+      }
+    };
+    const wp = $("#set-web-pass").value;
+    const up = $("#set-urn-pass").value;
+    if (wp) payload.webAuth.password = wp;
+    if (up) payload.proxy.password = up;
+    try {
+      const r = await fetch('/api/system/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json();
+      if (d.ok) {
+        statusEl.textContent = '✓ ' + (d.message || '已保存');
+        statusEl.style.color = 'var(--success, #22c55e)';
+        $("#set-web-pass").value = '';
+        $("#set-urn-pass").value = '';
+        $("#set-web-pass").placeholder = '已设置，留空保持不变';
+        $("#set-urn-pass").placeholder = '已设置，留空保持不变';
+      } else {
+        statusEl.textContent = '✗ ' + (d.error || '保存失败');
+        statusEl.style.color = 'var(--danger, #ef4444)';
+      }
+    } catch (e) {
+      statusEl.textContent = '✗ ' + (e && e.message);
+      statusEl.style.color = 'var(--danger, #ef4444)';
+    }
+  });
+
+  $("#set-proxy-restart").addEventListener("click", async () => {
+    const btn = $("#set-proxy-restart");
+    btn.disabled = true;
+    btn.textContent = '重启中…';
+    statusEl.textContent = '正在强力重启代理并建立新连接…';
+    statusEl.style.color = 'var(--accent, #3b82f6)';
+    try {
+      const r = await fetch('/api/proxy/restart', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        statusEl.textContent = '✓ ' + (d.message || '已重启代理');
+        statusEl.style.color = 'var(--success, #22c55e)';
+        setTimeout(loadProxyStatus, 1500);
+        setTimeout(loadProxyStatus, 3500);
+      } else {
+        statusEl.textContent = '✗ ' + (d.error || '重启失败');
+        statusEl.style.color = 'var(--danger, #ef4444)';
+      }
+    } catch (e) {
+      statusEl.textContent = '✗ ' + (e && e.message);
+      statusEl.style.color = 'var(--danger, #ef4444)';
+    } finally {
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = '重启代理';
+      }, 3000);
+    }
+  });
+}
+window.showSettingsModal = showSettingsModal;
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("#modal-root").classList.contains("hidden")) {
@@ -3993,6 +4418,12 @@ function showAbout() {
       </div>
     </div>
     <div class="form-item">
+      <label class="form-label">网络出口与节点设置</label>
+      <button class="btn btn-outline" id="btn-modal-open-settings" style="width:100%;display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 12px;">
+        🛡️ 打开系统与代理设置 (固定IP / 强匿名 / 86国节点)
+      </button>
+    </div>
+    <div class="form-item">
       <label class="form-label">快捷操作</label>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost" id="btn-modal-clear-history">清空本地会话缓存</button>
@@ -4003,6 +4434,14 @@ function showAbout() {
       Google Antigravity Web UI 直接对接本机 <code>antigravity</code> 命令行工具，支持流式输出、官方会话接续、Gemini 3.7 思考推理折叠以及多端自适应交互。
     </div>
   `);
+
+  const btnOpenSettings = $("#btn-modal-open-settings");
+  if (btnOpenSettings) {
+    btnOpenSettings.onclick = () => {
+      closeModal();
+      showSettingsModal();
+    };
+  }
 
   $("#btn-modal-clear-history").onclick = () => {
     if (confirm("确定要清空全部会话历史吗？")) {
@@ -5122,7 +5561,7 @@ async function showWorkspaceExplorer() {
         </div>
       </div>
     </div>
-  `, true);
+  `, true, 'explorer-modal');
 
   refreshIcons();
   await reloadWorkspaceExplorer(currentDirPath || "");
