@@ -242,8 +242,47 @@ function normalizeToolInput(raw) {
   return res;
 }
 
+// ── 用户手动展开/折叠状态持久化记忆（杜绝流式刷新、读秒 Ticker 或会话重绘导致自动收起）──
+const _userExpandedDetailsKeys = new Set();
+const _userCollapsedDetailsKeys = new Set();
+
+function getToolCallStableKey(t, index, prefix = '') {
+  if (!t) return `${prefix}tool_idx_${index}`;
+  if (t._key) return `${prefix}${t._key}`;
+  if (t.id) return `${prefix}tool_id_${t.id}`;
+  if (t.toolCallId) return `${prefix}tool_call_${t.toolCallId}`;
+  if (t.callId) return `${prefix}tool_call_${t.callId}`;
+  const tName = String(t.tool || t.toolName || t.name || t.stepType || 'tool').toLowerCase();
+  const summaryPart = String(t.tip || t.toolAction || t.toolSummary || '').slice(0, 20).replace(/\s+/g, '_');
+  const k = `tool_${index}_${tName}_${summaryPart}`;
+  t._key = k;
+  return `${prefix}${k}`;
+}
+
+function isDetailsExpanded(key, defaultOpen = false) {
+  if (!key) return defaultOpen;
+  if (_userCollapsedDetailsKeys.has(key)) return false;
+  if (_userExpandedDetailsKeys.has(key)) return true;
+  return defaultOpen;
+}
+
+// 全局捕获所有 details 的 toggle 行为（tool-call-card 与 thinking-block）
+document.addEventListener('toggle', (e) => {
+  const target = e.target;
+  if (!target || target.tagName !== 'DETAILS') return;
+  const key = target.getAttribute('data-tool-key') || target.getAttribute('data-thought-key') || target.getAttribute('data-details-key');
+  if (!key) return;
+  if (target.open) {
+    _userExpandedDetailsKeys.add(key);
+    _userCollapsedDetailsKeys.delete(key);
+  } else {
+    _userExpandedDetailsKeys.delete(key);
+    _userCollapsedDetailsKeys.add(key);
+  }
+}, true);
+
 // ── 格式化工具卡片：对照终端与 Claude/OpenCode 风格设计，纯净精致，精确到代码 ──
-function formatToolCallCard(t, index, isRunning = false) {
+function formatToolCallCard(t, index, isRunning = false, prefix = '') {
   const toolName = String(t.tool || t.toolName || t.name || '').toLowerCase();
   const stepType = String(t.stepType || '').toLowerCase();
   const tip = t.tip || '';
@@ -479,9 +518,11 @@ function formatToolCallCard(t, index, isRunning = false) {
   }
 
   const rawCopyEscaped = escapeHtml(copyText || summaryText);
+  const toolKey = getToolCallStableKey(t, index, prefix);
+  const isOpen = isDetailsExpanded(toolKey, Boolean(t.open));
 
   return `
-    <details class="tool-call-card ${typeClass} ${isRunning ? 'is-running' : ''}">
+    <details class="tool-call-card ${typeClass} ${isRunning ? 'is-running' : ''}" data-tool-key="${escapeHtml(toolKey)}" ${isOpen ? 'open' : ''}>
       <summary>
         <div class="tool-call-header-row">
           <span class="tool-chevron"><i data-lucide="chevron-right" style="width:13px;height:13px;"></i></span>
@@ -501,7 +542,7 @@ function formatToolCallCard(t, index, isRunning = false) {
   `;
 }
 
-function renderToolsTimeline(tools, activeIndex = -1) {
+function renderToolsTimeline(tools, activeIndex = -1, prefix = '') {
   let list = Array.isArray(tools) && tools.length > 0 ? tools : [
     {
       tool: 'thought',
@@ -511,7 +552,7 @@ function renderToolsTimeline(tools, activeIndex = -1) {
       rawInput: '• 已结合对话上下文完成意图解析与逻辑推理\n• 规划高准确度解答方案与实施步骤\n• 状态：回答已顺利生成'
     }
   ];
-  return `<div class="tools-timeline-container">${list.map((t, idx) => formatToolCallCard(t, idx, idx === activeIndex)).join('')}</div>`;
+  return `<div class="tools-timeline-container">${list.map((t, idx) => formatToolCallCard(t, idx, idx === activeIndex, prefix)).join('')}</div>`;
 }
 
 // ── 智能贴底平滑滚动逻辑 ──
@@ -532,12 +573,48 @@ function scrollToBottom(force = false) {
 }
 
 // 统一助手气泡内容更新器：彻底杜绝 toolsHtml 遗漏或被覆盖的问题！
-// 统一助手气泡内容更新器：支持实时工作状态提示与精确耗时秒数
+// 统一助手气泡内容更新器：支持实时工作状态提示与精确耗时秒数，且严格保留用户展开的工具卡片与思考折叠状态
 function updateAssistantBubble(targetNode, acc, toolEvents, isStreaming, meta = null, activeTip = null, waited = 0) {
   if (!targetNode || !targetNode.bubble) return;
-  const toolsHtml = renderToolsTimeline(toolEvents, isStreaming && toolEvents && toolEvents.length ? toolEvents.length - 1 : -1);
+
+  // 1. 同步当前 bubble 内已处于展开状态的 details 元素，防止快速重刷时遗漏
+  targetNode.bubble.querySelectorAll('details[open]').forEach(d => {
+    const key = d.getAttribute('data-tool-key') || d.getAttribute('data-thought-key') || d.getAttribute('data-details-key');
+    if (key) {
+      _userExpandedDetailsKeys.add(key);
+      _userCollapsedDetailsKeys.delete(key);
+    }
+  });
+
+  // 2. 保证 bubble 具有独立的工具包裹区与正文包裹区（避免文本流式输出时重绘工具卡片 DOM）
+  let toolsWrap = targetNode.bubble.querySelector(':scope > .bubble-tools-wrap');
+  let bodyWrap = targetNode.bubble.querySelector(':scope > .bubble-body-wrap');
+
+  if (!toolsWrap || !bodyWrap) {
+    const tDiv = document.createElement('div');
+    tDiv.className = 'bubble-tools-wrap';
+    const bDiv = document.createElement('div');
+    bDiv.className = 'bubble-body-wrap';
+    targetNode.bubble.innerHTML = '';
+    targetNode.bubble.appendChild(tDiv);
+    targetNode.bubble.appendChild(bDiv);
+    toolsWrap = tDiv;
+    bodyWrap = bDiv;
+  }
+
+  // 3. 计算工具状态指纹（只有在工具新增、输出变化或执行状态变化时才重绘工具卡片，其余文本流式输出绝不触动工具 DOM）
+  const activeIdx = isStreaming && toolEvents && toolEvents.length ? toolEvents.length - 1 : -1;
+  const toolsFingerprint = `${toolEvents ? toolEvents.length : 0}#${activeIdx}#${(toolEvents || []).map(e => `${e.tool || e.name || ''}:${e.state || ''}:${(e.output || '').length}:${e.waited || 0}`).join(';')}`;
+
+  if (toolsWrap.getAttribute('data-fingerprint') !== toolsFingerprint) {
+    const toolsHtml = renderToolsTimeline(toolEvents, activeIdx);
+    toolsWrap.innerHTML = toolsHtml;
+    toolsWrap.setAttribute('data-fingerprint', toolsFingerprint);
+    refreshIcons(toolsWrap);
+  }
+
+  // 4. 构建正文 HTML（思考动效或 Markdown 内容）
   const cleanAcc = (acc || "").replace(/[\u200b\s]/g, "");
-  
   let bodyHtml = "";
   if (isStreaming && !cleanAcc) {
     let displayTip = activeTip;
@@ -568,10 +645,18 @@ function updateAssistantBubble(targetNode, acc, toolEvents, isStreaming, meta = 
       bodyHtml += getMessageQuotaFooterHtml(cleanAcc, meta, meta?.model || state.selectedModel);
     }
   }
-  
-  targetNode.bubble.innerHTML = `${toolsHtml}${bodyHtml}`;
-  refreshIcons(targetNode.bubble);
-  // 不强制下拉：用户上滑（距底部>300px）时停止自动滚，不打断阅读；滑回底部附近才继续跟最新
+
+  // 5. 仅当正文内容改变时才更新 bodyWrap
+  if (bodyWrap.innerHTML !== bodyHtml) {
+    bodyWrap.querySelectorAll('details[open]').forEach(d => {
+      const k = d.getAttribute('data-thought-key') || d.getAttribute('data-tool-key');
+      if (k) { _userExpandedDetailsKeys.add(k); _userCollapsedDetailsKeys.delete(k); }
+    });
+    bodyWrap.innerHTML = bodyHtml;
+    refreshIcons(bodyWrap);
+  }
+
+  // 6. 不强制下拉：用户上滑（距底部>300px）时停止自动滚，不打断阅读；滑回底部附近才继续跟最新
   scrollToBottom(false);
 }
 
@@ -1923,9 +2008,12 @@ function formatMarkdown(text, isStreaming = false) {
   if (!text) return "";
   let processed = text.replace(/\u200b/g, "");
   
-  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> blocks (默认收纳折叠，用户点击可展开查看)
+  // 1. Handle complete <thought>...</thought> OR <thinking>...</thinking> blocks (默认收纳折叠，用户点击展开后永久记忆状态，流式刷新不自动收起)
+  let thoughtBlockIdx = 0;
   processed = processed.replace(/<(?:thought|thinking)>([\s\S]*?)<\/(?:thought|thinking)>/gi, (match, p1) => {
-    return `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
+    const tKey = `thought_block_${thoughtBlockIdx++}_${p1.trim().slice(0, 20).replace(/\s+/g, '_')}`;
+    const isOpen = isDetailsExpanded(tKey, false);
+    return `<details class="thinking-block" data-thought-key="${escapeHtml(tKey)}" ${isOpen ? 'open' : ''}><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(p1.trim())}</div></details>`;
   });
 
   // 2. Handle ACTIVE / UNCLOSED <thought> or <thinking> (流式中展开打印，非流式安全闭合折叠)
@@ -1936,10 +2024,12 @@ function formatMarkdown(text, isStreaming = false) {
     const beforeThought = processed.substring(0, idx);
     const currentThought = thoughtMatch[1];
     if (isStreaming) {
-      activeThinkingHtml = `<details class="thinking-block active" open><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="color:var(--accent);font-weight:600;">正在实时深度思考中...</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought)}<span class="streaming-cursor"></span></div></details>`;
+      activeThinkingHtml = `<details class="thinking-block active" data-thought-key="active_streaming_thought" open><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span style="color:var(--accent);font-weight:600;">正在实时深度思考中...</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought)}<span class="streaming-cursor"></span></div></details>`;
       processed = beforeThought;
     } else {
-      const closedThought = `<details class="thinking-block"><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought.trim())}</div></details>`;
+      const tKey = `thought_closed_${currentThought.trim().slice(0, 20).replace(/\s+/g, '_')}`;
+      const isOpen = isDetailsExpanded(tKey, false);
+      const closedThought = `<details class="thinking-block" data-thought-key="${escapeHtml(tKey)}" ${isOpen ? 'open' : ''}><summary class="thinking-summary"><span style="display:flex;align-items:center;gap:6px;"><span>💭</span><span style="font-weight:500;">深度思考过程</span></span><span style="font-size:11px;opacity:0.6;">▾</span></summary><div class="thinking-content">${escapeHtml(currentThought.trim())}</div></details>`;
       processed = beforeThought + closedThought;
     }
   }
@@ -2175,14 +2265,20 @@ function appendMsgRow(role, content, isStreaming = false, meta = null, tools = n
     bubble = el("div", "message-bubble markdown-body");
     const clean = String(content || "").replace(/[\u200b\s]/g, "");
     const toolsHtml = renderToolsTimeline(tools, -1);
+    const toolsFingerprint = `${tools ? tools.length : 0}#-1#${(tools || []).map(e => `${e.tool || e.name || ''}:${e.state || ''}:${(e.output || '').length}:${e.waited || 0}`).join(';')}`;
+    let bodyHtml = "";
     if (isStreaming && !clean) {
-      bubble.innerHTML = `${toolsHtml}<div class="thinking-active-indicator" style="display:flex;align-items:center;gap:7px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span class="thinking-status-text" style="font-size:12.5px;color:var(--text-muted);font-weight:500;">正在连接模型并解析任务意图 (0s)...</span></div>`;
+      bodyHtml = `<div class="thinking-active-indicator" style="display:flex;align-items:center;gap:7px;"><span class="thinking-dots"><i></i><i></i><i></i></span><span class="thinking-status-text" style="font-size:12.5px;color:var(--text-muted);font-weight:500;">正在连接模型并解析任务意图 (0s)...</span></div>`;
     } else {
-      bubble.innerHTML = `${toolsHtml}${formatMarkdown(content)}`;
+      bodyHtml = formatMarkdown(content);
       if (!isStreaming && clean) {
-        bubble.innerHTML += getMessageQuotaFooterHtml(clean, meta, meta?.model || state.selectedModel);
+        bodyHtml += getMessageQuotaFooterHtml(clean, meta, meta?.model || state.selectedModel);
       }
     }
+    bubble.innerHTML = `
+      <div class="bubble-tools-wrap" data-fingerprint="${escapeHtml(toolsFingerprint)}">${toolsHtml}</div>
+      <div class="bubble-body-wrap">${bodyHtml}</div>
+    `;
   } else {
     bubble = el("div", "message-bubble");
     let raw = String(content || "");
@@ -3199,12 +3295,7 @@ async function runConversationTurn(text, appendUserMsg = true) {
           if (targetNode.row) targetNode.row.classList.remove("streaming");
           if (targetNode.bubble) {
             const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
-            if (cleanAcc) {
-              targetNode.bubble.innerHTML = formatMarkdown(cleanAcc + "\n\n*(已停止生成)*", false);
-            } else {
-              targetNode.bubble.innerHTML = '<div style="font-size:13px;color:var(--text-dim);font-style:italic;">(已停止生成)</div>';
-            }
-            refreshIcons();
+            updateAssistantBubble(targetNode, cleanAcc ? cleanAcc + "\n\n*(已停止生成)*" : "(已停止生成)", toolEvents, false);
           }
         }
         break; // 立即退出，绝不重试
@@ -3320,8 +3411,8 @@ async function runConversationTurn(text, appendUserMsg = true) {
       const targetNode = clientRun.asstNode || asstNode;
       if (isAbort) {
         if (targetNode && targetNode.bubble) {
-          targetNode.bubble.innerHTML = formatMarkdown(acc + "\n\n*(已停止生成)*", false);
-          refreshIcons();
+          const cleanAcc = (acc || "").replace(/[\u200b]/g, "").trim();
+          updateAssistantBubble(targetNode, cleanAcc ? cleanAcc + "\n\n*(已停止生成)*" : "(已停止生成)", toolEvents, false);
         }
       } else {
         if (isNetErr) {

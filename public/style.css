@@ -1308,11 +1308,16 @@ html[data-theme="dark"] .code-content-body {
    ────────────────────────────────────────────────────────────────────────── */
 
 /* 当「显示工具」关闭时，彻底隐藏工具时间线与思考块（100% 遵从用户开关） */
+body.hide-thinking-tools .bubble-tools-wrap,
 body.hide-thinking-tools .tools-timeline-container,
 body.hide-thinking-tools .tool-call-card,
 body.hide-thinking-tools .thinking-step-card,
 body.hide-thinking-tools .tool-event-box {
   display: none !important;
+}
+
+.bubble-tools-wrap, .bubble-body-wrap {
+  width: 100%;
 }
 
 .tools-timeline-container {
