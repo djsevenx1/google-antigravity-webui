@@ -2952,6 +2952,26 @@ wss.on('connection', (ws, req) => {
             continue;
           }
           const isTransient = /retryable error|network issue|stream ended|unexpected EOF|context canceled|connection reset|Eligibility check failed|profile picture|i\/o timeout|timeout|dial tcp|connection refused|network is unreachable/i.test(err && err.message || '');
+          // EOF/连接中断：多为 URnetwork P2P 节点抖动。最后一次重试前重启 socks 强制换节点，
+          // 其余次 sleep 等节点自动轮换恢复。给 EOF 额外 2 次重试机会。
+          const isProxyEOF = /EOF|connection reset by peer|stream ended|unexpected EOF/i.test(err && err.message || '');
+          const eofRetryMax = RETRY + 2;
+          if (isProxyEOF && attempt < eofRetryMax) {
+            if (attempt >= RETRY) {
+              // 常规重试已用尽，重启 socks 守护换一批节点再试
+              debugLog(`[ws/chat] EOF retry #${attempt}: 重启 urnetwork-socks 换节点`);
+              try {
+                const out2 = execFileSync('pgrep', ['-f', 'urnetwork/urnetwork-socks'], { encoding: 'utf8' });
+                for (const pid of out2.trim().split('\n').filter(Boolean)) {
+                  try { process.kill(Number(pid), 'SIGTERM'); } catch (_) {}
+                }
+              } catch (_) {}
+              await new Promise((r) => setTimeout(r, 8000)); // 等守护拉起新节点
+            } else {
+              await new Promise((r) => setTimeout(r, 2000));
+            }
+            continue;
+          }
           if (attempt < RETRY && isTransient) {
             await new Promise((r) => setTimeout(r, 2000));
             continue;
