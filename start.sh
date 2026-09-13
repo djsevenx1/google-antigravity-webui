@@ -33,12 +33,18 @@ if [ ! -d node_modules ]; then
 fi
 
 # 3) 代理开关：读根目录 proxy-toggle.txt，yes=起 SOCKS5 代理，no=直连不起
+#    代理 env export 到 server 进程：agy spawn 继承 process.env，不依赖 cli.js 代码，
+#    agy 自动更新后无需重启 server 代理仍生效（解决每天更新导致地区报错）
 PROXY_TOGGLE="$(cat "$(pwd)/proxy-toggle.txt" 2>/dev/null | tr -d '[:space:]' | tr 'A-Z' 'a-z')"
 if [ "$PROXY_TOGGLE" = "yes" ] || [ "$PROXY_TOGGLE" = "on" ] || [ "$PROXY_TOGGLE" = "true" ]; then
   echo "[socks] proxy-toggle=yes，启动 URnetwork SOCKS5 代理（美国出口）"
   bash "$(pwd)/start-urn-socks.sh" || echo "[socks] URnetwork SOCKS5 启动失败，agy 将直连"
+  export ALL_PROXY="socks5://127.0.0.1:19999"
+  export HTTPS_PROXY="socks5://127.0.0.1:19999"
+  export HTTP_PROXY="socks5://127.0.0.1:19999"
 else
   echo "[socks] proxy-toggle=no，直连模式（不起 SOCKS5）"
+  unset ALL_PROXY HTTPS_PROXY HTTP_PROXY
 fi
 
 # 4) 启动主服务
