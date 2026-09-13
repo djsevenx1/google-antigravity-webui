@@ -65,8 +65,10 @@ while true; do
     export ALL_PROXY="socks5://127.0.0.1:19999"
     export HTTPS_PROXY="socks5://127.0.0.1:19999"
     export HTTP_PROXY="socks5://127.0.0.1:19999"
+    export NO_PROXY="127.0.0.1,localhost,::1"
+    export no_proxy="127.0.0.1,localhost,::1"
   else
-    unset ALL_PROXY HTTPS_PROXY HTTP_PROXY
+    unset ALL_PROXY HTTPS_PROXY HTTP_PROXY NO_PROXY no_proxy
   fi
   PORT=$PORT node server.js
   echo "[keepalive] server 退出(_code=$?),2秒后重启"

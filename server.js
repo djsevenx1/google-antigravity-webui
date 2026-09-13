@@ -757,9 +757,7 @@ app.get('/api/proxy/status', (req, res) => {
     enabled: proxyToggle === 'yes',
     mode: proxyToggle,
     socksPort: 19999,
-    bridgePort: 18081,
     socksListening: portOpen(19999),
-    bridgeListening: portOpen(18081),
     country: urn.country,
     region: urn.region,
     city: urn.city,
@@ -767,8 +765,7 @@ app.get('/api/proxy/status', (req, res) => {
     privacy: urn.privacy,
     quantum: urn.quantum,
     activeProviderCount: activeSocks ? activeSocks.count : null,
-    activeCountry: activeSocks ? activeSocks.country : (urn.country || 'United States'),
-    traffic: getProxyTrafficStats()
+    activeCountry: activeSocks ? activeSocks.country : (urn.country || 'United States')
   });
 });
 

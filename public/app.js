@@ -1299,19 +1299,13 @@ async function showSettingsModal() {
       if (!isEnabled) {
         $("#set-proxy-status").innerHTML = "<span style=\"color:var(--text-muted,#888);\">🚫 <b>直连模式 (proxy-toggle.txt: no)</b><br>已关闭代理，agy 将直接连接 Google 官方接口（不走 SOCKS5）</span>";
       } else {
-        const sock = d.socksListening ? "✅SOCKS5监听中" : "❌未监听";
-        const bridge = d.bridgeListening ? "✅桥接监听中" : "❌未监听";
+        const sock = d.socksListening ? "✅ SOCKS5 代理运行中 (:19999)" : "❌ 未监听 (:19999)";
         const countStr = d.activeProviderCount ? (" · 活跃节点池: <b>" + Number(d.activeProviderCount).toLocaleString() + "</b> 个节点") : "";
         const curCountry = d.activeCountry || d.country || "United States";
-        const tf = d.traffic || {};
-        const tfTotal = tf.formattedTotal || "0 B";
-        const tfSent = tf.formattedSent || "0 B";
-        const tfRecv = tf.formattedReceived || "0 B";
         $("#set-proxy-status").innerHTML = 
-          "⚡ <b>代理已开启 (proxy-toggle.txt: yes)</b><br>" +
-          "端口: " + sock + "(:" + d.socksPort + ") · " + bridge + "(:" + d.bridgePort + ")<br>" +
-          "当前实际出口: <b>" + curCountry + "</b>" + countStr + "<br>" +
-          "📊 <b>已传输流量: " + tfTotal + "</b> (↑ " + tfSent + " / ↓ " + tfRecv + ") · 并发流: " + (tf.activeConnections || 0);
+          "⚡ <b>代理已开启 (proxy-toggle: yes)</b><br>" +
+          "状态: " + sock + "<br>" +
+          "当前实际出口: <b>" + curCountry + "</b>" + countStr;
       }
     } catch (e) { $("#set-proxy-status").textContent = "状态获取失败: " + (e && e.message); }
   }
