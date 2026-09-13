@@ -985,7 +985,7 @@ export async function refreshGoogleProfileInBackground(force = false, targetAcco
   const tierData = parseGoogleAccountTier(liveTierInfo, raw);
   const currentEmail = profile.email || currentAcc?.email || fallbackEmail;
   const currentName = profile.name || currentAcc?.name || (currentEmail ? currentEmail.split('@')[0] : 'Google 用户');
-  const currentPicture = profile.picture || currentAcc?.picture || 'https://lh3.googleusercontent.com/a/generic-avatar-hash=s96-c';
+  const currentPicture = profile.picture || currentAcc?.picture || '';
 
   // 固化并同步写回 accounts.json 中对应账号
   if (liveQuotaSummary || liveQuotaBuckets) {
@@ -1053,7 +1053,7 @@ export function getActiveGoogleProfile() {
     return {
       email: acc.email,
       name: acc.name || (acc.email ? acc.email.split('@')[0] : 'Google 用户'),
-      picture: acc.picture || 'https://lh3.googleusercontent.com/a/generic-avatar-hash=s96-c',
+      picture: acc.picture || '',
       tier: tierData.name,
       tierType: tierData.type,
       tierBadge: tierData.badge,
@@ -1075,7 +1075,7 @@ export function getActiveGoogleProfile() {
 const AVATAR_CACHE_DIR = path.join(__dirname, 'data', 'avatars');
 if (!fs.existsSync(AVATAR_CACHE_DIR)) fs.mkdirSync(AVATAR_CACHE_DIR, { recursive: true });
 
-app.get('/api/test-fetch', async (req,res) => { try { const r = await fetch('https://lh3.googleusercontent.com/a/generic-avatar-hash=s96-c',{signal:AbortSignal.timeout(8000)}); const b = Buffer.from(await r.arrayBuffer()); res.send('fetch OK size='+b.length); } catch(e) { res.send('fetch FAIL: '+e.message); } });
+app.get('/api/test-fetch', async (req,res) => { try { const r = await fetch('https://www.google.com/favicon.ico',{signal:AbortSignal.timeout(8000)}); const b = Buffer.from(await r.arrayBuffer()); res.send('fetch OK size='+b.length); } catch(e) { res.send('fetch FAIL: '+e.message); } });
 
 app.get('/api/avatar', async (req, res) => {
   const url = req.query.u;
